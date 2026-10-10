@@ -58,6 +58,29 @@ public enum GoogleSignIn {
         return fields.contains("androidId") && fields.contains("Token")
     }
 
+    /// The address inside a credential, however it was encoded.
+    public static func email(inCredential credential: String) -> String? {
+        var components = URLComponents()
+        components.percentEncodedQuery = credential.replacingOccurrences(of: "+", with: "%20")
+        return components.queryItems?.first { $0.name == "Email" }?.value.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// Whether two addresses name one Google account: case never matters,
+    /// and for Gmail neither do dots nor googlemail.com. Mistaking one
+    /// account for two would drop its history and duplicate its albums.
+    public static func sameAccount(_ first: String, _ second: String) -> Bool {
+        canonical(first) == canonical(second)
+    }
+
+    static func canonical(_ email: String) -> String {
+        let lowered = email.lowercased()
+        guard let at = lowered.lastIndex(of: "@") else { return lowered }
+        let local = lowered[..<at]
+        let domain = lowered[lowered.index(after: at)...]
+        guard domain == "gmail.com" || domain == "googlemail.com" else { return lowered }
+        return local.replacingOccurrences(of: ".", with: "") + "@gmail.com"
+    }
+
     /// 8 random bytes in hex, the shape of an Android ID.
     public static func newAndroidID() -> String {
         var generator = SystemRandomNumberGenerator()

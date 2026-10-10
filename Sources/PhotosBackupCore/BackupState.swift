@@ -67,7 +67,7 @@ public struct BackupState: Codable, Equatable, Sendable {
     /// keeping them would make the new account look backed up when it holds
     /// nothing. The selection does carry over.
     public func adopting(account email: String) -> BackupState {
-        if let current = accountEmail, current.caseInsensitiveCompare(email) != .orderedSame {
+        if let current = accountEmail, !GoogleSignIn.sameAccount(current, email) {
             var fresh = BackupState()
             fresh.selectedAlbumIDs = selectedAlbumIDs
             fresh.accountEmail = email

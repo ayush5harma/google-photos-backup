@@ -169,6 +169,29 @@ def _is_network_error(error: BaseException) -> bool:
     return any(cls.__name__ in ("ConnectionError", "Timeout", "ConnectTimeout", "ReadTimeout") for cls in type(error).__mro__)
 
 
+# Google said no to the credential itself; anything else (an overloaded or
+# rate-limited Google, a bug) is not proof the credential is bad, and the app
+# keeps a credential unless it is: a fresh sign-in works only once.
+_REFUSED_STATUSES = {401, 403}
+_TRANSIENT_STATUSES = {408, 429, 500, 502, 503, 504}
+
+
+def _http_status(error: BaseException) -> int | None:
+    return getattr(getattr(error, "response", None), "status_code", None)
+
+
+def _classify(error: BaseException, during_auth: bool = False) -> tuple[str, int]:
+    status = _http_status(error)
+    if _is_network_error(error) or type(error).__name__ == "RetryError" or status in _TRANSIENT_STATUSES:
+        return "network", EXIT_NETWORK
+    if status in _REFUSED_STATUSES or "does not contain bearer token" in str(error):
+        return "auth", EXIT_AUTH
+    # A credential missing a field gpmc needs fails while the client is built.
+    if during_auth and isinstance(error, (KeyError, ValueError)):
+        return "auth", EXIT_AUTH
+    return "internal", EXIT_INTERNAL
+
+
 def _email(auth_data: str) -> str | None:
     return dict(parse_qsl(auth_data)).get("Email")
 
@@ -324,7 +347,7 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
         except RequestError:
             raise
         except Exception as error:
-            kind, code = ("network", EXIT_NETWORK) if _is_network_error(error) else ("auth", EXIT_AUTH)
+            kind, code = _classify(error, during_auth=True)
             logging.getLogger(__name__).exception("authentication failed")
             emit(_event("fatal", kind=kind, message=str(error)))
             return code
@@ -335,7 +358,7 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
             try:
                 client.api.find_remote_media_by_hash(bytes(20))
             except Exception as error:
-                kind, code = ("network", EXIT_NETWORK) if _is_network_error(error) else ("auth", EXIT_AUTH)
+                kind, code = _classify(error)
                 logging.getLogger(__name__).exception("Google Photos refused the account")
                 emit(_event("fatal", kind=kind, message=f"Google Photos refused the account: {error}"))
                 return code

@@ -75,6 +75,21 @@ private func fields(_ form: String) -> [String: String] {
         #expect(!GoogleSignIn.looksLikeAuthData("oauth2_4/0AbCdEfGhIjKlMnOp"))
     }
 
+    @Test func readsTheAddressOutOfACredential() {
+        let credential = GoogleSignIn.credential(for: .init(email: "some.one+tag@gmail.com", masterToken: "aas_et/x"), androidID: "0123456789abcdef")
+        #expect(GoogleSignIn.email(inCredential: credential) == "some.one+tag@gmail.com")
+        // An Android-captured auth_data, in its own field order.
+        #expect(GoogleSignIn.email(inCredential: "androidId=1&app=x&Email=me%40example.com&Token=aas_et%2Fx") == "me@example.com")
+        #expect(GoogleSignIn.email(inCredential: "androidId=1&Token=x") == nil)
+    }
+
+    @Test func gmailAliasesAreOneAccount() {
+        #expect(GoogleSignIn.sameAccount("John.Smith@gmail.com", "johnsmith@googlemail.com"))
+        #expect(GoogleSignIn.sameAccount("Me@Example.com", "me@example.com"))
+        #expect(!GoogleSignIn.sameAccount("john.smith@example.com", "johnsmith@example.com"))
+        #expect(!GoogleSignIn.sameAccount("a@gmail.com", "b@gmail.com"))
+    }
+
     @Test func androidIDsAreSixteenHexDigitsAndFresh() {
         let id = GoogleSignIn.newAndroidID()
         #expect(id.count == 16 && id.allSatisfy(\.isHexDigit))
@@ -103,6 +118,7 @@ private func fields(_ form: String) -> [String: String] {
     @Test func theSameAccountKeepsItsHistory() {
         let state = backedUp(by: "Me@Gmail.com")
         #expect(state.adopting(account: "me@gmail.com").uploaded == state.uploaded)
+        #expect(state.adopting(account: "m.e@googlemail.com").uploaded == state.uploaded)
         // History from before accounts were tracked is assumed to be this one.
         #expect(backedUp(by: nil).adopting(account: "me@gmail.com").uploaded.count == 1)
     }

@@ -96,6 +96,12 @@ struct EmbeddedSetupView: NSViewRepresentable {
         private let onToken: (String) -> Void
         private var delivered = false
 
+        /// google.com or a subdomain of it; not evilgoogle.com.
+        static func isGoogle(_ domain: String) -> Bool {
+            let host = domain.hasPrefix(".") ? String(domain.dropFirst()) : domain
+            return host == "google.com" || host.hasSuffix(".google.com")
+        }
+
         init(onToken: @escaping (String) -> Void) {
             self.onToken = onToken
         }
@@ -104,7 +110,7 @@ struct EmbeddedSetupView: NSViewRepresentable {
             guard !delivered else { return }
             cookieStore.getAllCookies { [weak self] cookies in
                 guard let self, !self.delivered,
-                      let cookie = cookies.first(where: { $0.name == GoogleSignIn.cookieName && $0.domain.hasSuffix("google.com") }),
+                      let cookie = cookies.first(where: { $0.name == GoogleSignIn.cookieName && Self.isGoogle($0.domain) }),
                       !cookie.value.isEmpty
                 else { return }
                 self.delivered = true

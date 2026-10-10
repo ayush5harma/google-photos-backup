@@ -30,6 +30,7 @@ struct SettingsView: View {
                     if model.hasAuthData {
                         Button("Remove", role: .destructive) { model.removeAuthData() }
                         Button("Test") { Task { await model.checkAccount() } }
+                            .disabled(model.connectState == .connecting)
                     }
                 }
                 connectStatus
@@ -41,7 +42,7 @@ struct SettingsView: View {
                             .fixedSize(horizontal: false, vertical: true)
                         SecureField("oauth_token or auth_data", text: $pasteDraft, prompt: Text("oauth2_4/... or androidId=...&Token=..."))
                         HStack {
-                            Button("Open Sign-In Page in Safari") { NSWorkspace.shared.open(GoogleSignIn.embeddedSetupURL) }
+                            Button("Open Sign-In Page in Safari", action: openInSafari)
                             Link("About auth_data", destination: Self.authHelp)
                             Spacer()
                             Button("Connect") {
@@ -109,6 +110,16 @@ struct SettingsView: View {
         } message: {
             Text("The next run creates new Google Photos albums for your selected albums. Use this after deleting those albums in Google Photos.")
         }
+    }
+
+    /// Safari specifically: the steps above use its Web Inspector, and the
+    /// default browser may be another.
+    private func openInSafari() {
+        guard let safari = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Safari") else {
+            NSWorkspace.shared.open(GoogleSignIn.embeddedSetupURL)
+            return
+        }
+        NSWorkspace.shared.open([GoogleSignIn.embeddedSetupURL], withApplicationAt: safari, configuration: NSWorkspace.OpenConfiguration())
     }
 
     @ViewBuilder

@@ -22,6 +22,14 @@ import gpmc_bridge  # noqa: E402
 AUTH = "androidId=abc&Email=someone%40example.com&lang=en_US&Token=t"
 
 
+class FakeHTTPError(Exception):
+    """Shaped like requests.HTTPError: the status is on .response."""
+
+    def __init__(self, status):
+        super().__init__(f"{status} Client Error")
+        self.response = type("Response", (), {"status_code": status})()
+
+
 class FakeApi:
     def __init__(self, fail_with=None, photos_error=None):
         self.fail_with = fail_with
@@ -243,12 +251,31 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(client.album_calls, [])
 
     def test_auth_failure_is_fatal_before_any_upload(self):
-        client = FakeClient(auth_error=RuntimeError("403 BadAuthentication"))
+        client = FakeClient(auth_error=FakeHTTPError(403))
         code, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg")}, client)
 
         self.assertEqual(code, gpmc_bridge.EXIT_AUTH)
         self.assertIsNone(client.upload_kwargs)
-        self.assertEqual(events, [{"type": "fatal", "v": 1, "kind": "auth", "message": "403 BadAuthentication"}])
+        self.assertEqual(events, [{"type": "fatal", "v": 1, "kind": "auth", "message": "403 Client Error"}])
+
+    def test_only_a_definite_no_counts_as_refused(self):
+        # The app throws away a refused credential, so a busy Google or a bug
+        # must not look like a refusal.
+        cases = [
+            (FakeHTTPError(401), "auth"),
+            (RuntimeError("Auth response does not contain bearer token"), "auth"),
+            (FakeHTTPError(503), "network"),
+            (FakeHTTPError(429), "network"),
+            (type("RetryError", (Exception,), {})("max retries"), "network"),
+            (RuntimeError("something odd"), "internal"),
+        ]
+        for error, kind in cases:
+            _, events, _ = run({"command": "check-auth", "auth_data": AUTH}, FakeClient(auth_error=error))
+            self.assertEqual(events[0]["kind"], kind, repr(error))
+
+    def test_a_credential_missing_fields_is_refused(self):
+        _, events, _ = run({"command": "check-auth", "auth_data": AUTH}, factory_error=KeyError("client_sig"))
+        self.assertEqual(events[0]["kind"], "auth")
 
     def test_unreachable_network_is_not_an_auth_failure(self):
         code, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg")}, factory_error=ConnectionError("no route"))
@@ -267,7 +294,7 @@ class OtherCommandTests(unittest.TestCase):
 
     def test_check_auth_fails_when_photos_refuses_the_account(self):
         client = FakeClient()
-        client.api = FakeApi(photos_error=RuntimeError("401 Unauthorized"))
+        client.api = FakeApi(photos_error=FakeHTTPError(401))
         code, events, _ = run({"command": "check-auth", "auth_data": AUTH}, client)
         self.assertEqual(code, gpmc_bridge.EXIT_AUTH)
         self.assertEqual(events[0]["kind"], "auth")

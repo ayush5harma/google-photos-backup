@@ -67,6 +67,10 @@ private enum Verification {
     /// No definite answer (network, a missing runtime); keeping the
     /// credential costs nothing and a fresh sign-in is single-use.
     case unconfirmed(String)
+
+    var email: String? {
+        if case let .accepted(email) = self { email } else { nil }
+    }
 }
 
 /// The one object the views read: library, persisted state, settings, the
@@ -213,7 +217,8 @@ final class AppModel {
     // MARK: - Account and runtime
 
     func beginSignIn() {
-        connectState = .signingIn
+        // A second sign-in while one is exchanging would race it.
+        if connectState != .connecting { connectState = .signingIn }
         showingSignIn = true
     }
 
@@ -228,7 +233,7 @@ final class AppModel {
         connectState = .connecting
         do {
             let linked = try await GoogleAccountLink.link(oauthToken: oauthToken)
-            await connect(credential: linked.credential)
+            await connect(credential: linked.credential, email: linked.email)
         } catch {
             connectState = .failed(error.localizedDescription)
         }
@@ -239,32 +244,37 @@ final class AppModel {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if GoogleSignIn.looksLikeAuthData(trimmed) {
+            guard connectState != .connecting else { return }
             connectState = .connecting
-            await connect(credential: trimmed)
+            await connect(credential: trimmed, email: GoogleSignIn.email(inCredential: trimmed))
         } else {
             await signIn(oauthToken: trimmed)
         }
     }
 
-    /// Checks a credential with Google before it replaces the stored one, so
-    /// a failed sign-in never costs the account that was working.
-    private func connect(credential: String) async {
+    /// Checks a credential with Google before it replaces the stored one.
+    /// Only a definite refusal is discarded: a credential Google could not
+    /// be asked about (offline, Google overloaded) is kept, because a fresh
+    /// sign-in cannot be repeated, and is checked again at the next launch.
+    private func connect(credential: String, email knownEmail: String?) async {
         let verification = await verify(credential)
-        let email: String?
-        switch verification {
-        case let .refused(message):
+        if case let .refused(message) = verification {
             connectState = .failed(message)
             return
-        case let .accepted(address):
-            email = address
-        case .unconfirmed:
-            email = nil
         }
-        // Another account: let the running backup finish with the old one
-        // before its history is dropped, or its last items would be recorded
-        // against the new account.
-        if let email, let current = state.accountEmail, current.caseInsensitiveCompare(email) != .orderedSame {
+        let email = verification.email ?? knownEmail
+        // The account the history belongs to: recorded, or for history from
+        // before accounts were recorded, the one in the credential it used.
+        let previous = state.accountEmail ?? authData.flatMap(GoogleSignIn.email(inCredential:))
+        let switching = email.map { new in previous.map { !GoogleSignIn.sameAccount($0, new) } ?? false } ?? false
+        if switching {
+            // Let the running backup finish with the old account first, or
+            // its last items would be recorded against the new one.
             await engine.stopAndWait()
+            guard !engine.isActive else {
+                connectState = .failed("The backup is still stopping. Sign in again in a moment.")
+                return
+            }
         }
         do {
             try Keychain.save(credential)
@@ -273,17 +283,14 @@ final class AppModel {
             return
         }
         hasAuthData = true
+        if let email {
+            if state.accountEmail == nil { state.accountEmail = previous }
+            state = state.adopting(account: email)
+            saveState()
+        }
         switch verification {
-        case let .accepted(address):
-            account = .connected(email: address)
-            if let address {
-                state = state.adopting(account: address)
-                saveState()
-            }
-        case let .unconfirmed(message):
-            account = .failed(message)
-        case .refused:
-            break
+        case let .unconfirmed(message): account = .failed(message)
+        default: account = .connected(email: email)
         }
         connectState = .idle
         showingSignIn = false
@@ -300,7 +307,11 @@ final class AppModel {
     func checkAccount() async {
         guard let auth = authData else { account = .missing; return }
         account = .checking
-        switch await verify(auth) {
+        let verification = await verify(auth)
+        // A sign-in may have replaced the credential while this one was
+        // being checked; its result is not about the account stored now.
+        guard authData == auth else { return }
+        switch verification {
         case let .accepted(email):
             account = .connected(email: email)
             if let email {
