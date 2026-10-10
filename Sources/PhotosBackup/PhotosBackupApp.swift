@@ -27,7 +27,12 @@ struct PhotosBackupApp: App {
         Window("Photos Backup", id: "main") {
             RootView()
                 .environment(model)
-                .task { await model.launch() }
+                .task {
+                    await model.launch()
+                    #if DEBUG
+                    await Snapshots.runIfRequested(model)
+                    #endif
+                }
         }
         .defaultSize(width: 900, height: 760)
 

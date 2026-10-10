@@ -35,6 +35,8 @@ struct SettingsView: View {
                 Text("Google Account")
             } footer: {
                 Text("The auth_data string comes from Google Photos for Android (the gpmc README shows two ways to get it). It holds a long-lived Google token, so it is kept in your login keychain and handed to the uploader over a pipe, never on a command line.")
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Section("Uploads") {
@@ -60,6 +62,8 @@ struct SettingsView: View {
                 Text("History")
             } footer: {
                 Text("Resetting is safe: before sending anything, gpmc asks Google whether it already has the file's exact bytes, so nothing is uploaded twice. It only makes the next run slower.")
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Section("About") {

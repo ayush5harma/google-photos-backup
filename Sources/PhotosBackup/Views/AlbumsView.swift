@@ -54,7 +54,7 @@ struct AlbumsView: View {
                         }
                         .padding(.horizontal, 14)
                         .padding(.vertical, 4)
-                        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .background(Color.cardFill, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)

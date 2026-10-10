@@ -8,7 +8,7 @@ struct Card<Content: View>: View {
         VStack(alignment: .leading, spacing: 0) { content }
             .padding(18)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.background.secondary, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background(Color.cardFill, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
@@ -116,6 +116,12 @@ struct Banner: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(color.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
+}
+
+extension Color {
+    /// Cards must read as raised in both appearances; the semantic
+    /// background levels are too close to the window's own.
+    static let cardFill = Color.primary.opacity(0.07)
 }
 
 extension Int64 {
