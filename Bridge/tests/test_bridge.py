@@ -23,14 +23,22 @@ AUTH = "androidId=abc&Email=someone%40example.com&lang=en_US&Token=t"
 
 
 class FakeApi:
-    def __init__(self, fail_with=None):
+    def __init__(self, fail_with=None, photos_error=None):
         self.fail_with = fail_with
+        self.photos_error = photos_error
+        self.hash_lookups = []
 
     @property
     def bearer_token(self):
         if self.fail_with:
             raise self.fail_with
         return "token"
+
+    def find_remote_media_by_hash(self, sha1_hash):
+        self.hash_lookups.append(sha1_hash)
+        if self.photos_error:
+            raise self.photos_error
+        return None
 
 
 class FakeClient:
@@ -251,9 +259,24 @@ class UploadTests(unittest.TestCase):
 
 class OtherCommandTests(unittest.TestCase):
     def test_check_auth_reports_the_account(self):
-        code, events, _ = run({"command": "check-auth", "auth_data": AUTH}, FakeClient())
+        client = FakeClient()
+        code, events, _ = run({"command": "check-auth", "auth_data": AUTH}, client)
         self.assertEqual(code, 0)
         self.assertEqual(events, [{"type": "auth", "v": 1, "email": "someone@example.com"}])
+        self.assertEqual(client.api.hash_lookups, [bytes(20)])
+
+    def test_check_auth_fails_when_photos_refuses_the_account(self):
+        client = FakeClient()
+        client.api = FakeApi(photos_error=RuntimeError("401 Unauthorized"))
+        code, events, _ = run({"command": "check-auth", "auth_data": AUTH}, client)
+        self.assertEqual(code, gpmc_bridge.EXIT_AUTH)
+        self.assertEqual(events[0]["kind"], "auth")
+        self.assertIn("Google Photos refused the account", events[0]["message"])
+
+    def test_email_is_fully_decoded(self):
+        auth = "Email=some.one%2Btag%40gmail.com&Token=aas_et%2Fx&androidId=1"
+        _, events, _ = run({"command": "check-auth", "auth_data": auth}, FakeClient())
+        self.assertEqual(events[0]["email"], "some.one+tag@gmail.com")
 
     def test_add_to_album_uses_media_keys_directly(self):
         client = FakeClient()

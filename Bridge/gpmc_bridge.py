@@ -48,6 +48,7 @@ from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, TextIO
+from urllib.parse import parse_qsl
 
 PROTOCOL_VERSION = 1
 
@@ -141,7 +142,10 @@ def default_client_factory(auth_data: str, timeout: int) -> Any:
     _vendored_site_packages()
     from gpmc import Client
 
-    return Client(auth_data=auth_data, timeout=timeout)
+    # Given explicitly: left to itself gpmc takes the first auth_data field
+    # whose text contains "lang", which an address like langdon@... wins.
+    language = dict(parse_qsl(auth_data)).get("lang", "")
+    return Client(auth_data=auth_data, timeout=timeout, language=language)
 
 
 def _gpmc_version() -> str | None:
@@ -166,11 +170,7 @@ def _is_network_error(error: BaseException) -> bool:
 
 
 def _email(auth_data: str) -> str | None:
-    for pair in auth_data.split("&"):
-        key, _, value = pair.partition("=")
-        if key == "Email":
-            return value.replace("%40", "@")
-    return None
+    return dict(parse_qsl(auth_data)).get("Email")
 
 
 def _require(request: Event, key: str, kind: type) -> Any:
@@ -330,6 +330,15 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
             return code
 
         if command == "check-auth":
+            # A bearer token proves the sign-in; a hash lookup proves Google
+            # Photos itself accepts the account (gotohp validates the same way).
+            try:
+                client.api.find_remote_media_by_hash(bytes(20))
+            except Exception as error:
+                kind, code = ("network", EXIT_NETWORK) if _is_network_error(error) else ("auth", EXIT_AUTH)
+                logging.getLogger(__name__).exception("Google Photos refused the account")
+                emit(_event("fatal", kind=kind, message=f"Google Photos refused the account: {error}"))
+                return code
             emit(_event("auth", email=_email(request["auth_data"])))
             return EXIT_OK
         if command == "add-to-album":
