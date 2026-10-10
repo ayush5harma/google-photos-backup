@@ -83,6 +83,14 @@ private func fields(_ form: String) -> [String: String] {
         #expect(GoogleSignIn.email(inCredential: "androidId=1&Token=x") == nil)
     }
 
+    @Test(arguments: ["androidId=1&Token=aas_et/x y&Email=me%40example.com", "Email=100%&Token=x", "Email=%ZZ&Token=x",
+                      "Email=é@example.com&Token=[x]", "&&==&Email", "Email="])
+    func pastedGarbageNeverTraps(credential: String) {
+        // These trapped when the parser went through percentEncodedQuery.
+        _ = GoogleSignIn.email(inCredential: credential)
+        _ = GoogleSignIn.looksLikeAuthData(credential)
+    }
+
     @Test func gmailAliasesAreOneAccount() {
         #expect(GoogleSignIn.sameAccount("John.Smith@gmail.com", "johnsmith@googlemail.com"))
         #expect(GoogleSignIn.sameAccount("Me@Example.com", "me@example.com"))

@@ -32,7 +32,7 @@ enum GoogleAccountLink {
                 let (data, _) = try await session.data(for: request, delegate: metrics)
                 let account = try GoogleSignIn.parseExchange(String(decoding: data.prefix(64 * 1024), as: UTF8.self))
                 return Linked(credential: GoogleSignIn.credential(for: account, androidID: androidID), email: account.email)
-            } catch let error as URLError where neverReachedGoogle(error, sent: metrics.sent) {
+            } catch let error as URLError where neverReachedGoogle(error, provenUnsent: metrics.provenUnsent) {
                 // Only then is the single-use token still unspent, and the
                 // next host worth a try.
                 unreachable = error
@@ -41,12 +41,15 @@ enum GoogleAccountLink {
         throw GoogleSignIn.Failure("Google's sign-in service could not be reached (\(unreachable?.localizedDescription ?? "no route")).")
     }
 
-    private static func neverReachedGoogle(_ error: URLError, sent: Bool) -> Bool {
+    private static func neverReachedGoogle(_ error: URLError, provenUnsent: Bool) -> Bool {
         switch error.code {
         case .cannotFindHost, .cannotConnectToHost, .dnsLookupFailed, .notConnectedToInternet, .secureConnectionFailed: true
         // A timeout can come after the token went out (Google slow to
-        // answer); only one before the request was written is safe to retry.
-        case .timedOut: !sent
+        // answer); only one the metrics show came before the request was
+        // written is safe to retry. Measured: the metrics callback arrives
+        // before data(for:) throws, sent=true on a read timeout and false on
+        // a connect timeout.
+        case .timedOut: provenUnsent
         default: false
         }
     }
@@ -56,9 +59,12 @@ enum GoogleAccountLink {
     /// the session's, and this one must not be the gap.
     private final class SentRequest: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
         private let lock = NSLock()
+        private var seen = false
         private var requestSent = false
 
-        var sent: Bool { lock.withLock { requestSent } }
+        /// Metrics arrived and show the request was never written; without
+        /// metrics nothing is proven, so nothing is retried.
+        var provenUnsent: Bool { lock.withLock { seen && !requestSent } }
 
         func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                         newRequest request: URLRequest) async -> URLRequest? {
@@ -67,7 +73,10 @@ enum GoogleAccountLink {
 
         func urlSession(_ session: URLSession, task: URLSessionTask, didFinishCollecting metrics: URLSessionTaskMetrics) {
             let sent = metrics.transactionMetrics.contains { $0.requestEndDate != nil }
-            lock.withLock { requestSent = sent }
+            lock.withLock {
+                seen = true
+                requestSent = sent
+            }
         }
     }
 

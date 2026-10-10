@@ -58,11 +58,19 @@ public enum GoogleSignIn {
         return fields.contains("androidId") && fields.contains("Token")
     }
 
-    /// The address inside a credential, however it was encoded.
+    /// The address inside a credential, however it was encoded. Parsed by
+    /// hand: the text may be anything a user pasted, and assigning invalid
+    /// characters (a space, a lone %) to URLComponents.percentEncodedQuery
+    /// traps rather than throws.
     public static func email(inCredential credential: String) -> String? {
-        var components = URLComponents()
-        components.percentEncodedQuery = credential.replacingOccurrences(of: "+", with: "%20")
-        return components.queryItems?.first { $0.name == "Email" }?.value.flatMap { $0.isEmpty ? nil : $0 }
+        for pair in credential.split(separator: "&") {
+            let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2, parts[0] == "Email" else { continue }
+            let raw = parts[1].replacingOccurrences(of: "+", with: " ")
+            let value = raw.removingPercentEncoding ?? raw
+            return value.isEmpty ? nil : value
+        }
+        return nil
     }
 
     /// Whether two addresses name one Google account: case never matters,

@@ -265,6 +265,8 @@ final class AppModel {
         let email = verification.email ?? knownEmail
         // The account the history belongs to: recorded, or for history from
         // before accounts were recorded, the one in the credential it used.
+        // (History from then with no credential left, after Remove, is
+        // assumed to be the new account's.)
         let previous = state.accountEmail ?? authData.flatMap(GoogleSignIn.email(inCredential:))
         let switching = email.map { new in previous.map { !GoogleSignIn.sameAccount($0, new) } ?? false } ?? false
         if switching {
@@ -273,6 +275,7 @@ final class AppModel {
             await engine.stopAndWait()
             guard !engine.isActive else {
                 connectState = .failed("The backup is still stopping. Sign in again in a moment.")
+                automaticRun()
                 return
             }
         }
