@@ -128,6 +128,10 @@ re-checks every item by hash.
   "Name 1", "Name 2" and so on, but the app only remembers the first.
 - Not notarized and Apple silicon only. An Intel build should work but has
   not been tried.
+- If the response to creating a Google album is lost (a timeout, a crash, or
+  a quit that outlasts the 15-second stop), the album exists but the app never
+  learned its id, and the next run creates another. gpmc cannot list albums,
+  so the orphan cannot be found again automatically.
 - An item is uploaded once. Editing it in Photos afterwards, or deleting it
   from Google Photos, does not send it again; Reset Backup History does.
 - Each batch is a new uploader process that signs in again, so the default

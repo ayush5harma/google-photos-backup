@@ -178,6 +178,19 @@ class UploadTests(unittest.TestCase):
         self.assertEqual([e["type"] for e in events if e["type"] != "progress"], ["item", "album", "stopped"])
         self.assertEqual(of_type(events, "album")[0]["album_id"], "album-new")
 
+    def test_only_the_first_stop_signal_acts(self):
+        stop = gpmc_bridge.StopSignal()
+        with self.assertRaises(gpmc_bridge.StopRequested):
+            stop.request()
+        stop.request()  # a second SIGTERM while the first is handled: no raise
+
+    def test_a_vanished_app_ends_the_run_quietly(self):
+        def broken(event):
+            if event["type"] == "item":
+                raise BrokenPipeError
+        code, _, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg", "b.jpg")}, FakeClient(), on_event=broken)
+        self.assertEqual(code, gpmc_bridge.EXIT_STOPPED)
+
     def test_stop_during_auth_is_not_an_auth_failure(self):
         stop = gpmc_bridge.StopSignal()
         client = FakeClient()

@@ -96,6 +96,10 @@ class StopSignal:
         self._critical = 0
 
     def request(self) -> None:
+        # Only the first signal acts: a second one landing while the first is
+        # being handled would escape that handler and skip the fast exit.
+        if self.requested:
+            return
         self.requested = True
         if not self._critical:
             raise StopRequested
@@ -272,10 +276,10 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
             else:
                 counts["failed"] += 1
                 emit(_event("item_failed", id=item["id"], message=failures.reasons.get(path, "gpmc returned no media key")))
-    except StopRequested:
+    finally:
+        # On any way out (a stop, the app gone and stdout broken), files not
+        # yet started must not upload behind the app's back.
         executor.shutdown(wait=False, cancel_futures=True)
-        raise
-    executor.shutdown()
 
     if album and confirmed:
         # A stop must not land between Google creating the album and the app
@@ -337,6 +341,9 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
     except StopRequested:
         emit(_event("stopped"))
         return EXIT_STOPPED
+    except BrokenPipeError:
+        # The app is gone; there is nobody left to report to.
+        return EXIT_STOPPED
     except RequestError as error:
         emit(_event("fatal", kind="request", message=str(error)))
         return EXIT_REQUEST
@@ -366,9 +373,11 @@ def protocol_stdout() -> Iterator[TextIO]:
         yield real
     finally:
         sys.stdout = previous
-        real.flush()
+        with contextlib.suppress(BrokenPipeError):
+            real.flush()
         os.dup2(saved, 1)
-        real.close()
+        with contextlib.suppress(BrokenPipeError):
+            real.close()
 
 
 def main() -> int:

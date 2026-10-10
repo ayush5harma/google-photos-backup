@@ -75,6 +75,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @MainActor
     func applicationWillTerminate(_ notification: Notification) {
         BridgeProcess.terminateAll()
+        // Items are recorded as they stream in but saved per batch; a quit
+        // that outlasted the stop wait must not drop them.
+        model?.saveState()
     }
 }
 

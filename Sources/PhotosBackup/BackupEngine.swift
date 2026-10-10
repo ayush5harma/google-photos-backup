@@ -80,14 +80,15 @@ final class BackupEngine {
         }
         phase = .running
         task = Task { [weak self] in
-            await self?.run()
+            let halted = await self?.run() ?? true
             guard let self else { return }
             self.task = nil
             self.lastRun = Date()
             if self.phase != .paused { self.phase = .idle }
             // Photos picked while the last pass was finishing were never
-            // planned; failed picks were dropped by run(), so this ends.
-            if self.phase == .idle, !self.picked.isEmpty, self.lastError == nil { self.start() }
+            // planned; failed picks were dropped by run(), and a halted run
+            // (stop, fatal error) does not restart, so this ends.
+            if !halted, self.phase == .idle, !self.picked.isEmpty { self.start() }
         }
     }
 
@@ -129,7 +130,9 @@ final class BackupEngine {
         phase == .stopping || phase == .pausing
     }
 
-    private func run() async {
+    /// Returns true when the run halted (stop, fatal error, nothing to run
+    /// with) rather than running out of work.
+    private func run() async -> Bool {
         lastError = nil
         failedAssets = []
         failedAlbums = []
@@ -137,11 +140,11 @@ final class BackupEngine {
         runDone = 0
         guard let runtime = BridgeRuntime.locate() else {
             lastError = "The uploader runtime is missing; build the app with scripts/build-app.sh."
-            return
+            return true
         }
         guard let auth = model.authData else {
             lastError = "Add your gpmc auth_data in Settings to start backing up."
-            return
+            return true
         }
         defer { picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) } }
 
@@ -165,12 +168,13 @@ final class BackupEngine {
                 switch await execute(step, auth: auth, runtime: runtime, settings: settings) {
                 case .progressed: progressed = true
                 case .nothing: break
-                case .halt: return
+                case .halt: return true
                 }
             }
             if !progressed { break }
         }
         if phase == .pausing { phase = .paused }
+        return phase == .stopping
     }
 
     private enum Outcome { case progressed, nothing, halt }
