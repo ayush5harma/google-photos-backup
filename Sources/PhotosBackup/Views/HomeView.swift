@@ -21,7 +21,7 @@ struct HomeView: View {
                         tile(symbol: "arrow.up.circle.fill", title: "Back Up Now", detail: "\(summary.backedUp) of \(summary.total) backed up")
                     }
                     .buttonStyle(.plain)
-                    .disabled(engine.isActive || model.authData == nil)
+                    .disabled(engine.isActive || !model.hasAuthData)
                     PickPhotosButton {
                         tile(symbol: "photo.badge.plus", title: "Pick Photos", detail: "Manual backup")
                     }
@@ -202,7 +202,7 @@ struct PickPhotosButton<Label: View>: View {
     var body: some View {
         PhotosPicker(selection: $selection, matching: .any(of: [.images, .videos]), photoLibrary: .shared()) { label }
             .buttonStyle(.plain)
-            .disabled(model.authData == nil || !model.library.isAuthorized)
+            .disabled(!model.hasAuthData || !model.library.isAuthorized)
             .onChange(of: selection) { _, items in
                 // itemIdentifier is the PHAsset local identifier because the
                 // picker was given the shared library.

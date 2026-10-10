@@ -21,6 +21,7 @@ private func event(_ json: String) throws -> BridgeEvent {
         #expect(try event(#"{"type":"album_failed","v":1,"message":"500"}"#) == .albumFailed(message: "500"))
         #expect(try event(#"{"type":"done","v":1,"uploaded":1,"existing":1,"failed":0}"#) == .done(uploaded: 1, existing: 1, failed: 0))
         #expect(try event(#"{"type":"fatal","v":1,"kind":"auth","message":"403"}"#) == .fatal(kind: .auth, message: "403"))
+        #expect(try event(#"{"type":"stopped","v":1}"#) == .stopped)
     }
 
     @Test func toleratesWhatANewerBridgeMightSay() throws {

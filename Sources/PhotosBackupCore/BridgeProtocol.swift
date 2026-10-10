@@ -106,6 +106,8 @@ public enum BridgeEvent: Equatable, Sendable {
     case album(id: String, added: Int)
     case albumFailed(message: String)
     case done(uploaded: Int, existing: Int, failed: Int)
+    /// The bridge honoured a SIGTERM; files not yet reported were abandoned.
+    case stopped
     case fatal(kind: FatalKind, message: String)
     case unknown(type: String)
 
@@ -143,6 +145,8 @@ public enum BridgeEvent: Equatable, Sendable {
             return .albumFailed(message: string("message") ?? "adding to album failed")
         case "done":
             return .done(uploaded: int("uploaded"), existing: int("existing"), failed: int("failed"))
+        case "stopped":
+            return .stopped
         case "fatal":
             return .fatal(kind: FatalKind(rawValue: string("kind") ?? "") ?? .unknown, message: string("message") ?? "")
         default:

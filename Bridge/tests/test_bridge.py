@@ -36,16 +36,21 @@ class FakeApi:
 class FakeClient:
     """Behaves like gpmc.Client for the calls the bridge makes."""
 
-    def __init__(self, existing=(), failing=(), auth_error=None, album_error=None):
+    def __init__(self, existing=(), failing=(), auth_error=None, album_error=None, on_album=None):
         self.api = FakeApi(auth_error)
         self.existing = set(existing)
         self.failing = set(failing)
         self.album_error = album_error
-        self.upload_kwargs = None
+        self.on_album = on_album
+        self.upload_calls = []
         self.album_calls = []
 
+    @property
+    def upload_kwargs(self):
+        return self.upload_calls[-1] if self.upload_calls else None
+
     def upload(self, target, progress_callback=None, **kwargs):
-        self.upload_kwargs = dict(kwargs, target=target)
+        self.upload_calls.append(dict(kwargs, target=target))
         results = {}
         for path, options in target.items():
             path = path.absolute().as_posix()
@@ -70,6 +75,8 @@ class FakeClient:
 
     def add_to_album(self, media_keys, album_name, show_progress):
         self.album_calls.append(("name", album_name, list(media_keys)))
+        if self.on_album:
+            self.on_album()
         if self.album_error:
             raise self.album_error
         return ["album-new"]
@@ -81,7 +88,7 @@ class FakeClient:
         return album_id
 
 
-def run(request, client=None, factory_error=None):
+def run(request, client=None, factory_error=None, stop=None, on_event=None):
     events = []
     calls = []
 
@@ -91,7 +98,12 @@ def run(request, client=None, factory_error=None):
             raise factory_error
         return client
 
-    code = gpmc_bridge.run(request, events.append, client_factory=factory)
+    def emit(event):
+        events.append(event)
+        if on_event:
+            on_event(event)
+
+    code = gpmc_bridge.run(request, emit, client_factory=factory, stop=stop)
     return code, events, calls
 
 
@@ -130,7 +142,49 @@ class UploadTests(unittest.TestCase):
         for quality, saver, quota in [("original", False, False), ("saver", True, False), ("quota", False, True)]:
             client = FakeClient()
             run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg"), "quality": quality, "threads": 3}, client)
-            self.assertEqual((client.upload_kwargs["saver"], client.upload_kwargs["use_quota"], client.upload_kwargs["threads"]), (saver, quota, 3), quality)
+            self.assertEqual((client.upload_kwargs["saver"], client.upload_kwargs["use_quota"]), (saver, quota), quality)
+
+    def test_each_file_is_its_own_gpmc_call_so_results_stream(self):
+        client = FakeClient()
+        _, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg", "b.jpg", "c.jpg"), "threads": 2, "album": {"name": "Trip"}}, client)
+
+        self.assertEqual(len(client.upload_calls), 3)
+        self.assertTrue(all(len(call["target"]) == 1 and call["threads"] == 1 for call in client.upload_calls))
+        kinds = [e["type"] for e in events if e["type"] != "progress"]
+        self.assertEqual(kinds, ["item", "item", "item", "album", "done"])
+
+    def test_stop_between_files_keeps_what_was_confirmed(self):
+        stop = gpmc_bridge.StopSignal()
+
+        def stop_after_first_item(event):
+            if event["type"] == "item":
+                stop.request()  # what the SIGTERM handler does, in the main thread
+
+        client = FakeClient()
+        code, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg", "b.jpg"), "album": {"name": "Trip"}},
+                              client, stop=stop, on_event=stop_after_first_item)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_STOPPED)
+        self.assertEqual(len(of_type(events, "item")), 1)
+        self.assertEqual(events[-1], {"type": "stopped", "v": 1})
+        self.assertEqual(client.album_calls, [])
+
+    def test_stop_during_album_creation_waits_for_its_id(self):
+        stop = gpmc_bridge.StopSignal()
+        client = FakeClient(on_album=stop.request)
+        code, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg"), "album": {"name": "Trip"}}, client, stop=stop)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_STOPPED)
+        self.assertEqual([e["type"] for e in events if e["type"] != "progress"], ["item", "album", "stopped"])
+        self.assertEqual(of_type(events, "album")[0]["album_id"], "album-new")
+
+    def test_stop_during_auth_is_not_an_auth_failure(self):
+        stop = gpmc_bridge.StopSignal()
+        client = FakeClient()
+        client.api = type("Api", (), {"bearer_token": property(lambda self: stop.request())})()
+        code, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg")}, client, stop=stop)
+        self.assertEqual(code, gpmc_bridge.EXIT_STOPPED)
+        self.assertEqual(events, [{"type": "stopped", "v": 1}])
 
     def test_failed_file_carries_the_reason_gpmc_logged(self):
         client = FakeClient(failing={"big.mov"})

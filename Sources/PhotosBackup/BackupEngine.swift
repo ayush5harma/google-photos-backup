@@ -85,6 +85,9 @@ final class BackupEngine {
             self.task = nil
             self.lastRun = Date()
             if self.phase != .paused { self.phase = .idle }
+            // Photos picked while the last pass was finishing were never
+            // planned; failed picks were dropped by run(), so this ends.
+            if self.phase == .idle, !self.picked.isEmpty, self.lastError == nil { self.start() }
         }
     }
 
@@ -103,6 +106,9 @@ final class BackupEngine {
         start()
     }
 
+    /// The run keeps reading the bridge until it exits, so every item Google
+    /// confirmed before the stop is still recorded; cancelling the task would
+    /// end that read early.
     func stop() {
         picked = []
         guard task != nil else {
@@ -111,7 +117,6 @@ final class BackupEngine {
         }
         phase = .stopping
         bridge.terminate()
-        task?.cancel()
     }
 
     func clearFinished() {
@@ -121,7 +126,7 @@ final class BackupEngine {
     // MARK: - The run
 
     private var shouldHalt: Bool {
-        Task.isCancelled || phase == .stopping || phase == .pausing
+        phase == .stopping || phase == .pausing
     }
 
     private func run() async {
@@ -138,6 +143,7 @@ final class BackupEngine {
             lastError = "Add your gpmc auth_data in Settings to start backing up."
             return
         }
+        defer { picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) } }
 
         // Passes repeat because one pass can make work for the next: an asset
         // uploaded for All Photos may also belong to a mirrored album.
@@ -170,11 +176,16 @@ final class BackupEngine {
     private enum Outcome { case progressed, nothing, halt }
 
     private func execute(_ step: PlannedStep, auth: String, runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
+        // An album call that failed may still have created the album on
+        // Google's side (a lost response), so the rest of this run leaves the
+        // album alone rather than create it again; the next run retries.
         switch step {
         case let .upload(albumID, albumTitle, assetIDs):
-            await upload(assetIDs, albumID: albumID, albumTitle: albumTitle, auth: auth, runtime: runtime, settings: settings)
+            let title = failedAlbums.contains(albumID) ? nil : albumTitle
+            return await upload(assetIDs, albumID: albumID, albumTitle: title, auth: auth, runtime: runtime, settings: settings)
         case let .addToAlbum(albumID, albumTitle, assetIDs, mediaKeys):
-            await addToAlbum(assetIDs, mediaKeys: mediaKeys, albumID: albumID, albumTitle: albumTitle, auth: auth, runtime: runtime)
+            if failedAlbums.contains(albumID) { return .nothing }
+            return await addToAlbum(assetIDs, mediaKeys: mediaKeys, albumID: albumID, albumTitle: albumTitle, auth: auth, runtime: runtime)
         }
     }
 
@@ -184,7 +195,7 @@ final class BackupEngine {
         defer { try? FileManager.default.removeItem(at: batch) }
 
         var items: [BridgeItem] = []
-        await AssetExporter().export(assetIDs, into: batch, started: { id, filename in
+        await AssetExporter().export(assetIDs, into: batch, shouldStop: { self.phase == .stopping }, started: { id, filename in
             self.show(id, filename: filename, status: .exporting)
         }, finished: { id, result in
             switch result {
@@ -195,7 +206,10 @@ final class BackupEngine {
                 self.fail(id, error.localizedDescription)
             }
         })
-        if Task.isCancelled { markStopped(items.map(\.id)); return .halt }
+        if phase == .stopping {
+            markStopped(items.map(\.id))
+            return .halt
+        }
         guard !items.isEmpty else { return .nothing }
 
         // Resolved now, not at planning: an earlier batch of this run may
@@ -244,7 +258,7 @@ final class BackupEngine {
             markStopped(unanswered)
             return .halt
         }
-        if phase == .stopping || Task.isCancelled {
+        if phase == .stopping {
             markStopped(unanswered)
             return .halt
         }

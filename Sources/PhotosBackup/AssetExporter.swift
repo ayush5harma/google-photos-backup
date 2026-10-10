@@ -18,9 +18,12 @@ struct ExportError: LocalizedError {
 @MainActor
 struct AssetExporter {
     /// - Parameters:
+    ///   - shouldStop: checked before each asset; an export in progress (an
+    ///     iCloud download) cannot be interrupted.
     ///   - started: called with each asset's upload filename before its export.
     ///   - finished: called with each asset's result as soon as it has one.
     func export(_ assetIDs: [String], into directory: URL,
+                shouldStop: () -> Bool,
                 started: (String, String) -> Void,
                 finished: (String, Result<ExportedAsset, Error>) -> Void) async {
         var assets: [String: PHAsset] = [:]
@@ -28,7 +31,7 @@ struct AssetExporter {
             .enumerateObjects { asset, _, _ in assets[asset.localIdentifier] = asset }
 
         for (index, id) in assetIDs.enumerated() {
-            if Task.isCancelled { return }
+            if shouldStop() { return }
             guard let asset = assets[id] else {
                 finished(id, .failure(ExportError(errorDescription: "No longer in the Photos library")))
                 continue

@@ -19,7 +19,7 @@ struct SettingsView: View {
                 HStack {
                     Link("Where do I get auth_data?", destination: Self.authHelp)
                     Spacer()
-                    if model.authData != nil {
+                    if model.hasAuthData {
                         Button("Remove", role: .destructive) { model.removeAuthData() }
                         Button("Test") { Task { await model.checkAccount() } }
                     }
@@ -61,7 +61,7 @@ struct SettingsView: View {
             } header: {
                 Text("History")
             } footer: {
-                Text("Resetting is safe: before sending anything, gpmc asks Google whether it already has the file's exact bytes, so nothing is uploaded twice. It only makes the next run slower.")
+                Text("Resetting is safe: before sending anything, gpmc asks Google whether it already has the file's exact bytes, so nothing is uploaded twice, and the links to your Google albums are kept. It only makes the next run slower.")
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -79,7 +79,7 @@ struct SettingsView: View {
         .confirmationDialog("Reset the backup history?", isPresented: $confirmReset) {
             Button("Reset", role: .destructive) { model.resetHistory() }
         } message: {
-            Text("The next run checks every selected item with Google again.")
+            Text("The next run checks every selected item with Google again. Your Google albums stay linked.")
         }
         .confirmationDialog("Forget the Google albums made so far?", isPresented: $confirmForget) {
             Button("Forget", role: .destructive) { model.forgetAlbumLinks() }

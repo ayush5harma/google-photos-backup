@@ -31,6 +31,9 @@ struct BridgeRuntime {
 @MainActor
 final class BridgeProcess {
     private var current: Process?
+    /// Every bridge alive in the app, so quitting can end them all.
+    private static var live: [ObjectIdentifier: Process] = [:]
+    private static let logLimit: UInt64 = 5_000_000
 
     struct LaunchError: LocalizedError {
         let errorDescription: String?
@@ -41,10 +44,17 @@ final class BridgeProcess {
              onEvent: (BridgeEvent) -> Void) async throws -> Int32 {
         let files = FileManager.default
         try files.createDirectory(at: workDirectory, withIntermediateDirectories: true)
-        if !files.fileExists(atPath: log.path) { files.createFile(atPath: log.path, contents: nil) }
-        let logHandle = try FileHandle(forWritingTo: log)
-        defer { try? logHandle.close() }
-        try logHandle.seekToEnd()
+        if let size = try? files.attributesOfItem(atPath: log.path)[.size] as? UInt64, size > Self.logLimit {
+            let previous = log.appendingPathExtension("1")
+            try? files.removeItem(at: previous)
+            try? files.moveItem(at: log, to: previous)
+        }
+        // O_APPEND: two bridges can run at once (a backup and an account
+        // check), and each child inherits this descriptor; without it they
+        // would write over each other's lines.
+        let fd = open(log.path, O_WRONLY | O_APPEND | O_CREAT, 0o600)
+        guard fd >= 0 else { throw LaunchError(errorDescription: "Could not open the log at \(log.path)") }
+        let logHandle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         logHandle.write(Data("--- \(Date().ISO8601Format()) \(request.command)\n".utf8))
 
         let process = Process()
@@ -85,7 +95,11 @@ final class BridgeProcess {
             throw LaunchError(errorDescription: "Could not start the uploader: \(error.localizedDescription)")
         }
         current = process
-        defer { current = nil }
+        Self.live[ObjectIdentifier(process)] = process
+        defer {
+            current = nil
+            Self.live[ObjectIdentifier(process)] = nil
+        }
 
         // SIGPIPE is ignored app-wide, so a bridge that died before reading
         // its request makes this throw rather than kill the app.
@@ -104,6 +118,16 @@ final class BridgeProcess {
     /// next run finds anything Google did commit through gpmc's hash check.
     func terminate() {
         if let current, current.isRunning { current.terminate() }
+    }
+
+    /// The last resort at quit: SIGTERM every bridge and give each a moment
+    /// to report what it finished, which nobody will read any more.
+    static func terminateAll() {
+        for process in live.values where process.isRunning {
+            process.terminate()
+            let deadline = Date().addingTimeInterval(2)
+            while process.isRunning, Date() < deadline { usleep(20_000) }
+        }
     }
 }
 

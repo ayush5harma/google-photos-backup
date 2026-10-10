@@ -83,6 +83,34 @@ private let live = AlbumSnapshot(id: "live", title: "Live Photos", kind: .smart,
         #expect(state.mirrors["trip"]?.addedAssetIDs == ["a", "b"])
     }
 
+    @Test func clearingHistoryKeepsSelectionAndAlbumLinks() {
+        var state = BackupState()
+        state.selectedAlbumIDs = ["trip"]
+        state.recordUpload(assetID: "a", mediaKey: "k", existing: false)
+        state.recordAlbum("trip", googleAlbumID: "g1", added: ["a"])
+
+        let cleared = state.clearingHistory()
+        #expect(cleared.uploaded.isEmpty)
+        #expect(cleared.selectedAlbumIDs == ["trip"])
+        #expect(cleared.albumTarget(for: "trip", title: "Trip") == AlbumTarget(id: "g1", name: "Trip"))
+        #expect(cleared.mirrors == state.mirrors)
+    }
+
+    @Test func clearedHistoryRechecksIntoTheSameGoogleAlbum() {
+        var state = BackupState()
+        state.selectedAlbumIDs = ["trip"]
+        state.recordUpload(assetID: "b", mediaKey: "k", existing: false)
+        state.recordAlbum("trip", googleAlbumID: "g1", added: ["b"])
+        var cleared = state.clearingHistory()
+        let trip = AlbumSnapshot(id: "trip", title: "Trip", kind: .user, assetIDs: ["b"])
+
+        #expect(BackupPlanner.plan(albums: [trip], state: cleared, mirrorAlbums: true, batchSize: 10)
+            == [.upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["b"])])
+        #expect(cleared.albumTarget(for: "trip", title: "Trip").id == "g1")
+        cleared.recordUpload(assetID: "b", mediaKey: "k", existing: true)
+        #expect(BackupPlanner.plan(albums: [trip], state: cleared, mirrorAlbums: true, batchSize: 10).isEmpty)
+    }
+
     @Test func storeRoundTripsAndStartsEmpty() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("state.json")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

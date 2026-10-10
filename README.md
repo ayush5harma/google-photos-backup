@@ -47,10 +47,11 @@ Apple Photos ──PhotoKit──▶ Photos Backup.app ──JSON over a pipe─
    otherwise the original. Originals still in iCloud ("Optimize Mac Storage")
    are downloaded first. Each file's modification date is set to its capture
    date, because gpmc sends that as the timestamp.
-3. **Upload.** `Bridge/gpmc_bridge.py` hands the batch to gpmc. gpmc hashes each
-   file and asks Google whether it already has those bytes ("Already backed
-   up"), uploads the rest, and returns a media key for every item. That hash
-   check is also why resetting the history never uploads anything twice.
+3. **Upload.** `Bridge/gpmc_bridge.py` hands the batch to gpmc one file at a
+   time. gpmc hashes each file and asks Google whether it already has those
+   bytes ("Already backed up"), uploads the rest, and returns a media key for
+   every item. The app records each key as soon as Google confirms it. That
+   hash check is also why resetting the history never uploads anything twice.
 4. **Albums.** If "Recreate my albums" is on, each of your own albums gets a
    Google Photos album of the same name. It is created by its first batch, and
    later batches and later runs append to it. Smart albums and All Photos only
@@ -61,8 +62,11 @@ Apple Photos ──PhotoKit──▶ Photos Backup.app ──JSON over a pipe─
 
 With **Automatic** on, a run starts when Photos reports a change (after it
 settles for 20 seconds), every 30 minutes, and at launch. **Pause** finishes the
-current batch first. **Stop** ends the uploader at once; anything Google had
-already committed is found by the hash check on the next run.
+current batch first. **Stop** abandons the files still uploading and keeps
+every one already confirmed. Anything Google committed in the last instant is
+found by the hash check on the next run. An album that is being created is
+always allowed to finish first, so a stop cannot leave a duplicate album
+behind. Quitting the app mid-batch stops the same way before it exits.
 
 ## Get your auth_data
 
@@ -112,7 +116,8 @@ albums (All Photos starts selected).
 
 **Forget Album Links** makes the next run create fresh Google albums. Use it
 after deleting the mirrored albums in Google Photos. **Reset Backup History**
-forgets which items are backed up; the next run re-checks them all by hash.
+forgets which items are backed up but keeps the album links; the next run
+re-checks every item by hash.
 
 ## Not done yet
 
@@ -123,6 +128,11 @@ forgets which items are backed up; the next run re-checks them all by hash.
   "Name 1", "Name 2" and so on, but the app only remembers the first.
 - Not notarized and Apple silicon only. An Intel build should work but has
   not been tried.
+- An item is uploaded once. Editing it in Photos afterwards, or deleting it
+  from Google Photos, does not send it again; Reset Backup History does.
+- Each batch is a new uploader process that signs in again, so the default
+  batch size means one sign-in per 20 items. For very large libraries the
+  next step is a long-lived uploader that reuses its token.
 - No end-to-end upload test in CI: one needs a real Google account and real
   auth_data.
 
@@ -144,10 +154,13 @@ python3 -m unittest discover -s Bridge/tests        # the bridge against a fake 
   (Settings > Show Log in Finder).
 
 A debug build can photograph its own window, one PNG per section, with no
-Screen Recording permission. That is how the screenshots above were made:
+Screen Recording permission. That is how the screenshots above were made. The
+script runs it as a separate app (bundle id `...PhotosBackup.snapshots`), so
+it never touches the real app's keychain item, history or settings, and it
+never starts a backup:
 
 ```sh
-swift build && PHOTOS_BACKUP_SNAPSHOTS=/tmp/shots <debug binary inside a copy of the bundle>
+scripts/build-app.sh && scripts/snapshots.sh /tmp/shots
 ```
 
 ## Credits

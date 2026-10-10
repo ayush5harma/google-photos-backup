@@ -69,6 +69,9 @@ final class AppModel {
     var stateError: String?
     var settings: BackupSettings { didSet { settings.save() } }
     private(set) var account: AccountStatus = .missing
+    /// Whether the keychain holds auth_data, cached so that drawing a view
+    /// never queries the keychain (which can prompt after a re-sign).
+    private(set) var hasAuthData = false
     private(set) var runtimeDescription = "Checking..."
     @ObservationIgnored lazy var engine = BackupEngine(model: self)
 
@@ -89,7 +92,8 @@ final class AppModel {
         }
         // A crash mid-batch leaves exported copies behind.
         try? FileManager.default.removeItem(at: paths.staging)
-        if Keychain.load() != nil { account = .connected(email: nil) }
+        hasAuthData = Keychain.load() != nil
+        if hasAuthData { account = .connected(email: nil) }
     }
 
     var authData: String? { Keychain.load() }
@@ -148,7 +152,10 @@ final class AppModel {
     }
 
     func automaticRun() {
-        guard settings.automatic, library.isAuthorized, authData != nil, engine.phase == .idle else { return }
+        guard settings.automatic, library.isAuthorized, hasAuthData, engine.phase == .idle else { return }
+        #if DEBUG
+        if Snapshots.isRequested { return }
+        #endif
         engine.start()
     }
 
@@ -179,9 +186,7 @@ final class AppModel {
     }
 
     func resetHistory() {
-        let selected = state.selectedAlbumIDs
-        state = BackupState()
-        state.selectedAlbumIDs = selected
+        state = state.clearingHistory()
         saveState()
     }
 
@@ -192,6 +197,7 @@ final class AppModel {
         guard !trimmed.isEmpty else { return }
         do {
             try Keychain.save(trimmed)
+            hasAuthData = true
         } catch {
             account = .failed("Could not store it in the keychain: \(error.localizedDescription)")
             return
@@ -203,6 +209,7 @@ final class AppModel {
     func removeAuthData() {
         engine.stop()
         Keychain.delete()
+        hasAuthData = false
         account = .missing
     }
 

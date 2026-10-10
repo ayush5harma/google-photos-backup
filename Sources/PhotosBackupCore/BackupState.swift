@@ -47,6 +47,17 @@ public struct BackupState: Codable, Equatable, Sendable {
         mirrors[albumID] = mirror
     }
 
+    /// The same selection and album links with no record of what was
+    /// uploaded. The links survive: dropping them would make the next run
+    /// create a second copy of every mirrored album. So does each album's
+    /// membership, which spares re-adding items Google already filed there.
+    public func clearingHistory() -> BackupState {
+        var fresh = BackupState()
+        fresh.selectedAlbumIDs = selectedAlbumIDs
+        fresh.mirrors = mirrors
+        return fresh
+    }
+
     /// Where the next batch for this album should go: the album the first
     /// batch created, or a new one with the Photos album's name.
     public func albumTarget(for albumID: String, title: String) -> AlbumTarget {

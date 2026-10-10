@@ -28,6 +28,7 @@ struct PhotosBackupApp: App {
             RootView()
                 .environment(model)
                 .task {
+                    delegate.model = model
                     await model.launch()
                     #if DEBUG
                     await Snapshots.runIfRequested(model)
@@ -45,6 +46,8 @@ struct PhotosBackupApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    weak var model: AppModel?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         // A bridge that dies before reading its request must not take the
         // app down with SIGPIPE on the write.
@@ -53,6 +56,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Keep backing up from the menu bar once the window is closed.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
+    /// Quitting mid-batch stops the backup the way Stop does and waits for
+    /// it, so what Google confirmed is recorded and no uploader outlives the
+    /// app (an orphan would race the next launch on the same photos).
+    @MainActor
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let engine = model?.engine, engine.isActive else { return .terminateNow }
+        engine.stop()
+        Task { @MainActor in
+            let deadline = Date().addingTimeInterval(15)
+            while engine.isActive, Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
+    @MainActor
+    func applicationWillTerminate(_ notification: Notification) {
+        BridgeProcess.terminateAll()
+    }
 }
 
 struct RootView: View {
@@ -87,7 +110,7 @@ struct MenuContent: View {
         Text(engine.isActive ? "Backing up, \(engine.remaining) remaining" : "\(summary.backedUp) of \(summary.total) backed up")
         Divider()
         Button("Back Up Now") { engine.start() }
-            .disabled(engine.isActive || model.authData == nil)
+            .disabled(engine.isActive || !model.hasAuthData)
         if engine.phase == .paused || engine.phase == .pausing {
             Button("Resume") { engine.resume() }
         } else if engine.phase == .running {

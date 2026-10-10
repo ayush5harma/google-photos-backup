@@ -24,8 +24,13 @@ Requests (every field not marked optional is required):
   {"command": "add-to-album", "auth_data": "...", "media_keys": [...], "album": {...}}
 
 Events all carry "type" and "v" (PROTOCOL_VERSION): version, auth, progress,
-item, item_failed, album, album_failed, done, fatal. A fatal event is always
-the last line and the exit status names its kind (EXIT_*).
+item, item_failed, album, album_failed, done, stopped, fatal. Each item is
+reported as soon as Google confirms it. A fatal or stopped event is always the
+last line and the exit status names its kind (EXIT_*).
+
+SIGTERM stops the run: files still uploading are abandoned (the next run finds
+any Google did commit through gpmc's hash check), except that an album call in
+progress is allowed to finish and report first.
 """
 
 from __future__ import annotations
@@ -36,9 +41,11 @@ import logging
 import os
 import platform
 import re
+import signal
 import sys
 import threading
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, TextIO
 
@@ -49,6 +56,7 @@ EXIT_INTERNAL = 1
 EXIT_AUTH = 2
 EXIT_NETWORK = 3
 EXIT_REQUEST = 4
+EXIT_STOPPED = 5
 
 DEFAULT_TIMEOUT = 60
 MAX_THREADS = 8
@@ -69,6 +77,38 @@ _FAILURE_LINE = re.compile(r"^Error uploading file (?P<path>.+?): (?P<reason>.*)
 
 class RequestError(ValueError):
     """The request itself is malformed; retrying it unchanged cannot work."""
+
+
+class StopRequested(BaseException):
+    """Raised in the main thread when the app asks the bridge to stop.
+
+    A BaseException, like KeyboardInterrupt, so that the `except Exception`
+    around authentication and gpmc calls cannot mistake it for a failure.
+    """
+
+
+class StopSignal:
+    """What SIGTERM does: stop now, unless inside a critical section, in
+    which case stop as soon as it ends."""
+
+    def __init__(self) -> None:
+        self.requested = False
+        self._critical = 0
+
+    def request(self) -> None:
+        self.requested = True
+        if not self._critical:
+            raise StopRequested
+
+    @contextlib.contextmanager
+    def critical(self) -> Iterator[None]:
+        self._critical += 1
+        try:
+            yield
+        finally:
+            self._critical -= 1
+        if self.requested and not self._critical:
+            raise StopRequested
 
 
 class FailureLog(logging.Handler):
@@ -172,7 +212,7 @@ def _add_to_album(client: Any, media_keys: list[str], album: Event) -> str:
     return client.add_to_album(media_keys, album["name"], False)[0]
 
 
-def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog) -> int:
+def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop: StopSignal) -> int:
     items = _items(request)
     quality = request.get("quality", "original")
     if quality not in QUALITIES:
@@ -185,54 +225,76 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog) -> in
 
     by_path = {Path(item["path"]).absolute().as_posix(): item["id"] for item in items}
     skipped: set[str] = set()
-    errored: set[str] = set()
     lock = threading.Lock()
 
     def on_progress(event: Event) -> None:
         path = event.get("path", "")
         phase = event.get("phase")
-        with lock:
-            if phase == "skipped":
+        if phase == "skipped":
+            with lock:
                 skipped.add(path)
-            elif phase == "error":
-                errored.add(path)
         emit(_event("progress", id=by_path.get(path), phase=phase, bytes_completed=event.get("bytes_completed", 0), bytes_total=event.get("bytes_total", 0)))
 
-    target = {Path(item["path"]): {"hash": None, "filename": item["filename"]} for item in items}
-    results: dict[str, str] = client.upload(
-        target=target,
-        use_quota=use_quota,
-        saver=saver,
-        threads=threads,
-        force_upload=bool(request.get("force", False)),
-        progress_callback=on_progress,
-    )
+    def upload_one(item: Event) -> dict[str, str]:
+        # One gpmc call per file, so each media key is reported the moment
+        # Google confirms it: a stop or a crash then loses at most the files
+        # in flight, never a whole batch's results.
+        return client.upload(
+            target={Path(item["path"]): {"hash": None, "filename": item["filename"]}},
+            use_quota=use_quota,
+            saver=saver,
+            threads=1,
+            force_upload=bool(request.get("force", False)),
+            progress_callback=on_progress,
+        )
 
     counts = {"uploaded": 0, "existing": 0, "failed": 0}
-    for path, asset_id in by_path.items():
-        media_key = results.get(path)
-        if media_key:
-            status = "existing" if path in skipped else "uploaded"
-            counts[status] += 1
-            emit(_event("item", id=asset_id, media_key=media_key, status=status))
-        else:
-            counts["failed"] += 1
-            emit(_event("item_failed", id=asset_id, message=failures.reasons.get(path, "gpmc returned no media key")))
+    confirmed: list[str] = []
+    executor = ThreadPoolExecutor(max_workers=threads)
+    try:
+        futures = {executor.submit(upload_one, item): item for item in items}
+        for future in as_completed(futures):
+            item = futures[future]
+            path = Path(item["path"]).absolute().as_posix()
+            try:
+                media_key = future.result().get(path)
+            except Exception as error:
+                # gpmc catches per-file errors itself; this only guards
+                # against one escaping and taking the other files with it.
+                logging.getLogger(__name__).exception("upload of %s raised", path)
+                failures.reasons.setdefault(path, str(error))
+                media_key = None
+            if media_key:
+                status = "existing" if path in skipped else "uploaded"
+                counts[status] += 1
+                confirmed.append(media_key)
+                emit(_event("item", id=item["id"], media_key=media_key, status=status))
+            else:
+                counts["failed"] += 1
+                emit(_event("item_failed", id=item["id"], message=failures.reasons.get(path, "gpmc returned no media key")))
+    except StopRequested:
+        executor.shutdown(wait=False, cancel_futures=True)
+        raise
+    executor.shutdown()
 
-    if album and results:
-        try:
-            album_id = _add_to_album(client, list(results.values()), album)
-            emit(_event("album", album_id=album_id, added=len(results)))
-        except Exception as error:
-            logging.getLogger(__name__).exception("adding to album failed")
-            emit(_event("album_failed", message=str(error)))
+    if album and confirmed:
+        # A stop must not land between Google creating the album and the app
+        # hearing its id, or the next run would create a second one.
+        with stop.critical():
+            try:
+                album_id = _add_to_album(client, confirmed, album)
+                emit(_event("album", album_id=album_id, added=len(confirmed)))
+            except Exception as error:
+                logging.getLogger(__name__).exception("adding to album failed")
+                emit(_event("album_failed", message=str(error)))
 
     emit(_event("done", **counts))
     return EXIT_OK
 
 
-def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client_factory) -> int:
+def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client_factory, stop: StopSignal | None = None) -> int:
     """Answer one request through emit(); returns the process exit status."""
+    stop = stop or StopSignal()
     failures = FailureLog()
     logging.getLogger().addHandler(failures)
     try:
@@ -267,10 +329,14 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
             emit(_event("auth", email=_email(request["auth_data"])))
             return EXIT_OK
         if command == "add-to-album":
-            album_id = _add_to_album(client, request["media_keys"], request["album"])
-            emit(_event("album", album_id=album_id, added=len(request["media_keys"])))
+            with stop.critical():
+                album_id = _add_to_album(client, request["media_keys"], request["album"])
+                emit(_event("album", album_id=album_id, added=len(request["media_keys"])))
             return EXIT_OK
-        return _upload(request, client, emit, failures)
+        return _upload(request, client, emit, failures, stop)
+    except StopRequested:
+        emit(_event("stopped"))
+        return EXIT_STOPPED
     except RequestError as error:
         emit(_event("fatal", kind="request", message=str(error)))
         return EXIT_REQUEST
@@ -323,7 +389,15 @@ def main() -> int:
         except ValueError as error:
             emit(_event("fatal", kind="request", message=f"stdin is not JSON: {error}"))
             return EXIT_REQUEST
-        return run(request, emit)
+        stop = StopSignal()
+        signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.request())
+        code = run(request, emit, stop=stop)
+    if code == EXIT_STOPPED:
+        # Abandoned uploads are still running in worker threads, and normal
+        # interpreter exit would wait for every one of them.
+        sys.stderr.flush()
+        os._exit(code)
+    return code
 
 
 if __name__ == "__main__":

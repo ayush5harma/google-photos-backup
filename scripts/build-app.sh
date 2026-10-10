@@ -73,6 +73,10 @@ cp "$ROOT/Bridge/gpmc_bridge.py" "$RESOURCES/bridge/"
 # so compile now; unchecked-hash pycs stay valid whatever the copy did to mtimes.
 "$PY" -I -m compileall -q -j 0 --invalidation-mode unchecked-hash "$RESOURCES/python/lib" "$RESOURCES/bridge" >/dev/null
 echo '{"command":"version"}' | "$PY" -I -B "$RESOURCES/bridge/gpmc_bridge.py" | grep -q '"gpmc":"' \
+  || { echo "the bundled bridge cannot find gpmc" >&2; exit 1; }
+# The version answer reads package metadata only; import the whole client so
+# a dependency with a broken compiled module fails the build, not a backup.
+"$PY" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from gpmc import Client' "$RESOURCES/bridge/site-packages" \
   || { echo "the bundled bridge cannot import gpmc" >&2; exit 1; }
 
 say "Drawing the icon"
