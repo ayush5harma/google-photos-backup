@@ -51,11 +51,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct RootView: View {
-    @State private var section: AppSection = .home
+    // Also settable at launch: `open -a "Photos Backup" --args -section albums`.
+    @AppStorage("section") private var section: AppSection = .home
 
     var body: some View {
         NavigationSplitView {
-            List(AppSection.allCases, selection: $section) { section in
+            List(AppSection.allCases, selection: Binding($section)) { section in
                 Label(section.title, systemImage: section.symbol).tag(section)
             }
             .navigationSplitViewColumnWidth(min: 170, ideal: 190)

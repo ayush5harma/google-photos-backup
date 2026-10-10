@@ -51,7 +51,9 @@ final class BridgeProcess {
         process.executableURL = runtime.python
         // -I: no user site-packages, no PYTHON* variables, no script directory
         // on sys.path; the bridge adds its own vendored site-packages.
-        process.arguments = ["-I", runtime.script.path]
+        // -B: never write __pycache__ into the bundle, which would break its
+        // signature; the build precompiles everything instead.
+        process.arguments = ["-I", "-B", runtime.script.path]
         // gpmc writes failed_skipped_files.log into its working directory.
         process.currentDirectoryURL = workDirectory
         process.environment = ["HOME": NSHomeDirectory(), "LANG": "en_US.UTF-8", "PATH": "/usr/bin:/bin",

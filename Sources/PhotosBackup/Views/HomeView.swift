@@ -228,9 +228,15 @@ struct SetupBanners: View {
                        color: .orange, action: ("Open Settings", openPhotosPrivacy))
             }
         }
-        if model.account == .missing {
+        switch model.account {
+        case .missing:
             Banner(symbol: "key", text: "Add your gpmc auth_data to connect a Google account.", color: .accentColor,
                    action: ("Settings", { section = .settings }))
+        case let .failed(message):
+            Banner(symbol: "person.crop.circle.badge.exclamationmark", text: message, color: .orange,
+                   action: ("Settings", { section = .settings }))
+        case .connected, .checking:
+            EmptyView()
         }
         if let error = model.engine.lastError ?? model.stateError {
             Banner(symbol: "exclamationmark.triangle", text: error, color: .orange,
