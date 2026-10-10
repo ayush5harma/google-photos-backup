@@ -82,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 struct RootView: View {
+    @Environment(AppModel.self) private var model
     // Also settable at launch: `open -a "Photos Backup" --args -section albums`.
     @AppStorage("section") private var section: AppSection = .home
 
@@ -100,6 +101,9 @@ struct RootView: View {
             }
         }
         .frame(minWidth: 720, minHeight: 560)
+        .sheet(isPresented: Binding(get: { model.showingSignIn }, set: { if !$0 { model.cancelSignIn() } })) {
+            GoogleSignInSheet().environment(model)
+        }
     }
 }
 

@@ -51,6 +51,24 @@ enum AccountStatus: Equatable {
     case failed(String)
 }
 
+/// An attempt to connect an account, by signing in or by pasting.
+enum ConnectState: Equatable {
+    case idle
+    case signingIn
+    case connecting
+    case failed(String)
+}
+
+/// What Google said about a credential before the app keeps it.
+private enum Verification {
+    case accepted(email: String?)
+    /// Google answered no; the credential is useless.
+    case refused(String)
+    /// No definite answer (network, a missing runtime); keeping the
+    /// credential costs nothing and a fresh sign-in is single-use.
+    case unconfirmed(String)
+}
+
 /// The one object the views read: library, persisted state, settings, the
 /// account, and the engine that does the backing up.
 @MainActor
@@ -69,6 +87,8 @@ final class AppModel {
     var stateError: String?
     var settings: BackupSettings { didSet { settings.save() } }
     private(set) var account: AccountStatus = .missing
+    private(set) var connectState: ConnectState = .idle
+    var showingSignIn = false
     /// Whether the keychain holds auth_data, cached so that drawing a view
     /// never queries the keychain (which can prompt after a re-sign).
     private(set) var hasAuthData = false
@@ -192,17 +212,81 @@ final class AppModel {
 
     // MARK: - Account and runtime
 
-    func saveAuthData(_ value: String) async {
+    func beginSignIn() {
+        connectState = .signingIn
+        showingSignIn = true
+    }
+
+    func cancelSignIn() {
+        showingSignIn = false
+        if connectState != .connecting { connectState = .idle }
+    }
+
+    /// The Embedded Setup cookie, straight from the sign-in sheet or pasted.
+    func signIn(oauthToken: String) async {
+        guard connectState != .connecting else { return }
+        connectState = .connecting
+        do {
+            let linked = try await GoogleAccountLink.link(oauthToken: oauthToken)
+            await connect(credential: linked.credential)
+        } catch {
+            connectState = .failed(error.localizedDescription)
+        }
+    }
+
+    /// Settings' paste field takes either a cookie or a whole auth_data.
+    func connect(pasted value: String) async {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        if GoogleSignIn.looksLikeAuthData(trimmed) {
+            connectState = .connecting
+            await connect(credential: trimmed)
+        } else {
+            await signIn(oauthToken: trimmed)
+        }
+    }
+
+    /// Checks a credential with Google before it replaces the stored one, so
+    /// a failed sign-in never costs the account that was working.
+    private func connect(credential: String) async {
+        let verification = await verify(credential)
+        let email: String?
+        switch verification {
+        case let .refused(message):
+            connectState = .failed(message)
+            return
+        case let .accepted(address):
+            email = address
+        case .unconfirmed:
+            email = nil
+        }
+        // Another account: let the running backup finish with the old one
+        // before its history is dropped, or its last items would be recorded
+        // against the new account.
+        if let email, let current = state.accountEmail, current.caseInsensitiveCompare(email) != .orderedSame {
+            await engine.stopAndWait()
+        }
         do {
-            try Keychain.save(trimmed)
-            hasAuthData = true
+            try Keychain.save(credential)
         } catch {
-            account = .failed("Could not store it in the keychain: \(error.localizedDescription)")
+            connectState = .failed("Could not store the account in the keychain: \(error.localizedDescription)")
             return
         }
-        await checkAccount()
+        hasAuthData = true
+        switch verification {
+        case let .accepted(address):
+            account = .connected(email: address)
+            if let address {
+                state = state.adopting(account: address)
+                saveState()
+            }
+        case let .unconfirmed(message):
+            account = .failed(message)
+        case .refused:
+            break
+        }
+        connectState = .idle
+        showingSignIn = false
         automaticRun()
     }
 
@@ -215,21 +299,35 @@ final class AppModel {
 
     func checkAccount() async {
         guard let auth = authData else { account = .missing; return }
-        guard let runtime = BridgeRuntime.locate() else { account = .failed("The uploader runtime is missing from the app bundle."); return }
         account = .checking
-        var result = AccountStatus.failed("The uploader did not answer.")
+        switch await verify(auth) {
+        case let .accepted(email):
+            account = .connected(email: email)
+            if let email {
+                state = state.adopting(account: email)
+                saveState()
+            }
+        case let .refused(message), let .unconfirmed(message):
+            account = .failed(message)
+        }
+    }
+
+    private func verify(_ credential: String) async -> Verification {
+        guard let runtime = BridgeRuntime.locate() else { return .unconfirmed("The uploader runtime is missing from the app bundle.") }
+        var result = Verification.unconfirmed("The uploader did not answer.")
         do {
-            _ = try await BridgeProcess().run(.checkAuth(auth), runtime: runtime, workDirectory: paths.logs, log: paths.bridgeLog) { event in
+            _ = try await BridgeProcess().run(.checkAuth(credential), runtime: runtime, workDirectory: paths.logs, log: paths.bridgeLog) { event in
                 switch event {
-                case let .auth(email): result = .connected(email: email)
-                case let .fatal(kind, message): result = .failed(Self.describe(kind, message))
+                case let .auth(email): result = .accepted(email: email)
+                case let .fatal(.auth, message): result = .refused(Self.describe(.auth, message))
+                case let .fatal(kind, message): result = .unconfirmed(Self.describe(kind, message))
                 default: break
                 }
             }
         } catch {
-            result = .failed(error.localizedDescription)
+            result = .unconfirmed(error.localizedDescription)
         }
-        account = result
+        return result
     }
 
     private func checkRuntime() async {
@@ -248,7 +346,7 @@ final class AppModel {
 
     static func describe(_ kind: FatalKind, _ message: String) -> String {
         switch kind {
-        case .auth: "Google refused the auth_data (\(message)). Paste a fresh one in Settings."
+        case .auth: "Google refused the account (\(message)). Sign in again in Settings."
         case .network: "Google could not be reached (\(message)). The next run retries."
         case .request: "The app sent the uploader a bad request: \(message)"
         case .internal, .unknown: "The uploader failed: \(message)"

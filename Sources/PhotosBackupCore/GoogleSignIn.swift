@@ -32,7 +32,7 @@ public enum GoogleSignIn {
     public struct Failure: LocalizedError, Equatable {
         public let errorDescription: String?
 
-        init(_ message: String) {
+        public init(_ message: String) {
             errorDescription = message
         }
     }

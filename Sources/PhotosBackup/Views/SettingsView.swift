@@ -3,38 +3,61 @@ import SwiftUI
 
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
-    @State private var authDraft = ""
+    @State private var pasteDraft = ""
+    @State private var showOtherWays = false
     @State private var confirmReset = false
     @State private var confirmForget = false
 
     private static let authHelp = URL(string: "https://github.com/xob0t/gpmc#auth_data-where-do-i-get-mine")!
     private static let gpmc = URL(string: "https://github.com/xob0t/gpmc")!
+    private static let gotohp = URL(string: "https://github.com/xob0t/gotohp")!
 
     var body: some View {
         @Bindable var model = model
         Form {
             Section {
                 LabeledContent("Status") { accountStatus }
-                SecureField("auth_data", text: $authDraft, prompt: Text("androidId=...&Email=...&Token=..."))
                 HStack {
-                    Link("Where do I get auth_data?", destination: Self.authHelp)
+                    Button {
+                        model.beginSignIn()
+                    } label: {
+                        Label(model.hasAuthData ? "Sign In Again..." : "Sign in with Google", systemImage: "person.crop.circle.badge.plus")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(model.connectState == .connecting)
                     Spacer()
                     if model.hasAuthData {
                         Button("Remove", role: .destructive) { model.removeAuthData() }
                         Button("Test") { Task { await model.checkAccount() } }
                     }
-                    Button("Save") {
-                        let value = authDraft
-                        authDraft = ""
-                        Task { await model.saveAuthData(value) }
+                }
+                connectStatus
+                DisclosureGroup("Other ways to connect", isExpanded: $showOtherWays) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("If Google's page will not work inside the app: open it in Safari, sign in and choose I agree, then copy the value of the oauth_token cookie (Develop > Show Web Inspector > Storage > Cookies) and paste it here. It works once, within a few minutes. A whole auth_data string from gpmc or gotohp works here too.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        SecureField("oauth_token or auth_data", text: $pasteDraft, prompt: Text("oauth2_4/... or androidId=...&Token=..."))
+                        HStack {
+                            Button("Open Sign-In Page in Safari") { NSWorkspace.shared.open(GoogleSignIn.embeddedSetupURL) }
+                            Link("About auth_data", destination: Self.authHelp)
+                            Spacer()
+                            Button("Connect") {
+                                let value = pasteDraft
+                                pasteDraft = ""
+                                Task { await model.connect(pasted: value) }
+                            }
+                            .disabled(pasteDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.connectState == .connecting)
+                        }
                     }
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(authDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .padding(.top, 6)
                 }
             } header: {
                 Text("Google Account")
             } footer: {
-                Text("The auth_data string comes from Google Photos for Android (the gpmc README shows two ways to get it). It holds a long-lived Google token, so it is kept in your login keychain and handed to the uploader over a pipe, never on a command line.")
+                Text("Signing in happens on Google's own page. Google hands back a token for a new Android device ID, the kind Google Photos for Android signs in with and gpmc uploads with. The token stays in your login keychain and reaches the uploader over a pipe, never a command line; the sign-in page's session is discarded. The sign-in flow follows gotohp by xob0t.")
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -85,6 +108,23 @@ struct SettingsView: View {
             Button("Forget", role: .destructive) { model.forgetAlbumLinks() }
         } message: {
             Text("The next run creates new Google Photos albums for your selected albums. Use this after deleting those albums in Google Photos.")
+        }
+    }
+
+    @ViewBuilder
+    private var connectStatus: some View {
+        switch model.connectState {
+        case .connecting:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Connecting to Google Photos...").foregroundStyle(.secondary)
+            }
+        case let .failed(message):
+            Label(message, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+        case .idle, .signingIn:
+            EmptyView()
         }
     }
 

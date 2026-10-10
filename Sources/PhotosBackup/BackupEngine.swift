@@ -120,6 +120,14 @@ final class BackupEngine {
         bridge.terminate()
     }
 
+    /// Stop, then wait (bounded) until the run has recorded what it got.
+    func stopAndWait(timeout: Duration = .seconds(15)) async {
+        guard isActive else { return }
+        stop()
+        let deadline = ContinuousClock.now + timeout
+        while isActive, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(100)) }
+    }
+
     func clearFinished() {
         activity.removeAll { $0.status.isFinished }
     }
@@ -143,7 +151,7 @@ final class BackupEngine {
             return true
         }
         guard let auth = model.authData else {
-            lastError = "Add your gpmc auth_data in Settings to start backing up."
+            lastError = "Sign in with Google in Settings to start backing up."
             return true
         }
         defer { picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) } }

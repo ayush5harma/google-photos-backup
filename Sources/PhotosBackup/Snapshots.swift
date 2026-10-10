@@ -1,5 +1,7 @@
 #if DEBUG
 import AppKit
+import PhotosBackupCore
+import WebKit
 
 /// Debug builds only, run by scripts/snapshots.sh: with
 /// PHOTOS_BACKUP_SNAPSHOTS=<dir> the app renders its own window, once per
@@ -17,6 +19,8 @@ import AppKit
 /// runs never start a backup.
 enum Snapshots {
     static let bundleSuffix = ".snapshots"
+    /// The sign-in sheet's web view, for the last snapshot.
+    @MainActor static weak var signInWebView: WKWebView?
 
     static var isRequested: Bool {
         ProcessInfo.processInfo.environment["PHOTOS_BACKUP_SNAPSHOTS"] != nil
@@ -34,7 +38,7 @@ enum Snapshots {
         let output = URL(fileURLWithPath: directory, isDirectory: true)
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
         let auth = env["PHOTOS_BACKUP_SNAPSHOT_AUTH"].flatMap { $0.isEmpty ? nil : $0 }
-        if let auth { await model.saveAuthData(auth) }
+        if let auth { await model.connect(pasted: auth) }
 
         try? await Task.sleep(for: .seconds(2))
         for section in AppSection.allCases {
@@ -51,8 +55,67 @@ enum Snapshots {
             view.cacheDisplay(in: view.bounds, to: bitmap)
             try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("\(section.rawValue).png"))
         }
+        await snapshotSignIn(model, into: output)
         if auth != nil { model.removeAuthData() }
         NSApp.terminate(nil)
+    }
+
+    /// Opens the sign-in sheet and records what Google served it: the page
+    /// as the web view renders it (window caching leaves web content blank)
+    /// and a line of what is on it, so a refusal ("This browser or app may
+    /// not be secure") would show up in signin.txt.
+    @MainActor
+    private static func snapshotSignIn(_ model: AppModel, into output: URL) async {
+        model.beginSignIn()
+        for _ in 0..<40 {
+            try? await Task.sleep(for: .milliseconds(500))
+            if let webView = signInWebView, !webView.isLoading, webView.url != nil { break }
+        }
+        try? await Task.sleep(for: .seconds(3))
+        guard let webView = signInWebView else {
+            try? "no sign-in web view\n".write(to: output.appendingPathComponent("signin.txt"), atomically: true, encoding: .utf8)
+            model.cancelSignIn()
+            return
+        }
+        let probe = "[location.host + location.pathname, document.title, document.querySelector('input[type=email]') ? 'email field' : 'NO email field', document.body.innerText.replace(/\\s+/g, ' ').slice(0, 400)].join(' | ')"
+        let text = (try? await webView.evaluateJavaScript(probe) as? String) ?? "probe failed"
+        try? (text + "\n").write(to: output.appendingPathComponent("signin.txt"), atomically: true, encoding: .utf8)
+        if let image = try? await webView.takeSnapshot(configuration: nil),
+           let tiff = image.tiffRepresentation,
+           let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) {
+            try? png.write(to: output.appendingPathComponent("signin.png"))
+        }
+        await plantFakeCookie(in: webView, model, into: output)
+        model.cancelSignIn()
+        // A terminate sent while the sheet is still animating closed was
+        // ignored (the run outlived its 60 s budget with every file written).
+        try? await Task.sleep(for: .seconds(1.5))
+    }
+
+    /// Everything after Google's page short of a real account: a made-up
+    /// oauth_token cookie must reach the exchange, which Google refuses, and
+    /// the refusal must reach the sheet. The outcome goes to signin.txt.
+    @MainActor
+    private static func plantFakeCookie(in webView: WKWebView, _ model: AppModel, into output: URL) async {
+        let cookie = HTTPCookie(properties: [.name: GoogleSignIn.cookieName, .value: "oauth2_4/snapshot-fake-0000000000",
+                                             .domain: ".google.com", .path: "/", .secure: "TRUE"])!
+        await webView.configuration.websiteDataStore.httpCookieStore.setCookie(cookie)
+        let started = ContinuousClock.now
+        for _ in 0..<160 {
+            try? await Task.sleep(for: .milliseconds(250))
+            if case .failed = model.connectState { break }
+        }
+        let outcome = "fake cookie -> \(model.connectState) after \(ContinuousClock.now - started); stored account: \(model.hasAuthData)\n"
+        if let handle = try? FileHandle(forWritingTo: output.appendingPathComponent("signin.txt")) {
+            handle.seekToEndOfFile()
+            handle.write(Data(outcome.utf8))
+            try? handle.close()
+        }
+        if let sheet = NSApp.windows.first(where: { $0.isSheet && $0.isVisible }), let view = sheet.contentView?.superview ?? sheet.contentView,
+           let bitmap = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("signin-refused.png"))
+        }
     }
 }
 #endif

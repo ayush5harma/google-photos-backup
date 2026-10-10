@@ -68,15 +68,37 @@ found by the hash check on the next run. An album that is being created is
 always allowed to finish first, so a stop cannot leave a duplicate album
 behind. Quitting the app mid-batch stops the same way before it exits.
 
-## Get your auth_data
+## Connect your Google account
 
-gpmc needs the sign-in request that Google Photos for Android sends. You only
-need it once per account. The gpmc README gives two ways:
-[ReVanced (no root)](https://github.com/xob0t/gpmc#option-1---revanced-no-root-required)
+Open **Settings > Sign in with Google** (or **Sign In** on the Home banner).
+Google's own sign-in page opens inside the app. Sign in, then choose
+**I agree**. The page may keep loading after that; the app has already
+noticed the sign-in and closes the window once Google Photos accepts the
+account.
+
+What happens underneath follows [gotohp](https://github.com/xob0t/gotohp)
+(xob0t's GUI client, MIT):
+
+1. The page is Google's Embedded Setup, the one Android's setup wizard shows.
+   After "I agree", Google leaves a single-use `oauth_token` cookie.
+2. The app posts that cookie to Google's Android auth endpoint, as Google Play
+   services would, for a newly generated Android device ID. Google returns a
+   master token for that device.
+3. The app builds the request Google Photos for Android would make with that
+   token; that is gpmc's `auth_data`. It checks it with Google Photos before
+   storing it.
+
+The sign-in page runs in a web view with a throwaway session; the web view
+identifies itself as Safari, whose engine it is, because Google turns away
+sign-ins from web views it takes for embedded browsers. Only the resulting
+`auth_data` is kept, in your login keychain. Signing in to a different Google
+account resets the backup history, because media keys and albums belong to
+the account that holds them.
+
+If the in-app page will not work, **Other ways to connect** accepts the
+`oauth_token` cookie copied from Safari's Web Inspector, or a whole `auth_data`
+line from gpmc's own methods: [ReVanced (no root)](https://github.com/xob0t/gpmc#option-1---revanced-no-root-required)
 or [the official app on a rooted phone or emulator, via HTTP Toolkit](https://github.com/xob0t/gpmc#option-2---official-apk-root-required).
-The result is one long line starting with `androidId=`. Paste it into
-**Settings > Google Account** and click **Save**. The status should then show
-your Google address.
 
 ## Build and run
 
@@ -101,8 +123,8 @@ it. A real identity matters because macOS ties both the Photos permission and
 the keychain item to the signature. With ad hoc signing, every rebuild asks
 for both again.
 
-On first launch: **Allow Access** to Photos, paste your auth_data, then choose
-albums (All Photos starts selected).
+On first launch: **Allow Access** to Photos, **Sign in with Google**, then
+choose albums (All Photos starts selected).
 
 ## Settings
 
@@ -138,7 +160,8 @@ re-checks every item by hash.
   batch size means one sign-in per 20 items. For very large libraries the
   next step is a long-lived uploader that reuses its token.
 - No end-to-end upload test in CI: one needs a real Google account and real
-  auth_data.
+  auth_data. The sign-in has been checked up to Google's refusal of a made-up
+  cookie (scripts/snapshots.sh plants one); a real sign-in is the user's to do.
 
 ## Development
 

@@ -230,8 +230,8 @@ struct SetupBanners: View {
         }
         switch model.account {
         case .missing:
-            Banner(symbol: "key", text: "Add your gpmc auth_data to connect a Google account.", color: .accentColor,
-                   action: ("Settings", { section = .settings }))
+            Banner(symbol: "person.crop.circle.badge.plus", text: "Sign in with Google to choose where your photos go.", color: .accentColor,
+                   action: ("Sign In", { model.beginSignIn() }))
         case let .failed(message):
             Banner(symbol: "person.crop.circle.badge.exclamationmark", text: message, color: .orange,
                    action: ("Settings", { section = .settings }))
@@ -240,7 +240,7 @@ struct SetupBanners: View {
         }
         if let error = model.engine.lastError ?? model.stateError {
             Banner(symbol: "exclamationmark.triangle", text: error, color: .orange,
-                   action: error.contains("auth_data") ? ("Settings", { section = .settings }) : nil)
+                   action: error.contains("Sign in") ? ("Settings", { section = .settings }) : nil)
         }
     }
 
