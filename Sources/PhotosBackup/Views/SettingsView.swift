@@ -74,6 +74,23 @@ struct SettingsView: View {
             }
 
             Section {
+                Toggle("Back up photos and videos from Messages", isOn: Binding(get: { model.settings.messagesMedia }, set: { model.setMessagesMedia($0) }))
+                HStack {
+                    Button("Back Up Messages Media") { model.backUpMessages() }
+                        .disabled(!model.settings.messagesMedia || !model.hasAuthData || model.engine.isActive || model.isMessagesScanning)
+                    Button("Grant Full Disk Access…") { model.openFullDiskAccess() }
+                }
+                Text(messagesStatus)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Messages media")
+            } footer: {
+                Text("This is off by default. It reads locally available image and video attachments from Messages and uploads copies only. It never reads message text, chat names, or contacts, and it never changes Messages. macOS requires you to grant Photos Backup Full Disk Access before it can read the Messages attachment library.")
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            Section {
                 LabeledContent("Backed up items", value: "\(model.state.uploaded.count)")
                 LabeledContent("Linked Google albums", value: "\(model.state.mirrors.values.filter { $0.googleAlbumID != nil }.count)")
                 HStack {
@@ -146,6 +163,17 @@ struct SettingsView: View {
         case .checking: ProgressView().controlSize(.small)
         case let .connected(email): Text(email ?? "Connected").foregroundStyle(.green)
         case let .failed(message): Text(message).foregroundStyle(.orange).multilineTextAlignment(.trailing)
+        }
+    }
+
+    private var messagesStatus: String {
+        switch model.visibleMessagesStatus {
+        case .off: "Off"
+        case .idle: "Ready to scan"
+        case .scanning: "Scanning locally available attachments…"
+        case let .ready(found, skipped, partial):
+            "\(found) ready\(partial ? ", more remain" : "")\(skipped > 0 ? ", \(skipped) unavailable" : "")"
+        case let .failed(message): message
         }
     }
 }

@@ -23,12 +23,19 @@ trap 'rm -rf "$WORK"' EXIT
 APP="$WORK/Photos Backup Snapshots.app"
 ditto "$SOURCE" "$APP"
 cp "$(swift build --package-path "$ROOT" --show-bin-path)/PhotosBackup" "$APP/Contents/MacOS/PhotosBackup"
-/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier io.github.ayush5harma.PhotosBackup.snapshots" "$APP/Contents/Info.plist"
+snapshot_bundle_id="io.github.ayush5harma.PhotosBackup.snapshots"
+# 2026-10-14: fresh identities prevent README captures from inheriting a prior
+# fixture's permissions, account, settings, or media history.
+if [ "${SNAPSHOT_UI_ONLY:-0}" = 1 ]; then
+  snapshot_bundle_id="io.github.ayush5harma.PhotosBackup.preview-$(uuidgen).snapshots"
+fi
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $snapshot_bundle_id" "$APP/Contents/Info.plist"
 codesign --force --sign - "$APP/Contents/MacOS/PhotosBackup" 2>/dev/null
 codesign --force --sign - "$APP" 2>/dev/null
 
 mkdir -p "$OUT"
 PHOTOS_BACKUP_SNAPSHOTS="$OUT" PHOTOS_BACKUP_SNAPSHOT_AUTH="${SNAPSHOT_AUTH:-}" \
+  PHOTOS_BACKUP_SNAPSHOT_UI_ONLY="${SNAPSHOT_UI_ONLY:-0}" \
   "$APP/Contents/MacOS/PhotosBackup" >/dev/null 2>&1 &
 pid=$!
 for _ in $(seq 1 60); do
