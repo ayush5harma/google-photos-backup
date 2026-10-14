@@ -162,6 +162,11 @@ enum SnapshotFixture {
                            messages: .ready(found: 0, skipped: 12, partial: false))
         let engine = model.engine
         let lastRun = Date().addingTimeInterval(-6 * 60)
+        if scenario != .signedOut {
+            model.settings.messagesArchive = true
+            model.archive.applyFixture(overview: archiveOverview, status: .finished(Date().addingTimeInterval(-3 * 3600)),
+                                       transcripts: [archiveOverview.conversations[0].id: transcript])
+        }
         switch scenario {
         case .upToDate:
             model.state = state(missing: 0)
@@ -187,6 +192,40 @@ enum SnapshotFixture {
             engine.applyFixture(activity: [], runTotal: 0, runDone: 0, phase: .idle, lastRun: nil)
         }
     }
+
+    // Made-up people and words: the archive fixture never reads Messages.
+    private static let archiveOverview: MessagesArchiveOverview = {
+        let now = Date()
+        func conversation(_ id: String, _ title: String, _ people: [String], group: Bool, messages: Int, attachments: Int, hoursAgo: Double) -> ArchivedConversation {
+            ArchivedConversation(id: id, title: title, participants: people, isGroup: group, service: "iMessage", messageCount: messages,
+                                 attachmentCount: attachments, lastMessageDate: now.addingTimeInterval(-hoursAgo * 3600), relativePath: "Conversations/\(id)")
+        }
+        let conversations = [
+            conversation("chat-family", "Family", ["Mom", "Dad", "Riya"], group: true, messages: 18_204, attachments: 1_312, hoursAgo: 0.4),
+            conversation("chat-jane", "Jane Appleseed", ["Jane Appleseed"], group: false, messages: 6_120, attachments: 214, hoursAgo: 2),
+            conversation("chat-trip", "Iceland trip", ["Arjun", "Priya", "Sam", "Lee"], group: true, messages: 2_907, attachments: 388, hoursAgo: 30),
+            conversation("chat-sam", "Sam Lee", ["Sam Lee"], group: false, messages: 912, attachments: 12, hoursAgo: 80),
+            conversation("chat-bank", "+1 (555) 010-2030", ["+1 (555) 010-2030"], group: false, messages: 64, attachments: 0, hoursAgo: 200),
+        ]
+        return MessagesArchiveOverview(conversations: conversations, messageCount: 28_207, attachmentCount: 1_926, missingAttachmentCount: 140,
+                                       archiveBytes: 2_148_000_000, lastArchived: now.addingTimeInterval(-3 * 3600), databaseSnapshots: 7)
+    }()
+
+    private static let transcript: [ArchivedMessage] = {
+        let start = Date().addingTimeInterval(-26 * 3600)
+        let lines: [(Bool, String, String)] = [
+            (false, "Mom", "Did everyone get home safe?"),
+            (true, "", "Yes! Landed an hour ago"),
+            (false, "Riya", "Same here. Sending the photos from the beach tonight"),
+            (false, "Dad", "That dinner was the best part"),
+            (true, "", "Agreed. Booking the same place for next year"),
+        ]
+        return lines.enumerated().map { index, line in
+            ArchivedMessage(id: "m\(index)", rowID: Int64(index), date: start.addingTimeInterval(Double(index) * 420), isFromMe: line.0,
+                            sender: line.0 ? nil : line.1, senderName: line.0 ? "Me" : line.1, service: "iMessage", text: line.2,
+                            reactions: index == 3 ? [ArchivedReaction(kind: "love", emoji: "\u{2764}\u{FE0F}", sender: nil, senderName: "Me", isFromMe: true, date: nil)] : [])
+        }
+    }()
 
     /// The history and timeline are the diagnostics piece's; these go
     /// through its public recording calls, into the sandbox only.

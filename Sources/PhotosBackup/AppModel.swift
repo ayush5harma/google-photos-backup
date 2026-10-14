@@ -402,14 +402,6 @@ final class AppModel {
         }
     }
 
-    func refreshNow() {
-        Task { @MainActor in
-            await reloadAlbums()
-            if settings.messagesMedia { backUpMessages(includingPhotos: true) }
-            else if library.isAuthorized, hasAuthData, engine.phase == .idle { engine.start(trigger: .manual) }
-        }
-    }
-
     func openFullDiskAccess() {
         guard let pane = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") else { return }
         NSWorkspace.shared.open(pane)

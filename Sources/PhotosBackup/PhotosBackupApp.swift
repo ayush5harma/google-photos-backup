@@ -225,6 +225,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func handle(_ url: URL) {
+        #if DEBUG
+        if E2EHooks.handle(url, model: model) { return }
+        #endif
         guard let command = AutomationCommand(url: url) else {
             // Scheme and verb only: the rest of a link can carry anything.
             model.log(.app, "Ignored a link it does not know: \(url.scheme ?? "")://\(url.host ?? "")")
