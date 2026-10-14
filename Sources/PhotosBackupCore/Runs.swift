@@ -31,6 +31,16 @@ public enum RunTrigger: String, Codable, Sendable, CaseIterable {
         case .manual, .picker, .albumSelected, .signIn, .automation, .retry: false
         }
     }
+
+    /// Runs a person asked to go now, which go ahead on a metered network,
+    /// in Low Data Mode or on battery. Turning an album on or signing in is
+    /// not such a request: those runs respect the "pause on..." settings.
+    public var overridesConditions: Bool {
+        switch self {
+        case .manual, .picker, .retry, .automation: true
+        case .launch, .timer, .libraryChange, .wake, .conditions, .schedule, .albumSelected, .signIn: false
+        }
+    }
 }
 
 public enum RunKind: String, Codable, Sendable {

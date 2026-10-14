@@ -49,6 +49,16 @@ private let allOff = ConditionFlags(pauseOnExpensiveNetwork: false, pauseInLowDa
         #expect(ConditionsEvaluator.blocking(network: hotspot, power: drained, flags: flags) == .onBattery)
     }
 
+    @Test func onlyRunsAskedForNowOverrideThePauseSettings() {
+        let overriding = Set(RunTrigger.allCases.filter(\.overridesConditions))
+        #expect(overriding == [.manual, .picker, .retry, .automation])
+        // Turning an album on or signing in starts a run nobody is waiting on.
+        #expect(!RunTrigger.albumSelected.overridesConditions)
+        #expect(!RunTrigger.signIn.overridesConditions)
+        let automatic = RunTrigger.allCases.filter { $0.isAutomatic }
+        #expect(automatic.allSatisfy { !$0.overridesConditions })
+    }
+
     @Test func onlyARunAPersonStartedGivesUpOnAMissingNetwork() {
         let since = Date(timeIntervalSince1970: 1_000)
         func givesUp(_ reason: WaitReason, person: Bool, after seconds: TimeInterval) -> Bool {

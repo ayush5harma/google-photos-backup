@@ -109,7 +109,8 @@ final class BackupEngine {
     @ObservationIgnored private var retries = RetryTracker()
     /// Lives across runs: Google's hold does not end because a run did.
     @ObservationIgnored private var rateLimiter = RateLimiter()
-    /// Back Up Now and Retry go ahead on a metered network or battery.
+    /// Back Up Now, picks, Retry and Shortcuts go ahead on a metered network
+    /// or battery (RunTrigger.overridesConditions); other runs wait.
     @ObservationIgnored private var overridesConditions = false
     /// Retry asked for items while a run was going; it makes another pass.
     @ObservationIgnored private var retryRequested = false
@@ -141,11 +142,11 @@ final class BackupEngine {
             // Asked for in person while an automatic run holds for battery
             // or a metered network: the person's choice wins, as it would
             // have had this been the run that started.
-            if !trigger.isAutomatic { overridesConditions = true }
+            if trigger.overridesConditions { overridesConditions = true }
             return
         }
         phase = .running
-        overridesConditions = !trigger.isAutomatic
+        overridesConditions = trigger.overridesConditions
         task = Task { [weak self] in
             let halted = await self?.run(trigger: trigger) ?? true
             guard let self else { return }
