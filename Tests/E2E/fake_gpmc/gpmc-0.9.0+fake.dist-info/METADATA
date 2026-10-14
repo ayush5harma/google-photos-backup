@@ -1,0 +1,4 @@
+Metadata-Version: 2.1
+Name: gpmc
+Version: 0.9.0+fake
+Summary: Offline stand-in for gpmc used by the bridge and app end-to-end tests
