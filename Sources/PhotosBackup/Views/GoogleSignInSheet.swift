@@ -27,7 +27,7 @@ struct GoogleSignInSheet: View {
                 if model.connectState == .connecting {
                     VStack(spacing: 12) {
                         ProgressView()
-                        Text("Connecting to Google Photos...").font(.headline)
+                        Text("Connecting to Google Photos…").font(.headline)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(.regularMaterial)

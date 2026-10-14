@@ -1,179 +1,76 @@
 import PhotosBackupCore
 import SwiftUI
 
+/// The Settings window (Command-,): five tabs of grouped forms.
 struct SettingsView: View {
-    @Environment(AppModel.self) private var model
-    @State private var pasteDraft = ""
-    @State private var showOtherWays = false
-    @State private var confirmReset = false
-    @State private var confirmForget = false
-
-    private static let authHelp = URL(string: "https://github.com/xob0t/gpmc#auth_data-where-do-i-get-mine")!
-    private static let gpmc = URL(string: "https://github.com/xob0t/gpmc")!
-    private static let gotohp = URL(string: "https://github.com/xob0t/gotohp")!
+    @AppStorage(AppRouter.settingsTabKey, store: AppEnvironment.defaults) private var tab: AutomationCommand.SettingsTab = .general
 
     var body: some View {
-        @Bindable var model = model
-        Form {
-            Section {
-                LabeledContent("Status") { accountStatus }
-                HStack {
-                    Button {
-                        model.beginSignIn()
-                    } label: {
-                        Label(model.hasAuthData ? "Sign In Again..." : "Sign in with Google", systemImage: "person.crop.circle.badge.plus")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .disabled(model.connectState == .connecting)
-                    Spacer()
-                    if model.hasAuthData {
-                        Button("Remove", role: .destructive) { model.removeAuthData() }
-                        Button("Test") { Task { await model.checkAccount() } }
-                            .disabled(model.connectState == .connecting)
-                    }
-                }
-                connectStatus
-                DisclosureGroup("Other ways to connect", isExpanded: $showOtherWays) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("If Google's page will not work inside the app: open it in Safari, sign in and choose I agree, then copy the value of the oauth_token cookie (Develop > Show Web Inspector > Storage > Cookies) and paste it here. It works once, within a few minutes. A whole auth_data string from gpmc or gotohp works here too.")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                        SecureField("oauth_token or auth_data", text: $pasteDraft, prompt: Text("oauth2_4/... or androidId=...&Token=..."))
-                        HStack {
-                            Button("Open Sign-In Page in Safari", action: openInSafari)
-                            Link("About auth_data", destination: Self.authHelp)
-                            Spacer()
-                            Button("Connect") {
-                                let value = pasteDraft
-                                pasteDraft = ""
-                                Task { await model.connect(pasted: value) }
-                            }
-                            .disabled(pasteDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.connectState == .connecting)
-                        }
-                    }
-                    .padding(.top, 6)
-                }
-            } header: {
-                Text("Google Account")
-            } footer: {
-                Text("Signing in happens on Google's own page. Google hands back a token for a new Android device ID, the kind Google Photos for Android signs in with and gpmc uploads with. The token stays in your login keychain and reaches the uploader over a pipe, never a command line; the sign-in page's session is discarded. The sign-in flow follows gotohp by xob0t.")
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            Section("Uploads") {
-                Picker("Quality", selection: $model.settings.quality) {
-                    ForEach(UploadQuality.allCases) { Text($0.title).tag($0) }
-                }
-                Stepper("Parallel uploads: \(model.settings.threads)", value: $model.settings.threads, in: 1...4)
-                Stepper("Items per batch: \(model.settings.batchSize)", value: $model.settings.batchSize, in: 5...100, step: 5)
-                Toggle("Recreate my albums in Google Photos", isOn: $model.settings.mirrorAlbums)
-                Toggle("Back up automatically", isOn: $model.settings.automatic)
-            }
-
-            Section {
-                Toggle("Back up photos and videos from Messages", isOn: Binding(get: { model.settings.messagesMedia }, set: { model.setMessagesMedia($0) }))
-                HStack {
-                    Button("Back Up Messages Media") { model.backUpMessages() }
-                        .disabled(!model.settings.messagesMedia || !model.hasAuthData || model.engine.isActive || model.isMessagesScanning)
-                    Button("Grant Full Disk Access…") { model.openFullDiskAccess() }
-                }
-                Text(messagesStatus)
-                    .foregroundStyle(.secondary)
-            } header: {
-                Text("Messages media")
-            } footer: {
-                Text("This is off by default. It reads locally available image and video attachments from Messages and uploads copies only. It never reads message text, chat names, or contacts, and it never changes Messages. macOS requires you to grant Photos Backup Full Disk Access before it can read the Messages attachment library.")
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            Section {
-                LabeledContent("Backed up items", value: "\(model.state.uploaded.count)")
-                LabeledContent("Linked Google albums", value: "\(model.state.mirrors.values.filter { $0.googleAlbumID != nil }.count)")
-                HStack {
-                    Button("Show Log in Finder") { NSWorkspace.shared.activateFileViewerSelecting([model.paths.bridgeLog]) }
-                    Spacer()
-                    Button("Forget Album Links...") { confirmForget = true }
-                    Button("Reset Backup History...", role: .destructive) { confirmReset = true }
-                }
-            } header: {
-                Text("History")
-            } footer: {
-                Text("Resetting is safe: before sending anything, gpmc asks Google whether it already has the file's exact bytes, so nothing is uploaded twice, and the links to your Google albums are kept. It only makes the next run slower.")
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            Section("About") {
-                LabeledContent("Uploader", value: model.runtimeDescription)
-                Link("gpmc by xob0t (MIT)", destination: Self.gpmc)
-                Text("gpmc talks to Google Photos' reverse-engineered mobile API as a Pixel XL, which Google lets back up in original quality for free. Google can change or end that at any time; uploads then count against your storage or fail, and nothing in Photos is touched either way.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
+        TabView(selection: $tab) {
+            GeneralSettingsTab()
+                .tabItem { Label("General", systemImage: "gearshape") }
+                .tag(AutomationCommand.SettingsTab.general)
+            BackupSettingsTab()
+                .tabItem { Label("Backup", systemImage: "arrow.up.circle") }
+                .tag(AutomationCommand.SettingsTab.backup)
+            MessagesSettingsTab()
+                .tabItem { Label("Messages", systemImage: "message") }
+                .tag(AutomationCommand.SettingsTab.messages)
+            AccountSettingsTab()
+                .tabItem { Label("Account", systemImage: "person.crop.circle") }
+                .tag(AutomationCommand.SettingsTab.account)
+            AdvancedSettingsTab()
+                .tabItem { Label("Advanced", systemImage: "gearshape.2") }
+                .tag(AutomationCommand.SettingsTab.advanced)
         }
-        .formStyle(.grouped)
-        .navigationTitle("Settings")
-        .confirmationDialog("Reset the backup history?", isPresented: $confirmReset) {
-            Button("Reset", role: .destructive) { model.resetHistory() }
-        } message: {
-            Text("The next run checks every selected item with Google again. Your Google albums stay linked.")
-        }
-        .confirmationDialog("Forget the Google albums made so far?", isPresented: $confirmForget) {
-            Button("Forget", role: .destructive) { model.forgetAlbumLinks() }
-        } message: {
-            Text("The next run creates new Google Photos albums for your selected albums. Use this after deleting those albums in Google Photos.")
+        .frame(width: SettingsLayout.width)
+    }
+}
+
+enum SettingsLayout {
+    static let width: CGFloat = 580
+}
+
+extension View {
+    /// A tab's form: grouped, at the window's fixed width, as tall as the tab
+    /// needs up to a screen-friendly limit, scrolling beyond it.
+    func settingsForm(height: CGFloat) -> some View {
+        formStyle(.grouped)
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(width: SettingsLayout.width, height: height)
+    }
+}
+
+/// A number with its stepper at the trailing edge, the way System Settings
+/// lays them out.
+struct StepperRow: View {
+    let title: String
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    var step = 1
+    var display: (Int) -> String = { $0.formatted() }
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack(spacing: 6) {
+                Text(display(value)).monospacedDigit()
+                Stepper(title, value: $value, in: range, step: step).labelsHidden()
+            }
         }
     }
+}
 
-    /// Safari specifically: the steps above use its Web Inspector, and the
-    /// default browser may be another.
-    private func openInSafari() {
-        guard let safari = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.Safari") else {
-            NSWorkspace.shared.open(GoogleSignIn.embeddedSetupURL)
-            return
-        }
-        NSWorkspace.shared.open([GoogleSignIn.embeddedSetupURL], withApplicationAt: safari, configuration: NSWorkspace.OpenConfiguration())
-    }
+/// A form footer that wraps rather than truncates.
+struct FormNote: View {
+    let text: String
+    init(_ text: String) { self.text = text }
 
-    @ViewBuilder
-    private var connectStatus: some View {
-        switch model.connectState {
-        case .connecting:
-            HStack(spacing: 8) {
-                ProgressView().controlSize(.small)
-                Text("Connecting to Google Photos...").foregroundStyle(.secondary)
-            }
-        case let .failed(message):
-            Label(message, systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-        case .idle, .signingIn:
-            EmptyView()
-        }
-    }
-
-    @ViewBuilder
-    private var accountStatus: some View {
-        switch model.account {
-        case .missing: Text("Not connected").foregroundStyle(.secondary)
-        case .checking: ProgressView().controlSize(.small)
-        case let .connected(email): Text(email ?? "Connected").foregroundStyle(.green)
-        case let .failed(message): Text(message).foregroundStyle(.orange).multilineTextAlignment(.trailing)
-        }
-    }
-
-    private var messagesStatus: String {
-        switch model.visibleMessagesStatus {
-        case .off: "Off"
-        case .idle: "Ready to scan"
-        case .scanning: "Scanning locally available attachments…"
-        case let .ready(found, skipped, partial):
-            "\(found) ready\(partial ? ", more remain" : "")\(skipped > 0 ? ", \(skipped) unavailable" : "")"
-        case let .failed(message): message
-        }
+    var body: some View {
+        Text(text)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
