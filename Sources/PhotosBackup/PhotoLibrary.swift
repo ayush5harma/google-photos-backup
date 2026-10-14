@@ -66,15 +66,24 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         // else's, and PhotoKit cannot hand out their originals anyway.
         options.includeAssetSourceTypes = [.typeUserLibrary]
 
-        func ids(_ result: PHFetchResult<PHAsset>) -> [String] {
+        // The modification date comes with the asset row PhotoKit already
+        // fetched, so edit detection costs no extra query; asset resources
+        // are read later, and only for assets whose date moved.
+        func snapshot(id: String, title: String, kind: AlbumKind, _ result: PHFetchResult<PHAsset>) -> AlbumSnapshot {
             var ids: [String] = []
+            var modified: [String: Date] = [:]
             ids.reserveCapacity(result.count)
-            result.enumerateObjects { asset, _, _ in ids.append(asset.localIdentifier) }
-            return ids
+            modified.reserveCapacity(result.count)
+            result.enumerateObjects { asset, _, _ in
+                let id = asset.localIdentifier
+                ids.append(id)
+                if let date = asset.modificationDate { modified[id] = date }
+            }
+            return AlbumSnapshot(id: id, title: title, kind: kind, assetIDs: ids, modified: modified)
         }
 
         var albums = [LibraryAlbum(
-            snapshot: AlbumSnapshot(id: allPhotosID, title: "All Photos", kind: .allPhotos, assetIDs: ids(PHAsset.fetchAssets(with: options))),
+            snapshot: snapshot(id: allPhotosID, title: "All Photos", kind: .allPhotos, PHAsset.fetchAssets(with: options)),
             symbol: "photo.on.rectangle.angled")]
 
         var smart: [PHAssetCollectionSubtype: PHAssetCollection] = [:]
@@ -82,21 +91,19 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
             .enumerateObjects { collection, _, _ in smart[collection.assetCollectionSubtype] = collection }
         for (subtype, symbol) in smartAlbums {
             guard let collection = smart[subtype] else { continue }
-            let assets = ids(PHAsset.fetchAssets(in: collection, options: options))
-            guard !assets.isEmpty else { continue }
-            albums.append(LibraryAlbum(snapshot: AlbumSnapshot(id: collection.localIdentifier, title: collection.localizedTitle ?? "Smart Album",
-                                                               kind: .smart, assetIDs: assets),
-                                       symbol: symbol))
+            let album = snapshot(id: collection.localIdentifier, title: collection.localizedTitle ?? "Smart Album", kind: .smart,
+                                 PHAsset.fetchAssets(in: collection, options: options))
+            guard !album.assetIDs.isEmpty else { continue }
+            albums.append(LibraryAlbum(snapshot: album, symbol: symbol))
         }
 
         var user: [LibraryAlbum] = []
         PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
             .enumerateObjects { collection, _, _ in
-                let assets = ids(PHAsset.fetchAssets(in: collection, options: options))
-                guard !assets.isEmpty else { return }
-                user.append(LibraryAlbum(snapshot: AlbumSnapshot(id: collection.localIdentifier, title: collection.localizedTitle ?? "Untitled",
-                                                                 kind: .user, assetIDs: assets),
-                                         symbol: "rectangle.stack"))
+                let album = snapshot(id: collection.localIdentifier, title: collection.localizedTitle ?? "Untitled", kind: .user,
+                                     PHAsset.fetchAssets(in: collection, options: options))
+                guard !album.assetIDs.isEmpty else { return }
+                user.append(LibraryAlbum(snapshot: album, symbol: "rectangle.stack"))
             }
         user.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
         return albums + user

@@ -16,12 +16,24 @@ private func event(_ json: String) throws -> BridgeEvent {
             == .progress(id: "A/L0/001", phase: .uploading, completed: 5, total: 10))
         #expect(try event(#"{"type":"item","v":1,"id":"A","media_key":"k","status":"existing"}"#) == .item(id: "A", mediaKey: "k", existing: true))
         #expect(try event(#"{"type":"item","v":1,"id":"A","media_key":"k","status":"uploaded"}"#) == .item(id: "A", mediaKey: "k", existing: false))
-        #expect(try event(#"{"type":"item_failed","v":1,"id":"A","message":"413"}"#) == .itemFailed(id: "A", message: "413"))
+        #expect(try event(#"{"type":"item_failed","v":1,"id":"A","message":"413","retryable":false}"#)
+            == .itemFailed(id: "A", message: "413", retryable: false))
+        #expect(try event(#"{"type":"item_failed","v":1,"id":"A","message":"503","retryable":true}"#)
+            == .itemFailed(id: "A", message: "503", retryable: true))
+        #expect(try event(#"{"type":"fatal","v":1,"kind":"rate_limit","message":"429"}"#) == .fatal(kind: .rateLimit, message: "429"))
+        #expect(try event(#"{"type":"fatal","v":1,"kind":"storage_full","message":"full"}"#) == .fatal(kind: .storageFull, message: "full"))
         #expect(try event(#"{"type":"album","v":1,"album_id":"g","added":2}"#) == .album(id: "g", added: 2))
         #expect(try event(#"{"type":"album_failed","v":1,"message":"500"}"#) == .albumFailed(message: "500"))
         #expect(try event(#"{"type":"done","v":1,"uploaded":1,"existing":1,"failed":0}"#) == .done(uploaded: 1, existing: 1, failed: 0))
         #expect(try event(#"{"type":"fatal","v":1,"kind":"auth","message":"403"}"#) == .fatal(kind: .auth, message: "403"))
         #expect(try event(#"{"type":"stopped","v":1}"#) == .stopped)
+    }
+
+    @Test func readsItemFailuresFromABridgeWithoutTheRetryableField() throws {
+        // What the bridge sent before the field existed: still a failure,
+        // with no opinion on retrying (the engine reads the message instead).
+        #expect(try event(#"{"type":"item_failed","v":1,"id":"A","message":"413"}"#) == .itemFailed(id: "A", message: "413", retryable: nil))
+        #expect(try event(#"{"type":"item_failed","v":1,"id":"A","message":"x","retryable":"yes"}"#) == .itemFailed(id: "A", message: "x", retryable: nil))
     }
 
     @Test func toleratesWhatANewerBridgeMightSay() throws {

@@ -106,7 +106,9 @@ public enum BridgeEvent: Equatable, Sendable {
     case auth(email: String?)
     case progress(id: String?, phase: UploadPhase, completed: Int64, total: Int64)
     case item(id: String, mediaKey: String, existing: Bool)
-    case itemFailed(id: String, message: String)
+    /// `retryable` is the bridge's own reading of the failure; nil from a
+    /// bridge that predates the field.
+    case itemFailed(id: String, message: String, retryable: Bool?)
     case album(id: String, added: Int)
     case albumFailed(message: String)
     case done(uploaded: Int, existing: Int, failed: Int)
@@ -141,7 +143,7 @@ public enum BridgeEvent: Equatable, Sendable {
             return .item(id: id, mediaKey: key, existing: string("status") == "existing")
         case "item_failed":
             guard let id = string("id") else { break }
-            return .itemFailed(id: id, message: string("message") ?? "upload failed")
+            return .itemFailed(id: id, message: string("message") ?? "upload failed", retryable: object["retryable"] as? Bool)
         case "album":
             guard let id = string("album_id") else { break }
             return .album(id: id, added: int("added"))

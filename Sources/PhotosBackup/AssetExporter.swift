@@ -7,6 +7,9 @@ struct ExportedAsset {
     let url: URL
     let filename: String
     let size: Int64
+    /// Which version of the asset this file is; nil when Photos gave no
+    /// modification date.
+    let stamp: EditStamp?
 }
 
 struct ExportError: LocalizedError {
@@ -43,6 +46,9 @@ struct AssetExporter {
             }
             let original = resources.first { $0.type == .photo || $0.type == .video }?.originalFilename
             let filename = ExportNaming.uploadFilename(original: original, rendition: resource.originalFilename)
+            // Read before the export: an edit made while it runs then shows
+            // up as newer than the stamp, and is picked up next time.
+            let stamp = asset.modificationDate.map { EditStamp(modified: $0, edited: Self.isEdited(resource)) }
             started(id, filename)
             do {
                 // One folder per asset: two IMG_0001.JPG from different
@@ -58,11 +64,24 @@ struct AssetExporter {
                     try? FileManager.default.setAttributes([.modificationDate: date, .creationDate: date], ofItemAtPath: url.path)
                 }
                 let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
-                finished(id, .success(ExportedAsset(assetID: id, url: url, filename: filename, size: size)))
+                finished(id, .success(ExportedAsset(assetID: id, url: url, filename: filename, size: size, stamp: stamp)))
             } catch {
                 finished(id, .failure(ExportError(errorDescription: "Export failed: \(error.localizedDescription)")))
             }
         }
+    }
+
+    /// Whether each asset's current rendition is an edited one, and its
+    /// date now. Reads resources for these assets only (the ones whose date
+    /// moved), never for the library.
+    static func editStates(of assetIDs: [String]) -> [String: (edited: Bool, modified: Date?)] {
+        var states: [String: (edited: Bool, modified: Date?)] = [:]
+        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: nil).enumerateObjects { asset, _, _ in
+            let resources = PHAssetResource.assetResources(for: asset)
+            let edited = rendition(of: asset, in: resources).map(isEdited) ?? false
+            states[asset.localIdentifier] = (edited, asset.modificationDate)
+        }
+        return states
     }
 
     /// The version Photos shows: the edited rendition when there is one,
@@ -77,6 +96,11 @@ struct AssetExporter {
         case .video: return first(.fullSizeVideo, .video)
         default: return resources.first
         }
+    }
+
+    /// Photos keeps an edit's render as a full-size resource beside the original.
+    private static func isEdited(_ resource: PHAssetResource) -> Bool {
+        resource.type == .fullSizePhoto || resource.type == .fullSizeVideo
     }
 
     private static func write(_ resource: PHAssetResource, to url: URL) async throws {
