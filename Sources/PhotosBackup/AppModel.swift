@@ -206,7 +206,16 @@ final class AppModel {
     /// albums or the state change.
     @ObservationIgnored private var summaryCache: BackupSummary?
     var stateError: String?
-    var settings: BackupSettings { didSet { settings.save() } }
+    var settings: BackupSettings {
+        didSet {
+            settings.save()
+            // Whoever changes it (a Settings switch, the guide, a link), the
+            // Dock follows; the switches also bring their window back to front.
+            if settings.showInDock != oldValue.showInDock {
+                applyDockVisibility()
+            }
+        }
+    }
     private(set) var account: AccountStatus = .missing
     private(set) var connectState: ConnectState = .idle
     var showingSignIn = false
@@ -400,6 +409,16 @@ final class AppModel {
                 if includingPhotos, self.library.isAuthorized, self.engine.phase == .idle { self.engine.start(trigger: trigger) }
             }
         }
+    }
+
+    /// Also re-applied after every photosbackup:// link: LaunchServices
+    /// turns an app it delivers a URL to back into a Dock app (measured
+    /// 2026-10-15: the policy read .accessory before `open -a ... <url>` and
+    /// .regular half a second after; a link that skipped LaunchServices left
+    /// it alone).
+    func applyDockVisibility() {
+        let policy: NSApplication.ActivationPolicy = settings.showInDock ? .regular : .accessory
+        if NSApp.activationPolicy() != policy { NSApp.setActivationPolicy(policy) }
     }
 
     func openFullDiskAccess() {

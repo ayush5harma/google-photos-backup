@@ -130,6 +130,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Registered before launch finishes so a link that launched the app
         // is delivered too.
         registerURLHandler()
+        #if DEBUG
+        E2EHooks.startInbox(self)
+        #endif
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -222,6 +225,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func handleGetURL(_ event: NSAppleEventDescriptor, reply: NSAppleEventDescriptor) {
         guard let string = event.paramDescriptor(forKeyword: keyDirectObject)?.stringValue, let url = URL(string: string) else { return }
         handle(url)
+        // The delivery itself made the app a Dock app again; put it back on
+        // the next turns, after LaunchServices has finished with it.
+        for delay in [0.1, 0.6] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [model] in model.applyDockVisibility() }
+        }
     }
 
     func handle(_ url: URL) {

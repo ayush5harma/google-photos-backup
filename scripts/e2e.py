@@ -56,6 +56,8 @@ class Harness:
         self.archive = work / "archive"
         self.results: list[tuple[str, str, bool, str]] = []
         self.process: subprocess.Popen[bytes] | None = None
+        self.mode = "open"
+        self.sent = 0
         self.scenario_name = ""
 
     # MARK: setup
@@ -106,6 +108,7 @@ class Harness:
 
     def launch(self, mode: str = "open") -> None:
         self.quit()
+        self.mode = mode
         if mode == "open":
             env_args = [arg for key, value in self.environment().items() for arg in ("--env", f"{key}={value}")]
             run(["open", "-n", "-g", *env_args, "-a", str(self.app)])
@@ -116,12 +119,35 @@ class Harness:
                                             stdout=log_file, stderr=subprocess.STDOUT)
         self.wait("the app answers", lambda s: s.get("pid") is not None, timeout=60, poll=1.5)
 
-    def link(self, path: str) -> None:
-        run(["open", "-g", "-a", str(self.app), f"photosbackup://{path}"])
+    def link(self, path: str, attempts: int = 1) -> None:
+        if self.mode == "exec":
+            # LaunchServices would start a second copy; the debug inbox is read
+            # by the running one (E2EHooks.startInbox).
+            inbox = self.sandbox / "inbox"
+            inbox.mkdir(exist_ok=True)
+            self.sent += 1
+            name = inbox / f"{time.time_ns():020d}-{self.sent:05d}"
+            name.with_suffix(".tmp").write_text(f"photosbackup://{path}")
+            name.with_suffix(".tmp").rename(name.with_suffix(".url"))
+            return
+        for attempt in range(attempts):
+            try:
+                run(["open", "-g", "-a", str(self.app), f"photosbackup://{path}"])
+                return
+            except RuntimeError:
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(1.5)
 
-    def state(self, timeout: float = 15) -> dict[str, Any]:
+    def state(self, timeout: float = 15, settle: bool = False) -> dict[str, Any]:
         before = self.state_file.stat().st_mtime_ns if self.state_file.exists() else 0
-        self.link(f"debug/state?out={self.state_file}")
+        try:
+            self.link(f"debug/state?out={self.state_file}" + ("&settle=1" if settle else ""))
+        except RuntimeError:
+            # A copy started from this shell checks in with LaunchServices a
+            # little after it starts; until then links bounce.
+            time.sleep(1)
+            return {}
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.state_file.exists() and self.state_file.stat().st_mtime_ns != before:
@@ -148,12 +174,15 @@ class Harness:
 
     def settings(self, **values: Any) -> None:
         query = "&".join(f"{key}={json.dumps(value)}" for key, value in values.items())
-        self.link(f"debug/settings?{query}")
+        self.link(f"debug/settings?{query}", attempts=5)
         time.sleep(0.8)
 
     def quit(self) -> None:
         if self.running_pid():
-            self.link("debug/quit")
+            try:
+                self.link("debug/quit", attempts=3)
+            except RuntimeError:
+                pass
             deadline = time.time() + 20
             while self.running_pid() and time.time() < deadline:
                 time.sleep(0.5)
@@ -242,8 +271,9 @@ def s_connect(h: Harness) -> None:
 
 
 def choose_small_album(h: Harness) -> dict[str, Any]:
+    h.wait("albums to load", lambda s: s["albumsLoaded"], timeout=180)
     h.link("debug/select?smallest=3-25")
-    s = h.wait("an album to be selected", lambda s: len(s["selectedAlbumIDs"]) == 1, timeout=20)
+    s = h.wait("an album to be selected", lambda s: len(s["selectedAlbumIDs"]) == 1 and s["selectedAlbumIDs"] != ["all-photos"], timeout=20)
     album = next(a for a in s["albums"] if a["id"] == s["selectedAlbumIDs"][0])
     return album
 
@@ -328,10 +358,15 @@ def s_rate_limit(h: Harness) -> None:
 
 
 def s_controls(h: Harness) -> None:
+    # Pause acts after the current batch, so this needs several batches.
+    h.launch("open")
+    h.wait("albums to load", lambda s: s["albumsLoaded"], timeout=180)
+    h.link("debug/select?smallest=6-400")
+    s = h.wait("a larger album", lambda s: len(s["selectedAlbumIDs"]) == 1 and s["selectedAlbumIDs"] != ["all-photos"], timeout=20)
     album, count = s_recheck(h)
     h.scenario({"delay": 1.5})
-    h.settings(threads=1, batchSize=5)
     h.launch("open")
+    h.settings(threads=1, batchSize=5)
     h.link("backup/photos")
     h.wait("the run to start uploading", lambda s: s["phase"] == "running" and s["runDone"] >= 1, timeout=180, poll=1)
     h.link("pause")
@@ -374,10 +409,19 @@ def s_shell(h: Harness) -> None:
     h.launch("open")
     h.settings(showInDock=False)
     time.sleep(1.5)
-    h.check("menu bar only hides the Dock icon", h.state()["activationPolicy"] == "accessory")
+    # Every link here goes through LaunchServices, which makes the app a Dock
+    # app again on delivery; settle=1 reads after the app has undone that.
+    h.check("menu bar only hides the Dock icon, and links do not bring it back", h.state(settle=True)["activationPolicy"] == "accessory")
+    h.link("open/activity")
+    time.sleep(1.5)
+    h.check("still menu bar only after opening the window by link", h.state(settle=True)["activationPolicy"] == "accessory")
+    h.launch("open")
+    s = h.state(settle=True)
+    h.check("a relaunch in menu bar only mode starts without a Dock icon", s["activationPolicy"] == "accessory", s["activationPolicy"])
+    h.check("and without opening the main window", "Overview" not in s["windows"] and "Activity" not in s["windows"], str(s["windows"]))
     h.settings(showInDock=True)
     time.sleep(1.5)
-    h.check("Show in Dock brings it back", h.state()["activationPolicy"] == "regular")
+    h.check("Show in Dock brings it back", h.state(settle=True)["activationPolicy"] == "regular")
     h.link("settings/backup")
     time.sleep(2)
     s = h.state()
@@ -427,6 +471,7 @@ def s_messages(h: Harness) -> None:
     after = {p: p.stat().st_mtime_ns for p in before}
     h.check("a second archive with nothing new rewrites no conversation", before == after, f"{second:.1f} s")
 
+    already = len(h.ledger()["uploads"])
     h.link("backup/messages-media")
     s = h.wait("Messages media to back up", lambda s: idle(s) and last_run(s, "messagesMedia") is not None, timeout=900)
     media = [i for i in s["uploadedIDs"] if i.startswith("messages:")]
@@ -434,7 +479,7 @@ def s_messages(h: Harness) -> None:
     h.check("Messages media run completes", record["outcome"] == "completed", f"{len(media)} items, {record['failed']} failed")
     h.check("every confirmed attachment is recorded", len(media) == record["uploaded"] + record["existing"] or len(media) >= record["uploaded"],
             f"{len(media)} recorded, {record['uploaded']} uploaded, {record['existing']} existing")
-    uploads = h.ledger()["uploads"]
+    uploads = h.ledger()["uploads"][already:]
     named = [u for u in uploads if u["filename"].startswith("Messages-")]
     h.check("uploads never carry the chat's file names", len(named) == len(uploads), f"{len(named)} of {len(uploads)} named Messages-<hash>")
 

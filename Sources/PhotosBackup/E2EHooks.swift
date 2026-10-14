@@ -10,7 +10,7 @@ import UserNotifications
 /// read state out and set up a scenario; every real action goes through the
 /// public photosbackup:// links, the same way a person's Shortcut would.
 ///
-///   debug/state?out=<file>          the model as JSON (ids and counts only)
+///   debug/state?out=<file>[&settle=1]  the model as JSON (ids and counts only)
 ///   debug/connect?auth=<value>      Settings' paste path (keychain + check-auth)
 ///   debug/settings?<key>=<value>    one BackupSettings field (JSON value)
 ///   debug/select?albums=<id,id>     the albums to back up
@@ -21,6 +21,30 @@ import UserNotifications
 /// The state file never carries an album title, a file name from the
 /// library, message text or a credential: the harness's log is safe to keep.
 enum E2EHooks {
+    /// A copy started straight from a shell (to inherit its Full Disk
+    /// Access) is not the instance LaunchServices sends links to; it starts
+    /// a second copy instead. Such a run reads links from
+    /// <sandbox>/inbox/*.url, in name order, and handles them exactly as if
+    /// they had arrived as Apple events.
+    @MainActor private static var inboxTimer: Timer?
+
+    @MainActor
+    static func startInbox(_ delegate: AppDelegate) {
+        guard inboxTimer == nil, let sandbox = AppEnvironment.sandbox else { return }
+        let inbox = sandbox.appendingPathComponent("inbox", isDirectory: true)
+        try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
+        inboxTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: true) { _ in
+            MainActor.assumeIsolated {
+                let files = (try? FileManager.default.contentsOfDirectory(at: inbox, includingPropertiesForKeys: nil)) ?? []
+                for file in files.filter({ $0.pathExtension == "url" }).sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
+                    let text = (try? String(contentsOf: file, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    try? FileManager.default.removeItem(at: file)
+                    if let text, let url = URL(string: text) { delegate.handle(url) }
+                }
+            }
+        }
+    }
+
     @MainActor
     static func handle(_ url: URL, model: AppModel) -> Bool {
         guard url.host?.lowercased() == "debug" else { return false }
@@ -34,7 +58,12 @@ enum E2EHooks {
         switch verb {
         case "state":
             guard let out = query["out"] else { return true }
-            Task { @MainActor in await writeState(model, to: URL(fileURLWithPath: out)) }
+            Task { @MainActor in
+                // settle=1: read after the app has finished reacting to the
+                // delivery of this very link (the Dock policy, for one).
+                if query["settle"] == "1" { try? await Task.sleep(for: .seconds(1.2)) }
+                await writeState(model, to: URL(fileURLWithPath: out))
+            }
         case "connect":
             guard let auth = query["auth"] else { return true }
             Task { @MainActor in await model.connect(pasted: auth) }
