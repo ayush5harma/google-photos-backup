@@ -38,6 +38,10 @@ Automatic backups are on by default after the welcome guide. They run when the l
 
 </details>
 
+[![Windows WinUI 3 preview](docs/windows-overview.png)](Windows/README.md)
+
+The Windows image shows the native preview with an opaque capture background.
+
 These screenshots use [made-up fixture data](docs/SCREENSHOTS.md), not a real library, account, or conversation.
 
 ## What gets backed up

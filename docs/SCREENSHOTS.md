@@ -42,3 +42,7 @@ Images narrower than that, such as the menu bar panel, are used as rendered.
 | `menu-bar-panel-dark.png` | The same, in dark mode |
 | `menu-bar-panel-backing-up-dark.png` | The panel during a run |
 | `welcome-guide-light.png` | The first page of the welcome guide |
+
+## Windows preview
+
+`windows-overview.png` is rendered by the native WinUI app on the Windows CI runner with `--smoke-test <report.json> --screenshot <image.png>`. It uses synthetic folders and an example account, never signs in or uploads, and substitutes an opaque theme background for Mica during capture. The normal app retains Mica. The image was inspected from successful run [38627992465](https://github.com/ayush5harma/google-photos-backup/actions/runs/38627992465).

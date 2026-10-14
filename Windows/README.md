@@ -8,7 +8,13 @@ This is a development preview, not a stable Windows release. Track implementatio
 
 Open a successful **Windows x64** run associated with the PR, then download its **Google-Photos-Backup-Windows-x64** artifact while signed into GitHub. Artifacts expire after 14 days. Extract the artifact, then extract the enclosed application ZIP. Keep the entire **Google Photos Backup** folder together and run **GooglePhotosBackup.exe**.
 
-The preview targets Windows 10 version 1809 or later on x64; Windows 11 is recommended for its native Mica appearance. ARM64 packages are not provided. The package includes .NET, Windows App SDK, Python, and the uploader. Google sign-in also requires Microsoft Edge WebView2 Runtime. The application is currently unsigned, so Windows may warn when opening it; inspect the source and build provenance before trusting a preview.
+The preview targets Windows 10 version 1809 or later on x64; Windows 11 is recommended for its native Mica appearance. ARM64 packages are not provided. The package includes .NET, Windows App SDK, Python, and the uploader. Google sign-in also requires Microsoft Edge WebView2 Runtime. Follow Microsoft’s [Windows App SDK prerequisites](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/deployment-architecture), including the current x64 Visual C++ Redistributable. A clean Windows installation without that redistributable has not been tested. The application is currently unsigned, so Windows may warn when opening it; inspect the source and build provenance before trusting a preview.
+
+## A look at the preview
+
+![Native WinUI 3 backup overview](../docs/windows-overview.png)
+
+This is the actual WinUI window rendered with synthetic data in [verified Windows CI run 38627992465](https://github.com/ayush5harma/google-photos-backup/actions/runs/38627992465). The fixture uses an opaque theme background so Mica transparency is readable in a PNG; the normal app retains its system backdrop.
 
 ## Set up and back up
 
