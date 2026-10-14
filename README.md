@@ -19,7 +19,7 @@ Download the **macOS Apple silicon (arm64)** or **macOS Intel (x86_64)** ZIP fro
 
 Unzip the download, move **Photos Backup.app** to Applications, and open it. The app is currently signed ad hoc and is **not notarized by Apple**. If macOS blocks its first launch, find the blocked app in **System Settings > Privacy & Security**, choose **Open Anyway**, and confirm the prompt only if you trust this download. Keep macOS security protections on. The app name remains **Photos Backup.app** so existing installs retain their identity.
 
-**Windows:** A native WinUI 3 x64 preview is available in [PR #5](https://github.com/ayush5harma/google-photos-backup/pull/5). See [Windows setup and source builds](Windows/README.md). It is under testing and has no stable release yet.
+**Windows:** A native WinUI 3 x64 preview is included in this repository. See [Windows setup and source builds](Windows/README.md). It is under testing and has no stable release yet.
 
 ## Set up on macOS
 
