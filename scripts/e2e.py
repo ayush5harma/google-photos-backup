@@ -41,6 +41,7 @@ from typing import Any, Callable
 
 REPO = Path(__file__).resolve().parents[1]
 BUNDLE_ID = "io.github.ayush5harma.PhotosBackup"
+LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 FAKE_AUTH = ("androidId=0123456789abcdef&app=com.google.android.apps.photos&client_sig=0&"
              "Email=e2e.tester%40example.com&service=oauth2&Token=aas_et/E2E-FAKE-TOKEN-NOT-A-SECRET")
 
@@ -69,10 +70,11 @@ class Harness:
             shutil.rmtree(self.app)
         run(["ditto", str(self.source_app), str(self.app)])
         shutil.copy2(binary, self.app / "Contents/MacOS/PhotosBackup")
+        # The copy refuses to run without the sandbox (E2EHooks.refuseUnsandboxedCopy).
+        run(["/usr/libexec/PlistBuddy", "-c", "Add :PhotosBackupE2ECopy bool true", str(self.app / "Contents/Info.plist")])
         identity = signing_identity(self.source_app)
         run(["codesign", "--force", "--sign", identity, "--identifier", BUNDLE_ID, str(self.app)])
-        run(["/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister",
-             "-f", str(self.app)])
+        run([LSREGISTER, "-f", str(self.app)])
         log(f"bundle ready, signed with {identity!r}")
 
     def reset(self) -> None:
@@ -120,9 +122,11 @@ class Harness:
         self.wait("the app answers", lambda s: s.get("pid") is not None, timeout=60, poll=1.5)
 
     def link(self, path: str, attempts: int = 1) -> None:
-        if self.mode == "exec":
-            # LaunchServices would start a second copy; the debug inbox is read
-            # by the running one (E2EHooks.startInbox).
+        # Debug links always go through the inbox, which only a running,
+        # sandboxed copy reads. A link through LaunchServices starts the app
+        # when no copy is running, without the sandbox (it happened once,
+        # 2026-10-14): public links are sent that way only to a running copy.
+        if path.startswith("debug/") or self.mode == "exec":
             inbox = self.sandbox / "inbox"
             inbox.mkdir(exist_ok=True)
             self.sent += 1
@@ -130,6 +134,8 @@ class Harness:
             name.with_suffix(".tmp").write_text(f"photosbackup://{path}")
             name.with_suffix(".tmp").rename(name.with_suffix(".url"))
             return
+        if not self.running_pid():
+            raise RuntimeError(f"no test copy is running; not sending photosbackup://{path} through LaunchServices")
         for attempt in range(attempts):
             try:
                 run(["open", "-g", "-a", str(self.app), f"photosbackup://{path}"])
@@ -141,13 +147,7 @@ class Harness:
 
     def state(self, timeout: float = 15, settle: bool = False) -> dict[str, Any]:
         before = self.state_file.stat().st_mtime_ns if self.state_file.exists() else 0
-        try:
-            self.link(f"debug/state?out={self.state_file}" + ("&settle=1" if settle else ""))
-        except RuntimeError:
-            # A copy started from this shell checks in with LaunchServices a
-            # little after it starts; until then links bounce.
-            time.sleep(1)
-            return {}
+        self.link(f"debug/state?out={self.state_file}" + ("&settle=1" if settle else ""))
         deadline = time.time() + timeout
         while time.time() < deadline:
             if self.state_file.exists() and self.state_file.stat().st_mtime_ns != before:
@@ -248,6 +248,27 @@ def last_run(state: dict[str, Any], kind: str) -> dict[str, Any] | None:
 
 
 # MARK: scenarios
+
+def s_guard(h: Harness) -> None:
+    """The copy has the real bundle id; started without the sandbox it must
+    quit before it reads anything. CFFIXED_USER_HOME points it at an empty
+    home, so even a broken guard could not reach the real data (and with no
+    settings the welcome guide would hold any backup)."""
+    home = h.work / "guard-home"
+    shutil.rmtree(home, ignore_errors=True)
+    home.mkdir(parents=True)
+    env = {key: value for key, value in os.environ.items() if not key.startswith("PHOTOS_BACKUP_")}
+    env["CFFIXED_USER_HOME"] = str(home)
+    started = time.time()
+    try:
+        result = subprocess.run([str(h.app / "Contents/MacOS/PhotosBackup")], env=env, capture_output=True, text=True, timeout=20)
+        quit_on_its_own = result.returncode == 0 and "without PHOTOS_BACKUP_SANDBOX" in result.stderr
+    except subprocess.TimeoutExpired:
+        quit_on_its_own = False
+    h.check("an unsandboxed start of the test copy quits at once", quit_on_its_own, f"{time.time() - started:.1f} s")
+    h.check("and writes nothing", not any((home / "Library").rglob("state.json")) if (home / "Library").exists() else True)
+    shutil.rmtree(home, ignore_errors=True)
+
 
 def s_launch(h: Harness) -> None:
     h.launch("open")
@@ -420,7 +441,7 @@ def s_shell(h: Harness) -> None:
     time.sleep(1.5)
     # Every link here goes through LaunchServices, which makes the app a Dock
     # app again on delivery; settle=1 reads after the app has undone that.
-    h.check("menu bar only hides the Dock icon, and links do not bring it back", h.state(settle=True)["activationPolicy"] == "accessory")
+    h.check("menu bar only hides the Dock icon", h.state(settle=True)["activationPolicy"] == "accessory")
     h.link("open/activity")
     time.sleep(1.5)
     h.check("still menu bar only after opening the window by link", h.state(settle=True)["activationPolicy"] == "accessory")
@@ -510,7 +531,7 @@ def s_diagnostics(h: Harness) -> None:
 
 
 SCENARIOS: dict[str, Callable[[Harness], None]] = {
-    "launch": s_launch, "connect": s_connect, "photos": s_photos, "retry": s_retry, "rate-limit": s_rate_limit,
+    "guard": s_guard, "launch": s_launch, "connect": s_connect, "photos": s_photos, "retry": s_retry, "rate-limit": s_rate_limit,
     "controls": s_controls, "conditions": s_conditions, "shell": s_shell,
     "messages-no-access": s_messages_without_access, "messages": s_messages, "diagnostics": s_diagnostics,
 }
@@ -540,9 +561,17 @@ def main() -> int:
             except Exception as error:  # a scenario that cannot finish is a failed check, not a crash
                 harness.check("scenario finished", False, f"{type(error).__name__}: {error}")
     finally:
+        if harness.running_pid():
+            harness.link("debug/login?on=0")
+            time.sleep(1)
         harness.quit()
         if not args.keep:
-            shutil.rmtree(harness.archive, ignore_errors=True)
+            # The sandbox holds conversation titles and handles (the archive
+            # overview) and the copy has the real bundle id: neither stays.
+            for path in (harness.archive, harness.sandbox, harness.runtime):
+                shutil.rmtree(path, ignore_errors=True)
+            subprocess.run([LSREGISTER, "-u", str(harness.app)], capture_output=True)
+            shutil.rmtree(harness.app, ignore_errors=True)
             subprocess.run(["defaults", "delete", BUNDLE_ID + ".sandbox"], capture_output=True)
             subprocess.run(["security", "delete-generic-password", "-s", BUNDLE_ID + ".auth-data.sandbox", "-a", "gpmc"],
                            capture_output=True)

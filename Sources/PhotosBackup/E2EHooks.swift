@@ -23,6 +23,18 @@ import UserNotifications
 /// The state file never carries an album title, a file name from the
 /// library, message text or a credential: the harness's log is safe to keep.
 enum E2EHooks {
+    /// scripts/e2e.py marks its copy of the bundle (Info.plist
+    /// PhotosBackupE2ECopy). Such a copy has the real bundle id, so if
+    /// LaunchServices ever starts it without the sandbox (a link that
+    /// arrived after the test copy quit, a login item left behind) it would
+    /// back up with the real account: measured 2026-10-14, one did. It quits
+    /// before reading anything instead.
+    static func refuseUnsandboxedCopy() {
+        guard Bundle.main.object(forInfoDictionaryKey: "PhotosBackupE2ECopy") != nil, !AppEnvironment.isSandboxed else { return }
+        FileHandle.standardError.write(Data("e2e copy started without PHOTOS_BACKUP_SANDBOX; quitting\n".utf8))
+        exit(0)
+    }
+
     /// A copy started straight from a shell (to inherit its Full Disk
     /// Access) is not the instance LaunchServices sends links to; it starts
     /// a second copy instead. Such a run reads links from

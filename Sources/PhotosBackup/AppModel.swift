@@ -235,6 +235,9 @@ final class AppModel {
     @ObservationIgnored private var wakeObserver: NSObjectProtocol?
 
     init() {
+        #if DEBUG
+        E2EHooks.refuseUnsandboxedCopy()
+        #endif
         let paths = AppPaths.standard
         let store = BackupStore(url: paths.state)
         self.store = store
@@ -253,6 +256,12 @@ final class AppModel {
         try? FileManager.default.removeItem(at: paths.staging)
         hasAuthData = Keychain.load() != nil
         if hasAuthData { account = .connected(email: nil) }
+        // 0.1.0 saved settings only once one was changed, so a missing blob
+        // does not mean a fresh install: someone signed in or with a backup
+        // history is set up, and the guide would hold their backups.
+        if !settings.onboardingCompleted, hasAuthData || !state.uploaded.isEmpty || !state.selectedAlbumIDs.isEmpty {
+            settings.onboardingCompleted = true
+        }
     }
 
     var authData: String? { Keychain.load() }
