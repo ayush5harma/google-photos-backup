@@ -80,9 +80,11 @@ final class BackupEngine {
 
     private(set) var phase: Phase = .idle
     private(set) var activity: [ActivityItem] = []
-    /// Assets this run set out to upload, and how many have an outcome.
-    private(set) var runTotal = 0
-    private(set) var runDone = 0
+    /// This run's counts; each item counts once, as confirmed or failed.
+    private(set) var tally = RunTally()
+    /// Items this run set out to upload, and how many have an outcome.
+    var runTotal: Int { tally.total }
+    var runDone: Int { tally.done }
     private(set) var lastError: String?
     private(set) var lastRun: Date?
     /// Set while phase is `.waiting`.
@@ -102,6 +104,8 @@ final class BackupEngine {
     @ObservationIgnored private var messagesOnly = false
     @ObservationIgnored private var failedAssets = Set<String>()
     @ObservationIgnored private var failedAlbums = Set<String>()
+    /// The batch being exported or sent; Retry leaves these alone.
+    @ObservationIgnored private var inFlight = Set<String>()
     @ObservationIgnored private var retries = RetryTracker()
     /// Lives across runs: Google's hold does not end because a run did.
     @ObservationIgnored private var rateLimiter = RateLimiter()
@@ -171,10 +175,15 @@ final class BackupEngine {
         let queued = Set(messages.map(\.id))
         let pending = items.filter { model.state.uploaded[$0.id] == nil && !queued.contains($0.id) }
         messages.append(contentsOf: pending)
-        if !pending.isEmpty {
+        guard !pending.isEmpty else { return }
+        // A run already going keeps its photos: Messages-only may narrow a
+        // run that is about to start, never one in progress.
+        if task == nil {
             messagesOnly = !includingPhotos
-            start(trigger: trigger)
+        } else if includingPhotos {
+            messagesOnly = false
         }
+        start(trigger: trigger)
     }
 
     /// While waiting, this ends the wait at once: no bridge is running then.
@@ -216,25 +225,40 @@ final class BackupEngine {
     }
 
     /// Queue one failed item again (a photo, a pick or a Messages item).
+    /// Ignored while stopping: the stop is about to clear the queues, and the
+    /// row would wait for a run that never comes.
     func retry(_ id: String) {
-        guard requeue(id) else { return }
+        guard phase != .stopping, requeue(id) else { return }
         startRetry()
     }
 
     /// Queue every failed item again.
     func retryFailed() {
-        let ids = Array(failures.keys)
-        guard !ids.isEmpty else { return }
-        for id in ids { _ = requeue(id) }
+        guard phase != .stopping else { return }
+        let requeued = Array(failures.keys).filter { requeue($0) }
+        guard !requeued.isEmpty else { return }
         startRetry()
     }
 
-    func canRetry(_ id: String) -> Bool { failures[id] != nil }
+    func canRetry(_ id: String) -> Bool { phase != .stopping && failures[id] != nil && !isBusy(id) }
+
+    /// Being sent now, or queued to be: Retry must not reset its attempts.
+    /// (A failure of this run stays in its queue until the next prune; that
+    /// does not count as queued.)
+    private func isBusy(_ id: String) -> Bool {
+        if inFlight.contains(id) { return true }
+        if failedAssets.contains(id) { return false }
+        return picked.contains(id) || messages.contains { $0.id == id }
+    }
 
     private func requeue(_ id: String) -> Bool {
-        guard let source = failures.removeValue(forKey: id) else { return false }
+        guard failures[id] != nil, !isBusy(id), let source = failures.removeValue(forKey: id) else { return false }
         failedAssets.remove(id)
         retries.forget(id)
+        // A failure of this run stops counting; the item counts again when
+        // it is sent.
+        tally.requeued(id)
+        syncRunCounts()
         switch source {
         case .asset: break
         case .picked: if !picked.contains(id) { picked.append(id) }
@@ -249,6 +273,8 @@ final class BackupEngine {
 
     private func startRetry() {
         if phase == .paused { phase = .idle }
+        // Retry is a request to run; a run about to pause carries on.
+        if phase == .pausing { phase = .running }
         if task == nil {
             start(trigger: .retry)
         } else {
@@ -262,8 +288,7 @@ final class BackupEngine {
     func applyFixture(activity: [ActivityItem], runTotal: Int, runDone: Int, phase: Phase,
                       lastRun: Date?, waitReason: WaitReason? = nil, lastError: String? = nil) {
         self.activity = activity
-        self.runTotal = runTotal
-        self.runDone = runDone
+        self.tally = RunTally(total: runTotal, done: runDone)
         self.phase = phase
         self.lastRun = lastRun
         self.waitReason = waitReason
@@ -284,31 +309,27 @@ final class BackupEngine {
         failedAssets = []
         failedAlbums = []
         retries = RetryTracker()
-        runTotal = 0
-        runDone = 0
+        tally = RunTally()
+        rateLimiter.runStarted()
         // Assets are planned afresh, so their earlier failures are tried
         // again anyway; a pick or a Messages item is only if Retry queues it.
         if !messagesOnly { failures = failures.filter { if case .asset = $0.value { false } else { true } } }
         currentRun = RunRecord(kind: messagesOnly ? .messagesMedia : .photos, trigger: trigger, conditions: model.conditions.summary)
         model.diagnostics.runActive = true
 
-        // messagesOnly is run-scoped: left set by a run that could not start,
-        // the next photo run would stop after the Messages queue.
         guard let runtime = BridgeRuntime.locate() else {
             lastError = "The uploader runtime is missing; build the app with scripts/build-app.sh."
-            messagesOnly = false
+            endQueues()
             return true
         }
         guard let auth = model.authData else {
             lastError = "Sign in with Google in Settings to start backing up."
-            messagesOnly = false
+            endQueues()
             return true
         }
         holdAwake()
         defer {
-            picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
-            messages.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
-            messagesOnly = false
+            endQueues()
             endWait()
             allowSleep()
         }
@@ -321,7 +342,7 @@ final class BackupEngine {
             messages.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
             if !messages.isEmpty {
                 let batch = Array(messages.prefix(model.settings.batchSize))
-                runTotal += batch.count
+                planned(batch.count)
                 announce(&announced, trigger: trigger)
                 // Every item of a batch ends uploaded or failed (or the run
                 // halts), so the next batch is always different.
@@ -334,14 +355,19 @@ final class BackupEngine {
             let albums = model.albums.map(\.snapshot)
             if settings.reuploadEdits { stampEarlierUploads(in: albums) }
             picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
+            // What this run already confirmed is never planned again in it,
+            // not even as an edit (Photos' analysis or a favourite can move
+            // its date mid-run), so every asset goes to Google at most once
+            // per run and re-uploads cannot keep the passes going.
             let steps = BackupPlanner.plan(picked: picked, state: model.state, batchSize: settings.batchSize)
                 + BackupPlanner.plan(albums: albums, state: model.state, mirrorAlbums: settings.mirrorAlbums,
-                                     batchSize: settings.batchSize, excludingAssets: failedAssets.union(picked),
+                                     batchSize: settings.batchSize,
+                                     excludingAssets: failedAssets.union(picked).union(tally.confirmedIDs),
                                      excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits)
             guard !steps.isEmpty else { break }
-            runTotal += steps.reduce(0) { total, step in
+            planned(steps.reduce(0) { total, step in
                 if case let .upload(_, _, ids) = step { total + ids.count } else { total }
-            }
+            })
             announce(&announced, trigger: trigger)
 
             var progressed = false
@@ -359,6 +385,30 @@ final class BackupEngine {
         return phase == .stopping
     }
 
+    /// Drops from the queues what is backed up or failed for this run, and
+    /// ends the run-scoped Messages-only flag; on every way out of a run,
+    /// including the early ones, or the next photo run would stop after the
+    /// Messages queue.
+    private func endQueues() {
+        picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
+        messages.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
+        messagesOnly = false
+    }
+
+    private func planned(_ count: Int) {
+        tally.planned(count)
+        syncRunCounts()
+    }
+
+    /// The run record mirrors the tally as it goes, for views that show it.
+    private func syncRunCounts() {
+        guard currentRun != nil else { return }
+        currentRun?.uploaded = tally.uploaded
+        currentRun?.existing = tally.existing
+        currentRun?.failed = tally.failed
+        currentRun?.bytes = tally.bytes
+    }
+
     private func announce(_ announced: inout Bool, trigger: RunTrigger) {
         guard !announced, runTotal > 0 else { return }
         announced = true
@@ -369,6 +419,12 @@ final class BackupEngine {
     private func finishRun(halted: Bool) {
         allowSleep()
         model.diagnostics.runActive = false
+        // No row may promise a wait the ended run will not finish: Retry
+        // during a halted run, or an item held when the run gave up.
+        for index in activity.indices {
+            if case .waiting = activity[index].status { activity[index].status = .stopped }
+        }
+        syncRunCounts()
         guard var record = currentRun else { return }
         currentRun = nil
         record.finishedAt = Date()
@@ -415,7 +471,7 @@ final class BackupEngine {
         case let .reupload(assetIDs):
             let changed = checkEdits(assetIDs)
             guard !changed.isEmpty else { return .nothing }
-            runTotal += changed.count
+            planned(changed.count)
             return await upload(changed, album: nil, auth: auth, runtime: runtime, settings: settings)
         }
     }
@@ -462,9 +518,13 @@ final class BackupEngine {
                         runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
         // iCloud originals download during the export, so it waits for the
         // network like the upload does.
-        guard await waitUntilClear(retryAt: nil) else { return phase == .stopping ? .halt : .nothing }
+        if let outcome = await clearance(retryAt: nil, holding: [], category: .photos) { return outcome }
         let batch = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: batch) }
+        inFlight = Set(assetIDs)
+        defer {
+            inFlight = []
+            try? FileManager.default.removeItem(at: batch)
+        }
 
         var items: [BatchItem] = []
         await AssetExporter().export(assetIDs, into: batch, shouldStop: { self.phase == .stopping }, started: { id, filename in
@@ -491,10 +551,14 @@ final class BackupEngine {
     private func upload(messages items: [MessagesMediaItem], auth: String,
                         runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
         // Rows appear once the batch may go, not while it is held offline.
-        guard await waitUntilClear(retryAt: nil) else { return phase == .stopping ? .halt : .nothing }
+        if let outcome = await clearance(retryAt: nil, holding: [], category: .messages) { return outcome }
         items.forEach { show($0.id, filename: $0.filename, status: .hashing) }
         let batch = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: batch) }
+        inFlight = Set(items.map(\.id))
+        defer {
+            inFlight = []
+            try? FileManager.default.removeItem(at: batch)
+        }
         let prepared = await Task.detached(priority: .utility) { () -> [BatchItem] in
             let files = FileManager.default
             do {
@@ -538,19 +602,19 @@ final class BackupEngine {
         var progressed = false
         var exhausted: [String] = []
         defer {
+            // Counts only: a Messages id is a content hash, and Google's
+            // words are in each row.
             if !exhausted.isEmpty {
-                let sample = exhausted.prefix(5).joined(separator: ", ")
-                model.log(category, "\(exhausted.count) item\(exhausted.count == 1 ? "" : "s") failed after \(retries.policy.maxAttempts) attempts: "
-                                    + sample + (exhausted.count > 5 ? ", ..." : ""), problem: true)
+                model.log(category, "\(exhausted.count) item\(exhausted.count == 1 ? "" : "s") failed after "
+                                    + "\(retries.policy.maxAttempts) attempts; Activity shows what Google said.", problem: true)
             }
         }
 
         while !pending.isEmpty {
-            guard await waitUntilClear(retryAt: retryAt) else {
-                // Stop or pause while holding: nothing is in flight, and the
-                // items stay un-uploaded rather than failed.
-                markStopped(pending)
-                return phase == .stopping ? .halt : progressed ? .progressed : .nothing
+            // Stop or pause while holding: nothing is in flight, and the items
+            // stay un-uploaded rather than failed.
+            if let outcome = await clearance(retryAt: retryAt, holding: pending, category: category) {
+                return outcome == .nothing && progressed ? .progressed : outcome
             }
             retryAt = nil
             holdAwake()
@@ -592,6 +656,8 @@ final class BackupEngine {
                     }
                 }
             } catch {
+                // Confirmations already read are on disk before the run ends.
+                model.saveState()
                 lastError = error.localizedDescription
                 markStopped(pending)
                 return .halt
@@ -656,13 +722,43 @@ final class BackupEngine {
                 return .halt
             }
             if limited {
-                holdForRateLimit()
+                if holdForRateLimit() {
+                    endRun(failing: Self.rateLimitGiveUp, category: .network, leaving: next)
+                    return .halt
+                }
             } else if !confirmed.isEmpty {
                 rateLimiter.batchSucceeded()
             }
             pending = next
         }
         return progressed ? .progressed : .nothing
+    }
+
+    private static let rateLimitGiveUp = "\(EventPhrase.rateLimited) through \(RateLimiter.maximumHoldsPerRun) waits in a row, "
+        + "so this run stopped; the next run tries again."
+
+    /// nil when the batch may go. Otherwise what the caller returns: Stop or
+    /// Pause ended the wait (rows left as stopped, not failed), or the wait
+    /// gave up and the run fails.
+    private func clearance(retryAt: Date?, holding ids: [String], category: EventCategory) async -> Outcome? {
+        switch await waitUntilClear(retryAt: retryAt) {
+        case .clear:
+            return nil
+        case .halted:
+            markStopped(ids)
+            return phase == .stopping ? .halt : .nothing
+        case let .gaveUp(reason):
+            endRun(failing: reason, category: category, leaving: ids)
+            return .halt
+        }
+    }
+
+    /// Ends the run as failed with `reason`; `ids` were not sent and stay
+    /// un-uploaded (not failed), so the next run picks them up.
+    private func endRun(failing reason: String, category: EventCategory, leaving ids: [String]) {
+        lastError = reason
+        model.log(category, reason, problem: true)
+        markStopped(ids)
     }
 
     /// Queues `id` for another round if its failure allows one; false when
@@ -687,18 +783,23 @@ final class BackupEngine {
         }
     }
 
-    private func holdForRateLimit() {
+    /// Starts (or joins) Google's hold; true when this run has waited
+    /// through its allowance of holds and should end instead.
+    private func holdForRateLimit() -> Bool {
         let previous = rateLimiter.holdUntil
         let until = rateLimiter.hitLimit(at: Date())
-        guard until != previous else { return }
-        let seconds = Int(until.timeIntervalSinceNow.rounded())
-        model.log(.network, "\(EventPhrase.rateLimited); uploads wait \(seconds) s and then carry on.")
+        if rateLimiter.runShouldGiveUp { return true }
+        if until != previous {
+            let seconds = Int(until.timeIntervalSinceNow.rounded())
+            model.log(.network, "\(EventPhrase.rateLimited); uploads wait \(seconds) s and then carry on.")
+        }
+        return false
     }
 
     private func addToAlbum(_ assetIDs: [String], mediaKeys: [String], albumID: String, albumTitle: String,
                             auth: String, runtime: BridgeRuntime) async -> Outcome {
         while true {
-            guard await waitUntilClear(retryAt: nil) else { return phase == .stopping ? .halt : .nothing }
+            if let outcome = await clearance(retryAt: nil, holding: [], category: .photos) { return outcome }
             holdAwake()
             let target = model.state.albumTarget(for: albumID, title: albumTitle)
             var added = false
@@ -717,6 +818,7 @@ final class BackupEngine {
                     }
                 }
             } catch {
+                model.saveState()
                 lastError = error.localizedDescription
                 return .halt
             }
@@ -727,7 +829,10 @@ final class BackupEngine {
             case .rateLimit:
                 // Google refused before doing anything; the same call goes
                 // again once the hold is over.
-                holdForRateLimit()
+                if holdForRateLimit() {
+                    endRun(failing: Self.rateLimitGiveUp, category: .network, leaving: [])
+                    return .halt
+                }
                 continue
             case .auth, .network, .storageFull:
                 lastError = AppModel.describe(kind, message)
@@ -744,28 +849,47 @@ final class BackupEngine {
 
     // MARK: - Waiting
 
+    private enum WaitResult: Equatable {
+        case clear
+        /// Stop or Pause ended the wait.
+        case halted
+        /// The run should end failed, for this reason.
+        case gaveUp(String)
+    }
+
     /// Holds before the next bridge run while a condition, Google's hold or
     /// a retry's backoff says so. Re-checks every second (conditions, Stop,
-    /// Pause); false when Stop or Pause ended the wait.
-    private func waitUntilClear(retryAt: Date?) async -> Bool {
+    /// Pause). A run someone started stops waiting for a missing network
+    /// after two minutes.
+    private func waitUntilClear(retryAt: Date?) async -> WaitResult {
         defer { endWait() }
+        var offlineSince: Date?
         while !shouldHalt {
             let now = Date()
             let reason: WaitReason
             if let condition = holdingCondition() {
                 reason = condition
+                if reason == .offline {
+                    let since = offlineSince ?? now
+                    offlineSince = since
+                    if ConditionsEvaluator.givesUpWaiting(for: reason, startedByPerson: overridesConditions, since: since, now: now) {
+                        return .gaveUp("No network connection, so this backup stopped; it starts again when you ask or automatically later.")
+                    }
+                } else {
+                    offlineSince = nil
+                }
             } else if let until = rateLimiter.hold(at: now) {
                 reason = .rateLimited(until: until)
             } else if let retryAt, retryAt > now {
                 reason = .retrying(until: retryAt)
             } else {
-                return true
+                return .clear
             }
             enterWait(reason)
             let remaining = reason.until.map { $0.timeIntervalSince(now) } ?? 1
             try? await Task.sleep(for: .seconds(min(1, max(0.05, remaining))))
         }
-        return false
+        return .halted
     }
 
     /// Only having no network at all holds a run someone started; the
@@ -826,14 +950,11 @@ final class BackupEngine {
 
     private func confirm(_ id: String, mediaKey: String, existing: Bool, item: BatchItem?) {
         model.state.recordUpload(assetID: id, mediaKey: mediaKey, existing: existing, stamp: item?.stamp)
-        runDone += 1
+        // A confirmation overrides an earlier failure of the same item.
+        tally.confirmed(id, existing: existing, bytes: item?.size ?? 0)
+        syncRunCounts()
         failures[id] = nil
-        if existing {
-            currentRun?.existing += 1
-        } else {
-            currentRun?.uploaded += 1
-            currentRun?.bytes += item?.size ?? 0
-        }
+        failedAssets.remove(id)
         update(id) {
             $0.status = existing ? .existing : .uploaded
             $0.detail = nil
@@ -855,8 +976,8 @@ final class BackupEngine {
     /// The item has failed for this run; Retry or the next run releases it.
     private func fail(_ id: String, _ message: String, retryable: Bool) {
         failedAssets.insert(id)
-        runDone += 1
-        currentRun?.failed += 1
+        tally.failed(id)
+        syncRunCounts()
         if id.hasPrefix("messages:") {
             if let item = messages.first(where: { $0.id == id }) { failures[id] = .messages(item) }
         } else {
