@@ -14,6 +14,9 @@
 
 set -euo pipefail
 
+# 2026-10-15: CI hosts run newer macOS; artifacts retain the macOS 14 floor.
+export MACOSX_DEPLOYMENT_TARGET=14.0
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Photos Backup"
 BUNDLE_ID="io.github.ayush5harma.PhotosBackup"
@@ -127,7 +130,7 @@ PLIST
 # hoc signing works too, but each rebuild then asks for both again.
 if [ "$IDENTITY" = auto ]; then
   IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
-    | grep -oE '"(Apple Development|iPhone Developer|Developer ID Application): [^"]+"' | head -n 1 | tr -d '"')"
+    | grep -oE '"(Apple Development|iPhone Developer|Developer ID Application): [^"]+"' | head -n 1 | tr -d '"' || true)"
   IDENTITY="${IDENTITY:--}"
 fi
 say "Signing with ${IDENTITY/#-/ad hoc}"
