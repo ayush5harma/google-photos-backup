@@ -469,7 +469,7 @@ final class BackupEngine {
             if failedAlbums.contains(albumID) { return .nothing }
             return await addToAlbum(assetIDs, mediaKeys: mediaKeys, albumID: albumID, albumTitle: albumTitle, auth: auth, runtime: runtime)
         case let .reupload(assetIDs):
-            let changed = checkEdits(assetIDs)
+            let changed = await checkEdits(assetIDs)
             guard !changed.isEmpty else { return .nothing }
             planned(changed.count)
             return await upload(changed, album: nil, auth: auth, runtime: runtime, settings: settings)
@@ -488,8 +488,8 @@ final class BackupEngine {
 
     /// The changed assets that need uploading; a change that left Google's
     /// copy right (a favourite, a keyword) only refreshes the stamp.
-    private func checkEdits(_ assetIDs: [String]) -> [String] {
-        let states = AssetExporter.editStates(of: assetIDs)
+    private func checkEdits(_ assetIDs: [String]) async -> [String] {
+        let states = await AssetExporter.editStates(of: assetIDs)
         var changed: [String] = []
         var refreshed = false
         for id in assetIDs {
@@ -498,10 +498,10 @@ final class BackupEngine {
                 changed.append(id)
                 continue
             }
-            let was = model.state.uploaded[id]?.editStamp?.edited
-            switch BackupPlanner.editAction(wasEdited: was, isEdited: state.edited) {
+            let was = model.state.uploaded[id]?.editStamp
+            switch BackupPlanner.editAction(was: was, isEdited: state.edited, editIdentity: state.identity) {
             case .refreshStamp:
-                model.state.refreshStamp(assetID: id, EditStamp(modified: modified, edited: false))
+                model.state.refreshStamp(assetID: id, EditStamp(modified: modified, edited: state.edited, editIdentity: state.identity))
                 refreshed = true
             case .upload:
                 changed.append(id)

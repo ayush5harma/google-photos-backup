@@ -8,10 +8,15 @@ public struct EditStamp: Codable, Equatable, Sendable {
     /// Whether that rendition was the edited one; nil when not known (an
     /// upload from before stamps were kept).
     public var edited: Bool?
+    /// For an edited rendition: a SHA-256 of the asset's adjustment data,
+    /// which changes only when the edit does (not on a favourite, a keyword
+    /// or a re-render). nil when unedited, unknown, or Photos had none.
+    public var editIdentity: String?
 
-    public init(modified: Date, edited: Bool?) {
+    public init(modified: Date, edited: Bool?, editIdentity: String? = nil) {
         self.modified = modified
         self.edited = edited
+        self.editIdentity = editIdentity
     }
 }
 

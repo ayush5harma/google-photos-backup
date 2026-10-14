@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Photos
 import PhotosBackupCore
@@ -48,8 +49,11 @@ struct AssetExporter {
             let filename = ExportNaming.uploadFilename(original: original, rendition: resource.originalFilename)
             // Read before the export: an edit made while it runs then shows
             // up as newer than the stamp, and is picked up next time.
-            let stamp = asset.modificationDate.map { EditStamp(modified: $0, edited: Self.isEdited(resource)) }
+            let edited = Self.isEdited(resource)
+            let modified = asset.modificationDate
             started(id, filename)
+            let identity = edited ? await Self.editIdentity(in: resources) : nil
+            let stamp = modified.map { EditStamp(modified: $0, edited: edited, editIdentity: identity) }
             do {
                 // One folder per asset: two IMG_0001.JPG from different
                 // cameras must not overwrite each other.
@@ -71,17 +75,48 @@ struct AssetExporter {
         }
     }
 
-    /// Whether each asset's current rendition is an edited one, and its
-    /// date now. Reads resources for these assets only (the ones whose date
-    /// moved), never for the library.
-    static func editStates(of assetIDs: [String]) -> [String: (edited: Bool, modified: Date?)] {
-        var states: [String: (edited: Bool, modified: Date?)] = [:]
-        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: nil).enumerateObjects { asset, _, _ in
+    struct EditState {
+        let edited: Bool
+        let modified: Date?
+        /// The edit's identity (see editIdentity); nil when unedited or unreadable.
+        let identity: String?
+    }
+
+    /// Whether each asset's current rendition is an edited one, which edit,
+    /// and its date now. Reads resources for these assets only (the ones
+    /// whose date moved), never for the library.
+    static func editStates(of assetIDs: [String]) async -> [String: EditState] {
+        var assets: [PHAsset] = []
+        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: nil).enumerateObjects { asset, _, _ in assets.append(asset) }
+        var states: [String: EditState] = [:]
+        for asset in assets {
             let resources = PHAssetResource.assetResources(for: asset)
             let edited = rendition(of: asset, in: resources).map(isEdited) ?? false
-            states[asset.localIdentifier] = (edited, asset.modificationDate)
+            let identity = edited ? await editIdentity(in: resources) : nil
+            states[asset.localIdentifier] = EditState(edited: edited, modified: asset.modificationDate, identity: identity)
         }
         return states
+    }
+
+    /// A SHA-256 of the asset's adjustment data: the recipe of the edit, a
+    /// small plist that changes when the edit changes and not when Photos
+    /// re-renders it or the asset is favourited. nil when there is none or
+    /// it cannot be read, and the caller falls back to uploading.
+    static func editIdentity(in resources: [PHAssetResource]) async -> String? {
+        guard let adjustments = resources.first(where: { $0.type == .adjustmentData }) else { return nil }
+        let options = PHAssetResourceRequestOptions()
+        options.isNetworkAccessAllowed = true
+        return await withCheckedContinuation { (continuation: CheckedContinuation<String?, Never>) in
+            var hasher = SHA256()
+            var empty = true
+            PHAssetResourceManager.default().requestData(for: adjustments, options: options, dataReceivedHandler: { chunk in
+                hasher.update(data: chunk)
+                empty = empty && chunk.isEmpty
+            }, completionHandler: { error in
+                guard error == nil, !empty else { return continuation.resume(returning: nil) }
+                continuation.resume(returning: hasher.finalize().map { String(format: "%02x", $0) }.joined())
+            })
+        }
     }
 
     /// The version Photos shows: the edited rendition when there is one,

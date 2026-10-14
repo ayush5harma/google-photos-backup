@@ -100,16 +100,22 @@ public enum BackupPlanner {
     /// was uploaded edited, which means an edit was reverted. That includes
     /// uploads from before stamps (nil): nearly all were unedited, and
     /// re-exporting every one on its first metadata change would cost far
-    /// more than the rare reverted edit it might catch. Any edited rendition
-    /// uploads, and gpmc's hash check answers "existing" without sending
-    /// anything when Google already has those bytes.
+    /// more than the rare reverted edit it might catch.
+    /// An asset edited then and now is the same edit when its edit identity
+    /// (a hash of the adjustment data) is unchanged: only the stamp moves, so
+    /// a favourite costs no download, and a re-render with new bytes cannot
+    /// put a second copy in Google Photos. Without identities to compare it
+    /// uploads, and gpmc's hash check answers "existing" when Google already
+    /// has those bytes.
     public enum EditAction: Equatable, Sendable {
         case refreshStamp
         case upload
     }
 
-    public static func editAction(wasEdited: Bool?, isEdited: Bool) -> EditAction {
-        !isEdited && wasEdited != true ? .refreshStamp : .upload
+    public static func editAction(was stamp: EditStamp?, isEdited: Bool, editIdentity: String?) -> EditAction {
+        guard isEdited else { return stamp?.edited == true ? .upload : .refreshStamp }
+        guard stamp?.edited == true, let before = stamp?.editIdentity, let now = editIdentity else { return .upload }
+        return before == now ? .refreshStamp : .upload
     }
 
     /// Selected assets backed up before stamps were kept, with their date
