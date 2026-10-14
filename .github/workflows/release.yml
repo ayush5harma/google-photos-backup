@@ -36,7 +36,7 @@ jobs:
         run: |
           test "$(uname -m)" = "$EXPECTED_ARCH"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            test "$GITHUB_REF_NAME" = v0.2.0
+            test "$GITHUB_REF_NAME" = v0.3.0
           fi
       - name: Fixture tests
         run: |
@@ -50,7 +50,7 @@ jobs:
         run: scripts/package-release.sh 'build/Photos Backup.app' "$EXPECTED_ARCH"
       - uses: actions/upload-artifact@v4
         with:
-          name: Photos-Backup-0.2.0-macOS-${{ matrix.arch }}
+          name: Photos-Backup-0.3.0-macOS-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14

@@ -74,6 +74,46 @@ public sealed class ICloudCoordinatorTests
     }
 
     [Fact]
+    public async Task TrustedPhonesSupportSmsRequestAndKeepDeviceCodeAsDefault()
+    {
+        var requests = new List<JsonObject>();
+        var bridge = new FakeBridge((request, emit, _) =>
+        {
+            requests.Add(request);
+            emit(new JsonObject
+            {
+                ["type"] = "auth", ["status"] = "needs_2fa", ["account"] = "first@example.com",
+                ["device_code_available"] = true,
+                ["phones"] = new JsonArray
+                {
+                    new JsonObject { ["id"] = 7, ["label"] = "***1234" },
+                    new JsonObject { ["id"] = 8, ["label"] = "***5678" }
+                }
+            });
+            return Task.FromResult(0);
+        });
+        var coordinator = new ICloudCoordinator(bridge, "state", "stage");
+
+        Assert.Equal(ICloudAuthStatus.NeedsTwoFactor,
+            await coordinator.SignInAsync("first@example.com", "private-password", CancellationToken.None));
+        Assert.True(coordinator.DeviceCodeAvailable);
+        Assert.Equal([new ICloudTrustedPhone(7, "***1234"), new ICloudTrustedPhone(8, "***5678")], coordinator.TrustedPhones);
+
+        Assert.Equal(ICloudAuthStatus.NeedsTwoFactor,
+            await coordinator.SendCodeAsync("first@example.com", "private-password", 8, CancellationToken.None));
+        Assert.Equal("send-code", requests[1]["command"]!.GetValue<string>());
+        Assert.Equal(8, requests[1]["phone_id"]!.GetValue<int>());
+        Assert.Null(requests[1]["code"]);
+
+        await coordinator.VerifyTwoFactorAsync("first@example.com", "private-password", "123456", 8, CancellationToken.None);
+        Assert.Equal(8, requests[2]["phone_id"]!.GetValue<int>());
+        Assert.Equal("123456", requests[2]["code"]!.GetValue<string>());
+
+        await coordinator.VerifyTwoFactorAsync("first@example.com", "private-password", "654321", CancellationToken.None);
+        Assert.Null(requests[3]["phone_id"]);
+    }
+
+    [Fact]
     public async Task StatusRejectsMismatchedAccountUnknownStateAndFatalEvent()
     {
         var bridge = new FakeBridge((_, emit, _) =>

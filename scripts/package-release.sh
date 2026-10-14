@@ -8,7 +8,7 @@ case "$ARCH" in arm64|x86_64) ;; *) echo 'unsupported architecture' >&2; exit 2 
 python3 "$ROOT/scripts/verify-app.py" "$APP" "$ARCH"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
-ZIP="Photos-Backup-0.2.0-macOS-$ARCH.zip"
+ZIP="Photos-Backup-0.3.0-macOS-$ARCH.zip"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT/$ZIP"
 TEMP="$(mktemp -d)"
 trap 'rm -rf "$TEMP"' EXIT

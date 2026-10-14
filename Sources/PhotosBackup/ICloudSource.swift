@@ -5,9 +5,7 @@ import PhotosBackupCore
 @MainActor
 @Observable
 final class ICloudSource {
-    enum Phase: Equatable {
-        case signedOut, checking, needs2FA, ready, signingIn, backingUp, stopping, stopped, finished, failed
-    }
+    typealias Phase = ICloudMenuStatus.Phase
 
     private(set) var phase: Phase = .signedOut
     private(set) var uploaded = 0
@@ -17,6 +15,10 @@ final class ICloudSource {
     private(set) var completed = 0
     private(set) var total = 0
     private(set) var notice: String?
+    private(set) var verification = ICloudVerificationState()
+    var trustedPhones: [ICloudTrustedPhone] { verification.phones }
+    var deviceCodeAvailable: Bool { verification.deviceCodeAvailable }
+    var selectedSMSPhoneID: Int? { verification.selectedSMSPhoneID }
     private(set) var accountState: ICloudAccountState
     var account: String { accountState.selectedAccount }
     var hasSavedSession: Bool { accountState.hasSavedSession }
@@ -31,27 +33,42 @@ final class ICloudSource {
     }
 
     #if DEBUG
-    func applyFixture(phase: Phase, account: String = "") {
-        accountState = ICloudAccountState(confirmedAccount: nil)
-        if !account.isEmpty { accountState.beginSignIn(account) }
+    func applyFixture(phase: Phase, account: String = "", confirmed: Bool = false,
+                      completed: Int = 0, total: Int = 0, uploaded: Int = 0,
+                      existing: Int = 0, failed: Int = 0, pending: Int = 0) {
+        accountState = ICloudAccountState(confirmedAccount: confirmed ? account : nil)
+        if !confirmed && !account.isEmpty { accountState.beginSignIn(account) }
         self.phase = phase
+        self.completed = completed
+        self.total = total
+        self.uploaded = uploaded
+        self.existing = existing
+        self.failed = failed
+        self.pending = pending
         notice = phase == .needs2FA ? "Enter the code Apple sent to a trusted device or phone number." : nil
     }
     #endif
 
     var isActive: Bool { phase == .backingUp || phase == .stopping }
     var isRunning: Bool { operation != nil }
+    var runtimeAvailable: Bool {
+        guard let runtime = BridgeRuntime.locate() else { return false }
+        return FileManager.default.fileExists(atPath: runtime.script.deletingLastPathComponent()
+            .appendingPathComponent("icloud_bridge.py").path)
+    }
 
     func check() {
         guard operation == nil else { return }
         guard let saved = accountState.useSavedSession() else { phase = .signedOut; return }
         phase = .checking
+        verification = ICloudVerificationState()
         start(.init(command: .status, account: saved, stateDir: stateDirectory.path))
     }
 
     func useAnotherAccount() {
         guard operation == nil else { return }
         accountState.beginAnotherAccount()
+        verification = ICloudVerificationState()
         phase = .signedOut
         notice = nil
     }
@@ -64,13 +81,39 @@ final class ICloudSource {
             return
         }
         accountState.beginSignIn(normalized)
+        verification = ICloudVerificationState()
         phase = .signingIn
         notice = nil
         start(.init(command: .signIn, account: normalized, stateDir: stateDirectory.path, password: password))
     }
 
+    func sendCode(to phoneID: Int, password: String) {
+        guard operation == nil, !account.isEmpty, !password.isEmpty,
+              verification.sendSMS(to: phoneID) else { return }
+        phase = .signingIn
+        notice = nil
+        start(.init(command: .sendCode, account: account, stateDir: stateDirectory.path,
+                    password: password, phoneID: phoneID))
+    }
+
+    func useDeviceCode() {
+        guard deviceCodeAvailable, operation == nil else { return }
+        verification.chooseDeviceCode()
+        notice = "Enter the code shown on your trusted device."
+    }
+
+    func choosePhone() {
+        guard operation == nil else { return }
+        verification.choosePhone()
+        notice = "Request a text message for the selected trusted phone."
+    }
+
     func verify(code: String, password: String) {
         guard operation == nil, !account.isEmpty else { return }
+        guard verification.canVerify else {
+            notice = "Choose a trusted phone and request a text message first."
+            return
+        }
         guard !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !password.isEmpty else {
             notice = "Enter the verification code and your Apple Account password."
             return
@@ -78,12 +121,17 @@ final class ICloudSource {
         phase = .signingIn
         notice = nil
         start(.init(command: .verify2FA, account: account, stateDir: stateDirectory.path,
-                    password: password, code: code.trimmingCharacters(in: .whitespacesAndNewlines)))
+                    password: password, code: code.trimmingCharacters(in: .whitespacesAndNewlines),
+                    phoneID: verification.selectedSMSPhoneID))
     }
 
     func backUp() {
         guard operation == nil, hasConfirmedSelection,
               phase == .ready || phase == .finished || phase == .stopped || phase == .failed else { return }
+        guard runtimeAvailable else {
+            notice = "The iCloud helper is unavailable. Reinstall Photos Backup and try again."
+            return
+        }
         guard let auth = model.authData else {
             notice = "Connect your Google Photos account before starting this backup."
             return
@@ -176,16 +224,22 @@ final class ICloudSource {
 
     private func receive(_ event: ICloudEvent) {
         switch event {
-        case .auth(.signedIn):
+        case .auth(.signedIn, _, _):
             if phase != .backingUp && phase != .stopping {
                 if let confirmed = accountState.confirmSignIn() {
                     AppEnvironment.defaults.set(confirmed, forKey: "icloudSourceAccount")
                 }
                 phase = .ready
                 notice = nil
+                verification = ICloudVerificationState()
             }
-        case .auth(.signedOut): phase = .signedOut; notice = "Sign in to your Apple Account to back up iCloud Photos."
-        case .auth(.needs2FA): phase = .needs2FA; notice = "Enter the code Apple sent to a trusted device or phone number."
+        case .auth(.signedOut, _, _): phase = .signedOut; notice = "Sign in to your Apple Account to back up iCloud Photos."
+        case let .auth(.needs2FA, phones, deviceAvailable):
+            verification.receiveChallenge(phones: phones, deviceCodeAvailable: deviceAvailable)
+            phase = .needs2FA
+            notice = selectedSMSPhoneID == nil
+                ? (deviceAvailable ? "Enter the code shown on your trusted device, or request a text message." : "Choose a trusted phone and request a text message.")
+                : "Enter the code sent to your trusted phone."
         case let .progress(done, count): completed = done; total = count
         case .item(let didUpload): if didUpload { uploaded += 1 } else { existing += 1 }
         case .itemFailed: failed += 1
@@ -196,6 +250,12 @@ final class ICloudSource {
         case .stopped: phase = .stopped; notice = "Paused. Start again to resume remaining items."
         case .reclaim: break
         case .failure(let kind):
+            if kind == "mfa_delivery" {
+                phase = .needs2FA
+                verification.choosePhone()
+                notice = "Could not send the text message. Choose a trusted phone and try again."
+                break
+            }
             phase = .failed
             notice = switch kind {
             case "auth": "Apple or Google sign-in expired or was refused. Check both accounts, then resume."

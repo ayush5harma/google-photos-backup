@@ -18,11 +18,56 @@ struct ICloudProtocolTests {
     }
 
     @Test func authenticationAndResumeEvents() {
-        #expect(decode(#"{"type":"auth","v":1,"status":"needs_2fa","account":"someone@example.test"}"#) == .auth(.needs2FA))
-        #expect(decode(#"{"type":"auth","v":1,"status":"signed_out"}"#) == .auth(.signedOut))
+        #expect(decode(#"{"type":"auth","v":1,"status":"needs_2fa","account":"someone@example.test"}"#)
+                == .auth(.needs2FA, phones: [], deviceCodeAvailable: true))
+        #expect(decode(#"{"type":"auth","v":1,"status":"signed_out"}"#)
+                == .auth(.signedOut, phones: [], deviceCodeAvailable: true))
         #expect(decode(#"{"type":"progress","v":1,"completed":4,"total":10,"uploaded":2}"#) == .progress(completed: 4, total: 10))
         #expect(decode(#"{"type":"done","v":1,"uploaded":2,"existing":1,"failed":1,"pending":6}"#)
                 == .done(uploaded: 2, existing: 1, failed: 1, pending: 6))
+    }
+
+    @Test func phoneOnlyChallengeRequestsSMSBeforeVerification() throws {
+        let event = decode(#"{"type":"auth","v":1,"status":"needs_2fa","device_code_available":false,"phones":[{"id":17,"label":"***1234"}]}"#)
+        #expect(event == .auth(.needs2FA, phones: [ICloudTrustedPhone(id: 17, label: "***1234")], deviceCodeAvailable: false))
+
+        var choice = ICloudVerificationState()
+        choice.receiveChallenge(phones: [ICloudTrustedPhone(id: 17, label: "***1234")], deviceCodeAvailable: false)
+        #expect(!choice.canVerify)
+        let unknownPhoneAccepted = choice.sendSMS(to: 99)
+        #expect(!unknownPhoneAccepted)
+        let selectedPhoneAccepted = choice.sendSMS(to: 17)
+        #expect(selectedPhoneAccepted)
+        #expect(choice.canVerify)
+        let send = ICloudRequest(command: .sendCode, account: "someone@example.test", stateDir: "/private/state",
+                                 password: "synthetic-password", phoneID: 17)
+        let sendObject = try #require(JSONSerialization.jsonObject(with: send.encoded()) as? [String: Any])
+        #expect(sendObject["command"] as? String == "send-code")
+        #expect(sendObject["phone_id"] as? Int == 17)
+        #expect(sendObject["password"] as? String == "synthetic-password")
+
+        let verify = ICloudRequest(command: .verify2FA, account: "someone@example.test", stateDir: "/private/state",
+                                   password: "synthetic-password", code: "123456", phoneID: choice.selectedSMSPhoneID)
+        let verifyObject = try #require(JSONSerialization.jsonObject(with: verify.encoded()) as? [String: Any])
+        #expect(verifyObject["phone_id"] as? Int == 17)
+        #expect(verifyObject["code"] as? String == "123456")
+        choice.choosePhone()
+        #expect(!choice.canVerify)
+    }
+
+    @Test func deviceCodeNeedsNoPhoneIDAndCanReplaceSMSChoice() throws {
+        var choice = ICloudVerificationState()
+        choice.receiveChallenge(phones: [ICloudTrustedPhone(id: 3, label: "***9876")], deviceCodeAvailable: true)
+        #expect(choice.canVerify)
+        let selectedPhoneAccepted = choice.sendSMS(to: 3)
+        #expect(selectedPhoneAccepted)
+        choice.chooseDeviceCode()
+        #expect(choice.selectedSMSPhoneID == nil)
+        #expect(choice.canVerify)
+        let request = ICloudRequest(command: .verify2FA, account: "someone@example.test", stateDir: "/private/state",
+                                    password: "synthetic-password", code: "654321", phoneID: choice.selectedSMSPhoneID)
+        let object = try #require(JSONSerialization.jsonObject(with: request.encoded()) as? [String: Any])
+        #expect(object["phone_id"] == nil)
     }
 
     @Test func privateFailureDetailsDoNotBecomeDisplayEvents() {

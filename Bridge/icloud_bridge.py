@@ -7,7 +7,8 @@ accepted on the command line or written to protocol output. Version 1 commands:
 
   status         {account, state_dir}
   sign-in        {account, password, state_dir}
-  verify-2fa     {account, password, code, state_dir}
+  send-code      {account, password, phone_id, state_dir}
+  verify-2fa     {account, password, code, state_dir, phone_id?}
   backup         {account, state_dir, staging_dir, auth_data, max_items?}
   reclaim-status {}
 
@@ -63,6 +64,10 @@ class Unsupported2SAError(Exception):
     pass
 
 
+class MFADeliveryError(Exception):
+    pass
+
+
 def event(event_type: str, **fields: Any) -> dict[str, Any]:
     return {"type": event_type, "v": VERSION, **fields}
 
@@ -86,6 +91,14 @@ def private_dir(value: str) -> Path:
 
 def account_key(account: str) -> str:
     return hashlib.sha256(account.casefold().encode("utf-8")).hexdigest()
+
+
+def session_backend() -> str:
+    if os.name == "nt":
+        return "windows"
+    if sys.platform == "darwin":
+        return "macos"
+    return "posix"
 
 
 def _dpapi(data: bytes, decrypt: bool) -> bytes:
@@ -138,9 +151,9 @@ def state_lock(state: Path) -> Iterator[None]:
 
 def has_saved_session(state: Path, account: str) -> bool:
     key = account_key(account)
-    if os.name == "nt":
+    if session_backend() == "windows":
         return (state / ("session-" + key + ".dpapi")).is_file()
-    if sys.platform == "darwin":
+    if session_backend() == "macos":
         return (state / ("session-" + key + ".marker")).is_file()
     directory = state / ("session-" + key)
     return directory.is_dir() and any(directory.iterdir())
@@ -155,7 +168,8 @@ def session_directory(state: Path, account: str) -> Iterator[Path]:
     process forcibly killed by the OS are removed at the next launch.
     """
     key = account_key(account)
-    if os.name != "nt" and sys.platform != "darwin":
+    backend = session_backend()
+    if backend == "posix":
         cookie_dir = private_dir(str(state / ("session-" + key)))
         try:
             yield cookie_dir
@@ -171,7 +185,7 @@ def session_directory(state: Path, account: str) -> Iterator[Path]:
     cookie_dir = Path(tempfile.mkdtemp(prefix="session-tmp-", dir=state))
     safe = state / ("session-" + key + ".dpapi")
     try:
-        if os.name == "nt":
+        if backend == "windows":
             saved = _dpapi(safe.read_bytes(), True) if safe.exists() else None
         else:
             from keyring.backends.macOS import Keyring
@@ -191,7 +205,7 @@ def session_directory(state: Path, account: str) -> Iterator[Path]:
             files = {p.name: p.read_bytes().hex() for p in cookie_dir.iterdir() if p.is_file()}
             if files:
                 encoded = json.dumps(files).encode()
-                if os.name == "nt":
+                if backend == "windows":
                     temporary = safe.with_suffix(".tmp")
                     temporary.write_bytes(_dpapi(encoded, False))
                     os.replace(temporary, safe)
@@ -214,14 +228,61 @@ def make_service(account: str, password: str | None, cookie_dir: Path) -> Any:
 def auth_status(service: Any) -> str:
     if not getattr(service, "data", None):
         return "signed_out"
-    if service.requires_2fa:
-        return "needs_2fa"
     if service.requires_2sa:
+        if service.requires_2fa or service.data.get("dsInfo", {}).get("hsaVersion") == 2:
+            return "needs_2fa"
         raise Unsupported2SAError()
     # 2026-10-15: pyicloud may load a stale token from disk; Photos performs
     # the CloudKit indexing query that tests whether the session still works.
     _ = service.photos
     return "signed_in"
+
+
+def _phones(service: Any) -> list[dict[str, Any]]:
+    result = []
+    for phone in service.get_trusted_phone_numbers():
+        label = str(phone.obfuscated_number)
+        # 2026-10-15: The provider supplies an obfuscated number; reject an
+        # unexpectedly unmasked response before it can reach the app.
+        if not ("*" in label or "•" in label):
+            label = "Trusted phone"
+        result.append({"id": phone.id, "label": label})
+    return result
+
+
+def _is_network_error(error: Exception) -> bool:
+    if any(cls.__name__ in ("ConnectionError", "Timeout", "ConnectTimeout", "ReadTimeout")
+           for cls in type(error).__mro__):
+        return True
+    status = getattr(error, "code", None) or getattr(getattr(error, "response", None), "status_code", None)
+    with contextlib.suppress(TypeError, ValueError):
+        return int(status) in (408, 429) or 500 <= int(status) <= 599
+    return False
+
+
+def _auth_event(status: str, account: str, service: Any | None = None) -> dict[str, Any]:
+    if status == "needs_2fa" and service is not None:
+        device_code_available = bool(service.requires_2fa)
+        try:
+            phones = _phones(service)
+        except Exception as error:
+            if not (device_code_available and _is_network_error(error)):
+                raise
+            # 2026-10-15: A failed optional phone query must not prevent a
+            # device code already delivered by Apple's push from being used.
+            phones = []
+        return event("auth", status=status, account=account, phones=phones,
+                     device_code_available=device_code_available)
+    return event("auth", status=status, account=account)
+
+
+def _phone_id(request: dict[str, Any], service: Any) -> int:
+    identifier = request.get("phone_id")
+    if type(identifier) is not int or identifier < 0:
+        raise RequestError("phone_id must be a trusted phone integer ID")
+    if identifier not in {phone["id"] for phone in _phones(service)}:
+        raise RequestError("phone_id is not a trusted phone")
+    return identifier
 
 
 def _auth_command(request: dict[str, Any], state: Path, emit: Callable[[dict[str, Any]], None],
@@ -234,19 +295,34 @@ def _auth_command(request: dict[str, Any], state: Path, emit: Callable[[dict[str
         emit(event("auth", status="signed_out", account=account))
         return 0
     with session_directory(state, account) as cookies:
+        service = None
         try:
             service = factory(account, password, cookies)
-            if code is not None and service.requires_2fa:
-                if not service.validate_2fa_code(code):
-                    emit(event("auth", status="needs_2fa", account=account))
-                    return 0
             status = auth_status(service)
+            if status == "needs_2fa":
+                if command == "sign-in":
+                    # 2026-10-15: icloudpd 1.32.3 explicitly triggers a push
+                    # before asking for a device code; a failed push is nonfatal.
+                    service.trigger_push_notification()
+                elif command == "send-code":
+                    if not service.send_2fa_code_sms(_phone_id(request, service)):
+                        raise MFADeliveryError()
+                elif code is not None:
+                    if "phone_id" in request:
+                        valid = service.validate_2fa_code_sms(_phone_id(request, service), code)
+                    elif service.requires_2fa:
+                        valid = service.validate_2fa_code(code)
+                    else:
+                        raise RequestError("phone_id is required for SMS verification")
+                    if valid:
+                        status = auth_status(service)
         except Exception as error:
             if _is_auth_error(error):
                 status = "signed_out"
             else:
                 raise
-    emit(event("auth", status=status, account=account))
+        response = _auth_event(status, account, service)
+    emit(response)
     return 0
 
 
@@ -435,7 +511,7 @@ def run(request: Any, emit: Callable[[dict[str, Any]], None],
         if command == "reclaim-status":
             emit(event("reclaim", enabled=False, reason="destination proof unavailable"))
             return 0
-        if command not in ("status", "sign-in", "verify-2fa", "backup"):
+        if command not in ("status", "sign-in", "send-code", "verify-2fa", "backup"):
             raise RequestError("unknown command")
         state = private_dir(required(request, "state_dir"))
         with state_lock(state):
@@ -451,8 +527,11 @@ def run(request: Any, emit: Callable[[dict[str, Any]], None],
     except Unsupported2SAError:
         emit(event("fatal", kind="unsupported_2sa", message="Legacy Apple two-step verification is unsupported. Enable two-factor authentication or use the local Photos source."))
         return 4
+    except MFADeliveryError:
+        emit(event("fatal", kind="mfa_delivery", message="Could not send verification code. Try again."))
+        return 3
     except Exception as error:
-        kind = "auth" if _is_auth_error(error) or isinstance(error, GoogleAuthError) else "network" if isinstance(error, (ConnectionError, TimeoutError)) else "internal"
+        kind = "auth" if _is_auth_error(error) or isinstance(error, GoogleAuthError) else "network" if _is_network_error(error) else "internal"
         # 2026-10-15: HTTP exceptions can include account data and headers;
         # a fixed message keeps those values out of protocol output.
         emit(event("fatal", kind=kind, message={"auth": "iCloud or Google Photos sign-in expired or failed",

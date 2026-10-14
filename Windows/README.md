@@ -60,4 +60,4 @@ uv run --no-project --python 3.13 python -B -m unittest discover -s Bridge/tests
 
 Current source builds include an iCloud Photos source. Connect Google first, then open **iCloud Photos** and follow the Apple Account password and verification-code prompts. An iCloud for Windows installation or existing Windows iCloud sign-in is not required. Expired sessions return you to sign-in rather than silently reporting success.
 
-See [iCloud setup and limitations](../README.md#icloud-photos-backup-source-builds). This version retains the iCloud originals; automatic source deletion is not enabled.
+See [iCloud setup and limitations](../README.md#icloud-photos-backup). This version retains the iCloud originals; automatic source deletion is not enabled.

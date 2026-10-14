@@ -109,8 +109,15 @@
                     <Button x:Name="ICloudSignInButton" Content="Sign in to iCloud" Click="ICloudSignIn_Click"
                             AutomationProperties.Name="Sign in to iCloud Photos" />
                     <StackPanel x:Name="ICloudTwoFactorPanel" Spacing="8" Visibility="Collapsed">
-                        <TextBlock Text="Enter the six-digit verification code from your trusted Apple device or phone number. If the session expires, sign in again."
+                        <TextBlock x:Name="ICloudCodeModeText" Text="Enter the six-digit code shown on your trusted Apple device."
                                    TextWrapping="Wrap" />
+                        <Button x:Name="ICloudUseDeviceButton" Content="Use trusted device code" Click="ICloudUseDevice_Click"
+                                Visibility="Collapsed" />
+                        <StackPanel x:Name="ICloudPhoneChoices" Spacing="8" Visibility="Collapsed">
+                            <ComboBox x:Name="ICloudPhoneBox" Header="Text a code to" Width="280"
+                                      AutomationProperties.Name="Trusted phone for Apple verification" />
+                            <Button x:Name="ICloudSendCodeButton" Content="Send text message" Click="ICloudSendCode_Click" />
+                        </StackPanel>
                         <TextBox x:Name="ICloudCodeBox" Header="Verification code" MaxLength="6" InputScope="Number"
                                  AutomationProperties.Name="Apple verification code" />
                         <Button x:Name="ICloudVerifyButton" Content="Verify code" Click="ICloudVerify_Click" />

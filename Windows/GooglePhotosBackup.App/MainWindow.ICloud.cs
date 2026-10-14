@@ -10,9 +10,12 @@ public sealed partial class MainWindow
     private CancellationTokenSource? _icloudRunCancellation;
     private string? _icloudPendingPassword;
     private string? _icloudPendingAccount;
+    private int? _icloudSelectedPhoneId;
+    private bool _icloudDeviceCodeAvailable;
     private bool _icloudConnecting;
     private bool _icloudSignedIn;
     private bool _icloudPaused;
+    private int _icloudAuthGeneration;
     private int _icloudGeneration;
 
     private void InitializeICloud()
@@ -53,6 +56,7 @@ public sealed partial class MainWindow
         ICloudPasswordBox.Password = string.Empty;
         _icloudPendingPassword = null;
         _icloudPendingAccount = null;
+        _icloudSelectedPhoneId = null;
         if (account.Length == 0 || password.Length == 0)
         {
             ShowICloudNotice("Enter your Apple Account email and password.", InfoBarSeverity.Warning);
@@ -60,25 +64,34 @@ public sealed partial class MainWindow
         }
         _icloudConnecting = true;
         _icloudSignedIn = false;
+        var generation = _icloudAuthGeneration;
         ICloudTwoFactorPanel.Visibility = Visibility.Collapsed;
         RefreshICloudControls();
         try
         {
             var status = await GetICloudCoordinator().SignInAsync(account, password, CancellationToken.None);
+            if (generation != _icloudAuthGeneration) return;
             if (status == ICloudAuthStatus.NeedsTwoFactor)
             {
                 // 2026-10-15: The password remains in process memory only for Apple's next verification step.
                 _icloudPendingPassword = password;
                 _icloudPendingAccount = account;
                 ICloudTwoFactorPanel.Visibility = Visibility.Visible;
-                ICloudAccountStatus.Text = "Check your trusted Apple device or phone for a verification code.";
+                ApplyICloudVerificationMethods();
+                ICloudAccountStatus.Text = "Apple verification required.";
             }
             else if (status == ICloudAuthStatus.SignedIn) CompleteICloudSignIn(account);
             else ShowICloudNotice("Apple did not accept this sign-in. Check your credentials and try again.", InfoBarSeverity.Warning);
         }
+        catch (InvalidOperationException error) when (error.Message.Contains("Legacy Apple two-step", StringComparison.Ordinal))
+        {
+            if (generation == _icloudAuthGeneration)
+                ShowICloudNotice("This Apple Account uses legacy two-step verification, which this transfer cannot use. Back up a local folder instead.", InfoBarSeverity.Warning);
+        }
         catch (Exception)
         {
-            ShowICloudNotice("iCloud sign-in failed. Check your account, connection, and Apple verification settings.", InfoBarSeverity.Error);
+            if (generation == _icloudAuthGeneration)
+                ShowICloudNotice("iCloud sign-in failed. Check your account, connection, and Apple verification settings.", InfoBarSeverity.Error);
         }
         finally { _icloudConnecting = false; RefreshICloudControls(); }
     }
@@ -94,14 +107,19 @@ public sealed partial class MainWindow
             return;
         }
         _icloudConnecting = true;
+        var generation = _icloudAuthGeneration;
         RefreshICloudControls();
         try
         {
             var status = await GetICloudCoordinator().VerifyTwoFactorAsync(
-                _icloudPendingAccount, _icloudPendingPassword, code, CancellationToken.None);
+                _icloudPendingAccount, _icloudPendingPassword, code, _icloudSelectedPhoneId, CancellationToken.None);
+            if (generation != _icloudAuthGeneration) return;
             if (status == ICloudAuthStatus.SignedIn) CompleteICloudSignIn(_icloudPendingAccount);
             else if (status == ICloudAuthStatus.NeedsTwoFactor)
+            {
+                ApplyICloudVerificationMethods();
                 ShowICloudNotice("That code was not accepted. Get a new code and try again.", InfoBarSeverity.Warning);
+            }
             else
             {
                 _icloudPendingPassword = null;
@@ -112,9 +130,75 @@ public sealed partial class MainWindow
         }
         catch (Exception)
         {
-            ShowICloudNotice("The verification code could not be checked. Request a new code and try again.", InfoBarSeverity.Error);
+            if (generation == _icloudAuthGeneration)
+                ShowICloudNotice("The verification code could not be checked. Request a new code and try again.", InfoBarSeverity.Error);
         }
         finally { _icloudConnecting = false; RefreshICloudControls(); }
+    }
+
+    private async void ICloudSendCode_Click(object sender, RoutedEventArgs args)
+    {
+        if (_icloudConnecting || _icloudPendingAccount is null || _icloudPendingPassword is null ||
+            ICloudPhoneBox.SelectedItem is not ComboBoxItem { Tag: int phoneId }) return;
+        _icloudConnecting = true;
+        var generation = _icloudAuthGeneration;
+        RefreshICloudControls();
+        try
+        {
+            var status = await GetICloudCoordinator().SendCodeAsync(
+                _icloudPendingAccount, _icloudPendingPassword, phoneId, CancellationToken.None);
+            if (generation != _icloudAuthGeneration) return;
+            if (status == ICloudAuthStatus.SignedIn) CompleteICloudSignIn(_icloudPendingAccount);
+            else if (status == ICloudAuthStatus.NeedsTwoFactor)
+            {
+                _icloudSelectedPhoneId = phoneId;
+                ApplyICloudVerificationMethods();
+                ICloudCodeModeText.Text = "Enter the six-digit code Apple sent by text message.";
+                ICloudUseDeviceButton.Visibility = _icloudDeviceCodeAvailable ? Visibility.Visible : Visibility.Collapsed;
+                ICloudCodeBox.Text = string.Empty;
+                ShowICloudNotice("A code was requested for the selected trusted phone.", InfoBarSeverity.Informational);
+            }
+            else ShowICloudNotice("Apple could not send a code. Sign in again.", InfoBarSeverity.Warning);
+        }
+        catch (Exception)
+        {
+            if (generation == _icloudAuthGeneration)
+                ShowICloudNotice("The text message could not be sent. Choose another trusted phone or try again.", InfoBarSeverity.Error);
+        }
+        finally { _icloudConnecting = false; RefreshICloudControls(); }
+    }
+
+    private void ICloudUseDevice_Click(object sender, RoutedEventArgs args)
+    {
+        if (!_icloudDeviceCodeAvailable || _icloudConnecting) return;
+        _icloudSelectedPhoneId = null;
+        ICloudCodeBox.Text = string.Empty;
+        ICloudCodeModeText.Text = "Enter the six-digit code shown on your trusted Apple device.";
+        ICloudUseDeviceButton.Visibility = Visibility.Collapsed;
+        RefreshICloudControls();
+    }
+
+    private void ApplyICloudVerificationMethods()
+    {
+        var coordinator = GetICloudCoordinator();
+        _icloudDeviceCodeAvailable = coordinator.DeviceCodeAvailable;
+        var selected = _icloudSelectedPhoneId;
+        ICloudPhoneBox.Items.Clear();
+        foreach (var phone in coordinator.TrustedPhones)
+            ICloudPhoneBox.Items.Add(new ComboBoxItem { Content = phone.Label, Tag = phone.Id });
+        ICloudPhoneChoices.Visibility = ICloudPhoneBox.Items.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        var chosen = ICloudPhoneBox.Items.OfType<ComboBoxItem>()
+            .FirstOrDefault(item => item.Tag is int id && id == selected);
+        if (_icloudSelectedPhoneId is not null && chosen is null) _icloudSelectedPhoneId = null;
+        ICloudPhoneBox.SelectedItem = chosen ?? ICloudPhoneBox.Items.FirstOrDefault();
+        if (!_icloudDeviceCodeAvailable && _icloudSelectedPhoneId is null)
+            ICloudCodeModeText.Text = "Choose a trusted phone and request a text message code.";
+        else if (_icloudSelectedPhoneId is null)
+            ICloudCodeModeText.Text = "Enter the six-digit code shown on your trusted Apple device.";
+        ICloudUseDeviceButton.Visibility = _icloudSelectedPhoneId is not null && _icloudDeviceCodeAvailable
+            ? Visibility.Visible : Visibility.Collapsed;
+        if (!_icloudDeviceCodeAvailable && ICloudPhoneBox.Items.Count == 0)
+            ShowICloudNotice("No supported Apple verification method is available for this account. You can back up a local folder instead.", InfoBarSeverity.Warning);
     }
 
     private void CompleteICloudSignIn(string account)
@@ -199,6 +283,8 @@ public sealed partial class MainWindow
         var hasGoogle = GoogleSignIn.Email(_credential ?? "") is not null;
         ICloudSignInButton.IsEnabled = !_icloudConnecting && !busy;
         ICloudVerifyButton.IsEnabled = !_icloudConnecting && !busy;
+        ICloudVerifyButton.IsEnabled &= _icloudSelectedPhoneId is not null || _icloudDeviceCodeAvailable;
+        ICloudSendCodeButton.IsEnabled = !_icloudConnecting && !busy && ICloudPhoneBox.SelectedItem is not null;
         ICloudAccountBox.IsEnabled = !_icloudConnecting && !busy && _icloudPendingAccount is null;
         ICloudPasswordBox.IsEnabled = !_icloudConnecting && !busy;
         ICloudStartButton.IsEnabled = _icloudSignedIn && hasGoogle && !busy && _runCancellation is null && !_icloudPaused;
@@ -230,11 +316,16 @@ public sealed partial class MainWindow
 
     private void ClearICloudPendingSignIn()
     {
+        _icloudAuthGeneration++;
         _icloudPendingPassword = null;
         _icloudPendingAccount = null;
+        _icloudSelectedPhoneId = null;
+        _icloudDeviceCodeAvailable = false;
         ICloudPasswordBox.Password = string.Empty;
         ICloudCodeBox.Text = string.Empty;
         ICloudTwoFactorPanel.Visibility = Visibility.Collapsed;
+        ICloudPhoneChoices.Visibility = Visibility.Collapsed;
+        ICloudPhoneBox.Items.Clear();
     }
 
     public bool ValidateICloudSmokePage()

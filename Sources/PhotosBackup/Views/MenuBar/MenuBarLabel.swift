@@ -12,16 +12,22 @@ struct MenuBarLabel: View {
     var body: some View {
         let status = model.status
         let engine = model.engine
+        let cloud = model.iCloudMenuStatus
+        let cloudActive = cloud.takesMenuBarLabel
         let moving = status.kind == .backingUp
         HStack(spacing: 4) {
-            Image(systemName: status.symbol)
-                .symbolEffect(.pulse, options: .repeating, isActive: moving && !reduceMotion)
-            if model.settings.menuBarShowsProgress, moving, engine.runTotal > 0 {
+            Image(systemName: cloudActive ? cloud.symbol : status.symbol)
+                .symbolEffect(.pulse, options: .repeating,
+                              isActive: (cloudActive ? cloud.phase == .backingUp : moving) && !reduceMotion)
+            if model.settings.menuBarShowsProgress, cloudActive, let fraction = cloud.fraction {
+                Text(fraction, format: .percent.precision(.fractionLength(0)))
+                    .monospacedDigit()
+            } else if model.settings.menuBarShowsProgress, !cloudActive, moving, engine.runTotal > 0 {
                 Text(engine.runFraction, format: .percent.precision(.fractionLength(0)))
                     .monospacedDigit()
             }
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Photos Backup: \(status.headline)")
+        .accessibilityLabel(cloudActive ? "Photos Backup: iCloud Photos, \(cloud.headline)" : "Photos Backup: \(status.headline)")
     }
 }

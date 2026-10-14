@@ -21,11 +21,26 @@ def main():
         events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
         assert any(event.get("type") == "reclaim" and event.get("enabled") is False for event in events), \
             "Unverified iCloud deletion must stay disabled"
-    crypto = subprocess.run([python, "-I", "-B", "-c",
-        "import os,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).parent)); "
-        "import icloud_bridge as bridge; "
-        "assert os.name != 'nt' or bridge._dpapi(bridge._dpapi(b'synthetic-session',False),True) == b'synthetic-session'",
-        script], capture_output=True, text=True, timeout=30)
+    crypto_code = """
+import os, sys, tempfile
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[1]).parent))
+import icloud_bridge as bridge
+if os.name == 'nt':
+    with tempfile.TemporaryDirectory(prefix='icloud-vault-smoke-') as root:
+        state = bridge.private_dir(root)
+        account = 'fixture@example.invalid'
+        with bridge.state_lock(state):
+            with bridge.session_directory(state, account) as cookies:
+                (cookies / 'fixture.session').write_bytes(b'synthetic-session')
+            assert bridge.has_saved_session(state, account)
+            assert not list(state.glob('session-tmp-*'))
+            with bridge.session_directory(state, account) as cookies:
+                assert (cookies / 'fixture.session').read_bytes() == b'synthetic-session'
+            assert not list(state.glob('session-tmp-*'))
+"""
+    crypto = subprocess.run([python, "-I", "-B", "-c", crypto_code, script],
+                            capture_output=True, text=True, timeout=30)
     assert crypto.returncode == 0, "Packaged iCloud credential protection failed"
     print("Packaged iCloud provider: signed-out guidance and reclaim guard passed")
 

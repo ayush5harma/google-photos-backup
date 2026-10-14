@@ -106,6 +106,17 @@ enum SnapshotFixture {
                     await render(PanelSnapshot().environment(model), size: nil, appearance: appearance,
                                  to: output.appendingPathComponent("menubar-\(scenario.rawValue)-\(name).png"))
                 }
+                apply(.upToDate, to: model)
+                for (phase, title) in [(ICloudSource.Phase.backingUp, "backing-up"),
+                                       (.stopped, "paused"), (.failed, "attention")] {
+                    model.iCloud.applyFixture(phase: phase, account: accountEmail, confirmed: true,
+                                              completed: 18, total: 42, uploaded: 13, existing: 4, failed: 1, pending: 24)
+                    await render(PanelSnapshot().environment(model).environment(\.controlActiveState, .active),
+                                 size: nil, appearance: appearance,
+                                 to: output.appendingPathComponent("menubar-icloud-\(title)-\(name).png"),
+                                 activateWindow: false)
+                }
+                model.iCloud.applyFixture(phase: .signedOut)
                 let statuses = Scenario.allCases.map { scenario in
                     apply(scenario, to: model)
                     return model.status

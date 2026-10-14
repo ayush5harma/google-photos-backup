@@ -5,6 +5,7 @@ struct ICloudSourceView: View {
     @State private var appleAccount = ""
     @State private var password = ""
     @State private var verificationCode = ""
+    @State private var selectedPhoneID: Int?
 
     private var source: ICloudSource { model.iCloud }
 
@@ -33,6 +34,16 @@ struct ICloudSourceView: View {
         }
         .onChange(of: source.phase) { _, newPhase in
             if newPhase == .ready { password = ""; verificationCode = "" }
+            if newPhase == .needs2FA, selectedPhoneID == nil { selectedPhoneID = source.trustedPhones.first?.id }
+        }
+        .onChange(of: source.trustedPhones) { _, phones in
+            if !phones.contains(where: { $0.id == selectedPhoneID }) { selectedPhoneID = phones.first?.id }
+        }
+        .onChange(of: selectedPhoneID) { _, phoneID in
+            if source.selectedSMSPhoneID != nil, source.selectedSMSPhoneID != phoneID {
+                source.choosePhone()
+                verificationCode = ""
+            }
         }
         .onDisappear { password = ""; verificationCode = "" }
     }
@@ -118,17 +129,46 @@ struct ICloudSourceView: View {
 
     private var twoFactorForm: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Approve the sign-in on your trusted device, then enter the code shown by Apple.")
-            TextField("Verification code", text: $verificationCode)
-                .textContentType(.oneTimeCode)
+            if source.deviceCodeAvailable {
+                Text("Approve the sign-in on your trusted device and enter its code, or request a text message below.")
+            } else {
+                Text("Choose a trusted phone to receive a text message with a verification code.")
+            }
             if password.isEmpty {
                 SecureField("Apple Account password", text: $password)
                     .textContentType(.password)
             }
+            if !source.trustedPhones.isEmpty {
+                HStack {
+                    Picker("Trusted phone", selection: $selectedPhoneID) {
+                        ForEach(source.trustedPhones) { phone in
+                            Text(phone.label).tag(Optional(phone.id))
+                        }
+                    }
+                    Button(source.selectedSMSPhoneID == selectedPhoneID ? "Resend Text Message" : "Send Text Message") {
+                        if let selectedPhoneID {
+                            source.sendCode(to: selectedPhoneID, password: password)
+                            verificationCode = ""
+                        }
+                    }
+                    .disabled(source.isRunning || selectedPhoneID == nil || password.isEmpty)
+                }
+            }
+            if source.deviceCodeAvailable || source.selectedSMSPhoneID != nil {
+                TextField(source.selectedSMSPhoneID == nil ? "Trusted device code" : "Text message code", text: $verificationCode)
+                    .textContentType(.oneTimeCode)
+            }
             HStack {
                 Button("Verify Code") { source.verify(code: verificationCode, password: password) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(source.isRunning || verificationCode.isEmpty || password.isEmpty)
+                    .disabled(source.isRunning || verificationCode.isEmpty || password.isEmpty ||
+                              (!source.deviceCodeAvailable && source.selectedSMSPhoneID == nil))
+                if source.deviceCodeAvailable && source.selectedSMSPhoneID != nil {
+                    Button("Use Device Code") {
+                        source.useDeviceCode()
+                        verificationCode = ""
+                    }
+                }
                 Button("Start Again") { source.signIn(account: appleAccount, password: password) }
                     .disabled(source.isRunning || password.isEmpty)
                 if source.hasSavedSession {
