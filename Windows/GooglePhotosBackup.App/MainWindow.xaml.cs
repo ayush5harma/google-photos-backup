@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using GooglePhotosBackup.Core;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
 using Windows.Graphics;
 using Windows.Graphics.Imaging;
@@ -42,10 +43,15 @@ public sealed partial class MainWindow : Window
         if (smokeTest)
         {
             // 2026-10-15: CI fixtures construct the actual window without touching user state or network.
+            // 2026-10-15: RenderTargetBitmap omits Mica; an opaque fixture brush preserves readable navigation in CI PNGs.
+            Navigation.Background = new SolidColorBrush(Navigation.ActualTheme == ElementTheme.Dark
+                ? Microsoft.UI.Colors.Black : Microsoft.UI.Colors.White);
             _folders.Add(@"C:\Sample Photos\Family");
             _folders.Add(@"C:\Sample Photos\Travel");
             AccountText.Text = "sample@example.invalid";
             SettingsAccountText.Text = AccountText.Text;
+            OverviewSignInButton.Visibility = Visibility.Collapsed;
+            SettingsSignInButton.Visibility = Visibility.Collapsed;
             StatusText.Text = "Backing up sample photos";
             RunProgress.Value = 42;
             ProgressText.Text = "42 of 100 files · 0 failed";
