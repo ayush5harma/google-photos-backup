@@ -1,7 +1,4 @@
 using System.Collections.ObjectModel;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json.Nodes;
 using GooglePhotosBackup.Core;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -28,6 +25,7 @@ public sealed partial class MainWindow : Window
     private bool _connecting;
     private bool _paused;
     private bool _loadingSettings;
+    private bool _hasRunAttempt;
 
     public MainWindow(bool smokeTest = false)
     {
@@ -125,17 +123,14 @@ public sealed partial class MainWindow : Window
             return;
         }
         var started = DateTimeOffset.Now;
+        _hasRunAttempt = true;
         _runCancellation = new CancellationTokenSource();
         _paused = false;
         BackupSummary? summary = null;
         try
         {
             var bridge = CreateBridge();
-            var account = GoogleSignIn.Email(_credential)
-                ?? throw new InvalidOperationException("The connected account has no address. Sign in again.");
-            var accountKey = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(account.ToLowerInvariant())));
-            var stateDirectory = Path.Combine(_store.StateDirectory, accountKey);
-            _coordinator = new BackupCoordinator(bridge, stateDirectory);
+            _coordinator = new BackupCoordinator(bridge, _store.StateDirectory);
             _coordinator.ProgressChanged += ProgressChanged;
             RefreshControls();
             StatusText.Text = "Preparing backup";
@@ -248,13 +243,9 @@ public sealed partial class MainWindow : Window
         {
             var email = GoogleSignIn.Email(candidate)
                 ?? throw new InvalidOperationException("The credential has no valid account address.");
-            var accepted = false;
-            var request = new JsonObject { ["command"] = "check-auth", ["auth_data"] = candidate };
-            var exit = await CreateBridge().ExecuteAsync(request, message =>
-            {
-                if (message["type"]?.ToString() == "auth") accepted = true;
-            }, CancellationToken.None);
-            if (exit != 0 || !accepted)
+            var accepted = await new BackupCoordinator(CreateBridge(), _store.StateDirectory)
+                .CheckAuthAsync(candidate, CancellationToken.None);
+            if (!accepted)
                 throw new InvalidOperationException("Google Photos did not accept this account. Sign in again.");
             _store.SaveCredential(candidate);
             _credential = candidate;
@@ -334,7 +325,7 @@ public sealed partial class MainWindow : Window
         QualityBox.IsEnabled = !busy;
         MirrorFoldersToggle.IsEnabled = !busy;
         SelectionSummary.Text = _folders.Count == 1 ? "1 folder selected" : $"{_folders.Count} folders selected";
-        if (!busy && _history.Count == 0)
+        if (!busy && !_hasRunAttempt && _history.Count == 0)
             StatusText.Text = email is null ? "Connect a Google Photos account to get started."
                 : _folders.Count == 0 ? "Choose a folder to get started." : "Ready to back up";
     }

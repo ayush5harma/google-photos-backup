@@ -103,6 +103,51 @@ public sealed class BackupCoordinatorTests
     }
 
     [Fact]
+    public async Task DoneCountsWithoutItemConfirmationNeverRecordSuccess()
+    {
+        using var fixture = new TempFolder();
+        File.WriteAllText(Path.Combine(fixture.Root, "a.jpeg"), "a");
+        var calls = 0;
+        var bridge = new FakeBridge((request, emit, _) =>
+        {
+            if (Command(request) == "check-auth") Auth(request, emit);
+            else
+            {
+                calls++;
+                emit(new JsonObject { ["type"] = "done", ["uploaded"] = 1, ["existing"] = 0, ["failed"] = 0 });
+            }
+            return Task.FromResult(0);
+        });
+        var coordinator = new BackupCoordinator(bridge, fixture.State);
+        var options = new BackupOptions([fixture.Root], MirrorFolders: false);
+        Assert.Equal(new BackupSummary(0, 0, 1, false),
+            await coordinator.RunAsync(options, Credential("one@example.com"), CancellationToken.None));
+        await coordinator.RunAsync(options, Credential("one@example.com"), CancellationToken.None);
+        Assert.Equal(2, calls);
+    }
+
+    [Fact]
+    public async Task ScansEverySupportedMediaExtensionAndSkipsOtherFiles()
+    {
+        using var fixture = new TempFolder();
+        string[] extensions = ["jpg", "jpeg", "png", "heic", "heif", "gif", "webp", "tif", "tiff", "bmp", "avif",
+            "mp4", "mov", "m4v", "avi", "mkv", "3gp"];
+        foreach (var extension in extensions) File.WriteAllText(Path.Combine(fixture.Root, "media." + extension), extension);
+        File.WriteAllText(Path.Combine(fixture.Root, "notes.txt"), "not media");
+        var uploaded = 0;
+        var bridge = new FakeBridge((request, emit, _) =>
+        {
+            if (Command(request) == "check-auth") Auth(request, emit);
+            else foreach (var item in Items(request)) { uploaded++; Confirm(item, emit); }
+            return Task.FromResult(0);
+        });
+        var result = await new BackupCoordinator(bridge, fixture.State).RunAsync(
+            new BackupOptions([fixture.Root], MirrorFolders: false), Credential("one@example.com"), CancellationToken.None);
+        Assert.Equal(extensions.Length, uploaded);
+        Assert.Equal(extensions.Length, result.Uploaded);
+    }
+
+    [Fact]
     public async Task FolderAlbumsAreAddedOnlyAfterConfirmationAndRemembered()
     {
         using var fixture = new TempFolder();
@@ -175,6 +220,26 @@ public sealed class BackupCoordinatorTests
             new BackupOptions([fixture.Root]), Credential("one@example.com"), CancellationToken.None));
         Assert.Equal("Google sign-in needs attention.", error.Message);
         Assert.False(Directory.Exists(fixture.State));
+    }
+
+    [Fact]
+    public async Task GmailAliasesShareOneAccountHistory()
+    {
+        using var fixture = new TempFolder();
+        File.WriteAllText(Path.Combine(fixture.Root, "a.bmp"), "a");
+        var uploads = 0;
+        var bridge = new FakeBridge((request, emit, _) =>
+        {
+            if (Command(request) == "check-auth") Auth(request, emit);
+            else { uploads++; Confirm(Assert.Single(Items(request)), emit); }
+            return Task.FromResult(0);
+        });
+        var coordinator = new BackupCoordinator(bridge, fixture.State);
+        var options = new BackupOptions([fixture.Root], MirrorFolders: false);
+        await coordinator.RunAsync(options, Credential("person.name@gmail.com"), CancellationToken.None);
+        await coordinator.RunAsync(options, Credential("personname@googlemail.com"), CancellationToken.None);
+        Assert.Equal(1, uploads);
+        Assert.Single(Directory.GetFiles(fixture.State, "state-*.json"));
     }
 
     [Fact]

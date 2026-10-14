@@ -36,17 +36,17 @@ public sealed class BridgeProcessClient(string pythonPath, string bridgePath) : 
             // argv, environment, and discarded stderr never carry it from us.
             stderr = process.StandardError.BaseStream.CopyToAsync(Stream.Null, CancellationToken.None);
             using var registration = cancellationToken.Register(() => Kill(process));
-            await process.StandardInput.WriteLineAsync(request.ToJsonString().AsMemory(), cancellationToken);
+            await process.StandardInput.WriteLineAsync(request.ToJsonString().AsMemory(), cancellationToken).ConfigureAwait(false);
             process.StandardInput.Close();
             string? line;
-            while ((line = await process.StandardOutput.ReadLineAsync(cancellationToken)) is not null)
+            while ((line = await process.StandardOutput.ReadLineAsync(cancellationToken).ConfigureAwait(false)) is not null)
             {
                 if (line.Length > 64 * 1024 || JsonNode.Parse(line) is not JsonObject message)
                     throw new InvalidOperationException("The uploader returned an invalid response.");
                 onEvent(message);
             }
-            await process.WaitForExitAsync(cancellationToken);
-            await stderr;
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+            await stderr.ConfigureAwait(false);
             return process.ExitCode;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -64,11 +64,11 @@ public sealed class BridgeProcessClient(string pythonPath, string bridgePath) : 
             {
                 // 2026-10-15: Wait for a canceled uploader to exit before a
                 // new run can use the same account and source files.
-                try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)); }
+                try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
                 catch (TimeoutException) { }
                 if (stderr is not null)
                 {
-                    try { await stderr.WaitAsync(TimeSpan.FromSeconds(5)); }
+                    try { await stderr.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
                     catch (TimeoutException) { }
                 }
             }
