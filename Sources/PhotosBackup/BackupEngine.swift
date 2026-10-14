@@ -310,7 +310,7 @@ final class BackupEngine {
                     answered.insert(id)
                     self.runDone += 1
                     self.update(id) { $0.status = existing ? .existing : .uploaded }
-                case let .itemFailed(id, message):
+                case let .itemFailed(id, message, _):
                     answered.insert(id)
                     self.fail(id, message)
                 case let .album(googleID, _):
@@ -394,7 +394,7 @@ final class BackupEngine {
                     self.model.state.recordUpload(assetID: id, mediaKey: mediaKey, existing: existing)
                     confirmed.append(id); answered.insert(id); self.runDone += 1
                     self.update(id) { $0.status = existing ? .existing : .uploaded }
-                case let .itemFailed(id, message):
+                case let .itemFailed(id, message, _):
                     answered.insert(id); self.fail(id, message)
                 case let .fatal(kind, message): fatal = (kind, message)
                 default: break
