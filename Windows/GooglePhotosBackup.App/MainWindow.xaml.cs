@@ -74,7 +74,8 @@ public sealed partial class MainWindow : Window
         QualityBox.SelectedIndex = _preferences.Quality switch { "saver" => 1, "quota" => 2, _ => 0 };
         MirrorFoldersToggle.IsOn = _preferences.MirrorFolders;
         _loadingSettings = false;
-        Closed += (_, _) => { _runGeneration++; _runCancellation?.Cancel(); _signInWindow?.Close(); };
+        Closed += (_, _) => { _runGeneration++; _runCancellation?.Cancel(); _icloudRunCancellation?.Cancel(); ClearICloudPendingSignIn(); _signInWindow?.Close(); };
+        InitializeICloud();
         RefreshControls();
     }
 
@@ -90,8 +91,10 @@ public sealed partial class MainWindow : Window
     {
         if (args.SelectedItemContainer is not NavigationViewItem item) return;
         var tag = item.Tag?.ToString();
+        if (tag != "icloud") ClearICloudPendingSignIn();
         OverviewPage.Visibility = tag == "overview" ? Visibility.Visible : Visibility.Collapsed;
         FoldersPage.Visibility = tag == "folders" ? Visibility.Visible : Visibility.Collapsed;
+        ICloudPage.Visibility = tag == "icloud" ? Visibility.Visible : Visibility.Collapsed;
         ActivityPage.Visibility = tag == "activity" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPage.Visibility = tag == "settings" ? Visibility.Visible : Visibility.Collapsed;
         Navigation.Header = item.Content;
@@ -133,7 +136,7 @@ public sealed partial class MainWindow : Window
 
     private async void Start_Click(object sender, RoutedEventArgs args)
     {
-        if (_store is null || _runCancellation is not null || _credential is null || _folders.Count == 0) return;
+        if (_store is null || _runCancellation is not null || _icloudRunCancellation is not null || _credential is null || _folders.Count == 0) return;
         if (_folders.Any(folder => !Directory.Exists(folder)))
         {
             ShowNotice("A selected folder is unavailable. Reconnect its drive or remove it before backing up.", InfoBarSeverity.Warning);
@@ -338,7 +341,7 @@ public sealed partial class MainWindow : Window
 
     private void RefreshControls()
     {
-        var busy = _runCancellation is not null;
+        var busy = _runCancellation is not null || _icloudRunCancellation is not null;
         var email = _credential is null ? null : GoogleSignIn.Email(_credential);
         AccountText.Text = email ?? "Not connected";
         SettingsAccountText.Text = email ?? "Not connected";
@@ -349,9 +352,9 @@ public sealed partial class MainWindow : Window
         CredentialBox.IsEnabled = !busy && !_connecting && _signInWindow is null;
         DisconnectButton.IsEnabled = email is not null && !busy && !_connecting && _signInWindow is null;
         StartButton.IsEnabled = email is not null && _folders.Count > 0 && !busy && !_connecting && _signInWindow is null;
-        PauseButton.IsEnabled = busy && !_paused;
-        ResumeButton.IsEnabled = busy && _paused;
-        CancelButton.IsEnabled = busy;
+        PauseButton.IsEnabled = _runCancellation is not null && !_paused;
+        ResumeButton.IsEnabled = _runCancellation is not null && _paused;
+        CancelButton.IsEnabled = _runCancellation is not null;
         AddFolderButton.IsEnabled = !busy;
         RemoveFolderButton.IsEnabled = !busy;
         QualityBox.IsEnabled = !busy;
@@ -360,6 +363,7 @@ public sealed partial class MainWindow : Window
         if (!busy && !_hasRunAttempt && _history.Count == 0)
             StatusText.Text = email is null ? "Connect a Google Photos account to get started."
                 : _folders.Count == 0 ? "Choose a folder to get started." : "Ready to back up";
+        RefreshICloudControls();
     }
 
     private static IBridgeClient CreateBridge()

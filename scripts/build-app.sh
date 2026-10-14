@@ -20,7 +20,7 @@ export MACOSX_DEPLOYMENT_TARGET=14.0
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Photos Backup"
 BUNDLE_ID="io.github.ayush5harma.PhotosBackup"
-VERSION="0.2.0"
+VERSION="0.3.0"
 PYTHON_VERSION="${PYTHON_VERSION:-3.13}"
 OUT="$ROOT/build"
 IDENTITY="${CODESIGN_IDENTITY:-auto}"
@@ -69,9 +69,9 @@ find "$RESOURCES/python" -name __pycache__ -type d -prune -exec rm -rf {} +
 PY="$RESOURCES/python/bin/python3"
 "$PY" -I -c 'import ssl, sqlite3, json' # the modules gpmc and requests need
 
-say "Installing gpmc"
+say "Installing backup providers"
 uv pip install --quiet --python "$PY" --target "$RESOURCES/bridge/site-packages" -r "$ROOT/Bridge/requirements.txt"
-cp "$ROOT/Bridge/gpmc_bridge.py" "$RESOURCES/bridge/"
+cp "$ROOT/Bridge/"*.py "$RESOURCES/bridge/"
 # The app runs Python with -B (no __pycache__ writes into a signed bundle),
 # so compile now; unchecked-hash pycs stay valid whatever the copy did to mtimes.
 "$PY" -I -m compileall -q -j 0 --invalidation-mode unchecked-hash "$RESOURCES/python/lib" "$RESOURCES/bridge" >/dev/null
@@ -79,8 +79,10 @@ echo '{"command":"version"}' | "$PY" -I -B "$RESOURCES/bridge/gpmc_bridge.py" | 
   || { echo "the bundled bridge cannot find gpmc" >&2; exit 1; }
 # The version answer reads package metadata only; import the whole client so
 # a dependency with a broken compiled module fails the build, not a backup.
-"$PY" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from gpmc import Client' "$RESOURCES/bridge/site-packages" \
+"$PY" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from gpmc import Client; from pyicloud_ipd import PyiCloudService' "$RESOURCES/bridge/site-packages" \
   || { echo "the bundled bridge cannot import gpmc" >&2; exit 1; }
+
+"$PY" -I -B "$ROOT/scripts/verify-icloud.py" "$PY" "$RESOURCES/bridge/icloud_bridge.py"
 
 say "Drawing the icon"
 ICONSET="$(mktemp -d)/AppIcon.iconset"

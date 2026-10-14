@@ -31,6 +31,9 @@ public partial class App : Application
                 stage = "load-window";
                 await window.WhenLoadedAsync();
                 await Task.Delay(100);
+                stage = "icloud-page";
+                var icloudPageRendered = window.ValidateICloudSmokePage();
+                if (!icloudPageRendered) throw new InvalidOperationException("The iCloud page did not render its sign-in controls.");
                 stage = "dpapi-roundtrip";
                 var tempRoot = Path.Combine(Path.GetTempPath(), "GooglePhotosBackupSmoke-" + Guid.NewGuid().ToString("N"));
                 bool encryptedCredentialRoundTrip;
@@ -58,7 +61,7 @@ public partial class App : Application
                     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
                     File.WriteAllText(reportPath, JsonSerializer.Serialize(new
                     {
-                        status = "ok", encryptedCredentialRoundTrip, lightIconSource, darkIconSource
+                        status = "ok", encryptedCredentialRoundTrip, icloudPageRendered, lightIconSource, darkIconSource
                     }));
                 }
                 Environment.Exit(0);

@@ -49,8 +49,11 @@ if ($LASTEXITCODE -ne 0) { throw 'The bundled bridge version request failed.' }
 $VersionEvents = @($VersionOutput | ForEach-Object { $_ | ConvertFrom-Json })
 $Version = @($VersionEvents | Where-Object { $_.type -eq 'version' })
 if ($Version.Count -ne 1 -or $Version[0].gpmc -ne '0.9.0') { throw 'The pinned real gpmc package is missing.' }
-& $Python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import ssl, sqlite3; from gpmc import Client' (Join-Path $Bundle 'runtime/bridge/site-packages')
+& $Python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import ssl, sqlite3; from gpmc import Client; from pyicloud_ipd import PyiCloudService' (Join-Path $Bundle 'runtime/bridge/site-packages')
 if ($LASTEXITCODE -ne 0) { throw 'The bundled Python dependencies cannot be imported.' }
+
+& $Python -I -B (Join-Path $PSScriptRoot 'verify-icloud.py') $Python (Join-Path $Bundle 'runtime/bridge/icloud_bridge.py')
+if ($LASTEXITCODE -ne 0) { throw 'Packaged iCloud signed-out guidance verification failed.' }
 
 $Report = [ordered]@{
     architecture = 'x64'
@@ -61,6 +64,8 @@ $Report = [ordered]@{
     gpmc = $Version[0].gpmc
     nativePythonModules = $NativeModules.Count + $NativeDependencies.Count
     bridgeSmoke = 'passed'
+    icloudSignedOutSmoke = 'passed'
+    icloudReclaim = 'disabled: no independent destination proof'
     uiSmoke = 'not requested'
     signing = 'unsigned CI artifact; no Windows release published'
 }
@@ -104,6 +109,7 @@ try {
             if (-not (Test-Path $SmokeReport)) { throw 'Synthetic WinUI launch did not produce its initialization report.' }
             $UIReport = Get-Content -Raw $SmokeReport | ConvertFrom-Json
             if ($UIReport.status -ne 'ok') { throw 'Synthetic WinUI initialization was not successful.' }
+            if ($UIReport.icloudPageRendered -ne $true) { throw 'The iCloud sign-in page failed its native UI check.' }
             if ($UIReport.encryptedCredentialRoundTrip -ne $true) { throw 'Synthetic DPAPI credential round-trip failed.' }
             if (-not (Test-Path $Screenshot) -or (Get-Item $Screenshot).Length -eq 0) { throw 'Synthetic WinUI screenshot was not produced.' }
             $DarkScreenshot = Join-Path $ReportDirectory 'ui-smoke-dark.png'

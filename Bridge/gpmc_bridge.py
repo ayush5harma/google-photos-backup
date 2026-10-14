@@ -480,12 +480,20 @@ def main() -> int:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     with protocol_stdout() as out:
         lock = threading.Lock()
+        terminal = False
 
         def emit(event: Event) -> None:
+            nonlocal terminal
             line = json.dumps(event, separators=(",", ":"))
             with lock:
+                # 2026-10-15: A worker can finish after SIGTERM interrupts
+                # the main thread; the process protocol must end at stopped.
+                if terminal:
+                    return
                 out.write(line + "\n")
                 out.flush()
+                if event["type"] in ("done", "stopped", "fatal"):
+                    terminal = True
 
         try:
             request = json.loads(sys.stdin.read())

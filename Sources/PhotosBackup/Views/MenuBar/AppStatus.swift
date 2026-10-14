@@ -80,6 +80,14 @@ extension AppModel {
                                    archiving: archive.isRunning))
     }
 
+    var iCloudMenuStatus: ICloudMenuStatus {
+        let source = iCloud
+        return ICloudMenuStatus(phase: source.phase, hasAppleSession: source.hasConfirmedSelection,
+                                hasGoogleAccount: hasAuthData, runtimeAvailable: source.runtimeAvailable,
+                                completed: source.completed, total: source.total, uploaded: source.uploaded,
+                                existing: source.existing, failed: source.failed, pending: source.pending)
+    }
+
     /// When a photos or Messages media backup last finished.
     var lastBackup: Date? {
         let recorded = diagnostics.runs.last { $0.kind != .messagesArchive && $0.finishedAt != nil }?.finishedAt

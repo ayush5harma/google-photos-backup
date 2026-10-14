@@ -15,6 +15,7 @@ struct MenuBarPanel: View {
             PanelHeader()
             PanelHero()
             PanelStats()
+            ICloudPanel()
             // The hero already says why a run is waiting.
             let attention = model.attention.filter { $0.id != "waiting" }
             if !attention.isEmpty {
@@ -58,9 +59,67 @@ private struct PanelHeader: View {
     }
 
     private var subtitle: String {
+        let cloud = model.iCloudMenuStatus
+        if cloud.takesMenuBarLabel { return "iCloud Photos · \(cloud.headline)" }
         let headline = model.status.headline
         guard let last = model.lastBackup, !model.engine.isActive else { return headline }
         return "\(headline) · \(last.relativeDescription)"
+    }
+}
+
+private struct ICloudPanel: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let status = model.iCloudMenuStatus
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "icloud")
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 18)
+                Text("iCloud Photos").font(.callout.weight(.semibold))
+                Spacer()
+                Button(actionTitle(status.action)) { perform(status.action) }
+                    .controlSize(.small)
+            }
+            Text(status.headline)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            if let fraction = status.fraction {
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+            }
+            if status.uploaded + status.existing + status.failed > 0 {
+                Text("\(status.uploaded.formatted()) uploaded · \(status.existing.formatted()) already present · \(status.failed.formatted()) failed")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if status.action != .open {
+                Button("Open iCloud Photos") { AppRouter.shared.openMain(section: .icloud) }
+                    .buttonStyle(.link)
+                    .font(.caption)
+            }
+        }
+        .padding(10)
+        .panelBackground()
+    }
+
+    private func actionTitle(_ action: ICloudMenuStatus.Action) -> String {
+        switch action {
+        case .open: "Open"
+        case .start: "Start Backup"
+        case .pause: "Pause"
+        case .resume: "Resume"
+        }
+    }
+
+    private func perform(_ action: ICloudMenuStatus.Action) {
+        switch action {
+        case .open: AppRouter.shared.openMain(section: .icloud)
+        case .start, .resume: model.iCloud.backUp()
+        case .pause: model.iCloud.pause()
+        }
     }
 }
 
@@ -82,7 +141,8 @@ private struct PanelHero: View {
                 .frame(width: 56, height: 56)
                 .tint(tint(status))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(model.heroTitle)
+                    Text(model.iCloudMenuStatus.takesMenuBarLabel && status.kind == .upToDate
+                         ? "Mac sources backed up" : model.heroTitle)
                         .font(.title3.weight(.semibold))
                         .lineLimit(1)
                     if status.kind == .backingUp, model.engine.isActive, let item = model.currentItem {
@@ -310,7 +370,7 @@ private struct PanelControls: View {
         GlassGroup(spacing: 8) {
             HStack(spacing: 8) {
                 Button { model.startBackupNow() } label: {
-                    Label("Back Up Now", systemImage: "arrow.up")
+                    Label("Back Up Mac", systemImage: "arrow.up")
                         .frame(maxWidth: .infinity)
                 }
                 .prominentGlassButton()
@@ -328,8 +388,8 @@ private struct PanelControls: View {
                 .buttonBorderShape(.circle)
                 .controlSize(.large)
                 .disabled(!paused && engine.phase != .running)
-                .help(paused ? "Resume" : "Pause after the current uploads")
-                .accessibilityLabel(paused ? "Resume" : "Pause")
+                .help(paused ? "Resume Mac backup" : "Pause Mac backup after the current uploads")
+                .accessibilityLabel(paused ? "Resume Mac backup" : "Pause Mac backup")
 
                 Button { model.stopBackup() } label: {
                     Image(systemName: "stop.fill").frame(width: 18)
@@ -338,8 +398,8 @@ private struct PanelControls: View {
                 .buttonBorderShape(.circle)
                 .controlSize(.large)
                 .disabled((!engine.isActive && !model.isMessagesScanning) || engine.phase == .stopping)
-                .help("Stop the backup")
-                .accessibilityLabel("Stop")
+                .help("Stop Mac backup")
+                .accessibilityLabel("Stop Mac backup")
             }
         }
     }

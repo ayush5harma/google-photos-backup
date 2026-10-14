@@ -27,6 +27,7 @@
         <NavigationView.MenuItems>
             <NavigationViewItem Content="Overview" Tag="overview" />
             <NavigationViewItem Content="Folders" Tag="folders" />
+            <NavigationViewItem Content="iCloud Photos" Tag="icloud" />
             <NavigationViewItem Content="Activity" Tag="activity" />
             <NavigationViewItem Content="Settings" Tag="settings" />
         </NavigationView.MenuItems>
@@ -89,6 +90,51 @@
                     </StackPanel>
                     <TextBlock Text="Changes to the folder list are saved automatically. Folder choices cannot change while a backup is running."
                                TextWrapping="Wrap" Opacity="0.65" />
+                </StackPanel>
+            </ScrollViewer>
+
+            <ScrollViewer x:Name="ICloudPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <StackPanel Spacing="18">
+                    <TextBlock Text="iCloud Photos" Style="{ThemeResource TitleTextBlockStyle}" />
+                    <TextBlock Text="Back up your iCloud Photos library to Google Photos. Sign in to your Apple Account, then approve the sign-in with the code Apple sends you. Connect Google Photos in Overview before starting."
+                               TextWrapping="Wrap" Opacity="0.75" />
+                    <TextBlock Text="Apple must allow iCloud Photos web access for this transfer. Advanced Data Protection may prevent access. This sign-in is separate from iCloud for Windows; if web access is unavailable, use the Folders page to back up a local copy instead."
+                               TextWrapping="Wrap" Opacity="0.75" />
+                    <InfoBar x:Name="ICloudNotice" IsOpen="False" IsClosable="True" Severity="Informational" />
+                    <TextBlock x:Name="ICloudAccountStatus" Text="Not connected to iCloud" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                    <TextBox x:Name="ICloudAccountBox" Header="Apple Account email" PlaceholderText="name@example.com"
+                             AutomationProperties.Name="Apple Account email" />
+                    <PasswordBox x:Name="ICloudPasswordBox" Header="Apple Account password"
+                                 AutomationProperties.Name="Apple Account password" />
+                    <Button x:Name="ICloudSignInButton" Content="Sign in to iCloud" Click="ICloudSignIn_Click"
+                            AutomationProperties.Name="Sign in to iCloud Photos" />
+                    <StackPanel x:Name="ICloudTwoFactorPanel" Spacing="8" Visibility="Collapsed">
+                        <TextBlock x:Name="ICloudCodeModeText" Text="Enter the six-digit code shown on your trusted Apple device."
+                                   TextWrapping="Wrap" />
+                        <Button x:Name="ICloudUseDeviceButton" Content="Use trusted device code" Click="ICloudUseDevice_Click"
+                                Visibility="Collapsed" />
+                        <StackPanel x:Name="ICloudPhoneChoices" Spacing="8" Visibility="Collapsed">
+                            <ComboBox x:Name="ICloudPhoneBox" Header="Text a code to" Width="280"
+                                      AutomationProperties.Name="Trusted phone for Apple verification" />
+                            <Button x:Name="ICloudSendCodeButton" Content="Send text message" Click="ICloudSendCode_Click" />
+                        </StackPanel>
+                        <TextBox x:Name="ICloudCodeBox" Header="Verification code" MaxLength="6" InputScope="Number"
+                                 AutomationProperties.Name="Apple verification code" />
+                        <Button x:Name="ICloudVerifyButton" Content="Verify code" Click="ICloudVerify_Click" />
+                    </StackPanel>
+                    <TextBlock Text="BACKUP TO GOOGLE PHOTOS" Style="{ThemeResource CaptionTextBlockStyle}" />
+                    <TextBlock x:Name="ICloudBackupStatus" Text="Connect both accounts to begin." TextWrapping="Wrap" />
+                    <ProgressBar x:Name="ICloudProgress" Minimum="0" Maximum="100" Height="8"
+                                 AutomationProperties.Name="iCloud backup progress" />
+                    <TextBlock x:Name="ICloudProgressText" Text="No iCloud backup running" TextWrapping="Wrap" Opacity="0.75" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="ICloudStartButton" Content="Back Up iCloud Photos" Click="ICloudStart_Click" IsEnabled="False"
+                                Style="{StaticResource AccentButtonStyle}" />
+                        <Button x:Name="ICloudPauseButton" Content="Pause" Click="ICloudPause_Click" IsEnabled="False" />
+                        <Button x:Name="ICloudResumeButton" Content="Resume" Click="ICloudResume_Click" IsEnabled="False" />
+                    </StackPanel>
+                    <TextBlock Text="This is a backup-only transfer. Originals remain in iCloud and no source photo is deleted. A paused or interrupted run can resume from confirmed uploads."
+                               TextWrapping="Wrap" Opacity="0.75" />
                 </StackPanel>
             </ScrollViewer>
 

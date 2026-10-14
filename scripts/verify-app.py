@@ -18,7 +18,7 @@ def verify(app, architecture):
     with (contents / "Info.plist").open("rb") as handle:
         info = plistlib.load(handle)
     assert info["CFBundleIdentifier"] == "io.github.ayush5harma.PhotosBackup"
-    assert info["CFBundleShortVersionString"] == "0.2.0"
+    assert info["CFBundleShortVersionString"] == "0.3.0"
     assert info["LSMinimumSystemVersion"] == "14.0"
     assert not info.get("PhotosBackupE2ECopy"), "An E2E copy cannot ship"
     binaries = []
