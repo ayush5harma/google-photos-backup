@@ -6,14 +6,44 @@
 #
 #   scripts/snapshots.sh <out-dir>
 #   SNAPSHOT_AUTH='androidId=...&Token=bogus' scripts/snapshots.sh <out-dir>
+#   SNAPSHOT_FIXTURE=1 scripts/snapshots.sh <out-dir> [sections,settings,onboarding,menubar,links]
 #
 # SNAPSHOT_AUTH goes through Settings' save path; use a throwaway value.
 # Needs build/Photos Backup.app from scripts/build-app.sh for the runtime.
+#
+# SNAPSHOT_FIXTURE=1 needs no app bundle: the plain debug binary runs with
+# PHOTOS_BACKUP_SANDBOX in a temporary folder, fills itself with a made-up
+# library, account and runs, and renders every section, Overview state,
+# Settings tab, welcome page and menu bar panel state in light and dark. It
+# reads nothing private and starts no backup.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT="${1:?usage: ${0##*/} <out-dir>}"
+OUT="${1:?usage: ${0##*/} <out-dir> [groups]}"
+
+if [ "${SNAPSHOT_FIXTURE:-0}" = 1 ]; then
+  swift build --package-path "$ROOT" --product PhotosBackup
+  BIN="$(swift build --package-path "$ROOT" --show-bin-path)/PhotosBackup"
+  SANDBOX="$(mktemp -d)"
+  trap 'rm -rf "$SANDBOX"' EXIT
+  mkdir -p "$OUT"
+  PHOTOS_BACKUP_SANDBOX="$SANDBOX" PHOTOS_BACKUP_SNAPSHOTS="$OUT" PHOTOS_BACKUP_SNAPSHOT_FIXTURE=1 \
+    PHOTOS_BACKUP_SNAPSHOT_ONLY="${2:-}" "$BIN" >/dev/null 2>&1 &
+  pid=$!
+  for _ in $(seq 1 240); do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  if kill -0 "$pid" 2>/dev/null; then
+    kill "$pid"
+    echo "the app did not finish in 240 s" >&2
+    exit 1
+  fi
+  ls "$OUT"
+  exit 0
+fi
+
 SOURCE="$ROOT/build/Photos Backup.app"
 [ -d "$SOURCE" ] || { echo "build the app first: scripts/build-app.sh" >&2; exit 1; }
 
