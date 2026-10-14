@@ -16,6 +16,8 @@ import UserNotifications
 ///   debug/select?albums=<id,id>     the albums to back up
 ///   debug/select?smallest=<min>-<max>  the smallest user album with that many items
 ///   debug/conditions?network=online|offline|expensive|constrained|real&power=ac|battery|lowpower|real
+///   debug/render?dir=<dir>         the live menu bar panel and sections as PNGs
+///   debug/login?on=1|0             Launch at login, as the General tab does
 ///   debug/quit
 ///
 /// The state file never carries an album title, a file name from the
@@ -73,6 +75,12 @@ enum E2EHooks {
             select(query, model: model)
         case "conditions":
             model.conditions.simulate(network: query["network"], power: query["power"])
+        case "render":
+            guard let dir = query["dir"] else { return true }
+            Task { @MainActor in await SnapshotFixture.renderLive(model, into: URL(fileURLWithPath: dir)) }
+        case "login":
+            // The same call the General tab's switch makes.
+            LoginItem.shared.setEnabled(query["on"] == "1")
         case "quit":
             NSApp.terminate(nil)
         default:
@@ -164,7 +172,8 @@ enum E2EHooks {
             "events": model.diagnostics.events.prefix(60).map { ["category": $0.category.rawValue, "message": $0.message, "problem": $0.isProblem] },
             "settings": (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(model.settings))) as Any,
             "activationPolicy": NSApp.activationPolicy() == .regular ? "regular" : NSApp.activationPolicy() == .accessory ? "accessory" : "prohibited",
-            "loginItem": "\(SMAppService.mainApp.status.rawValue)",
+            "loginItem": "\(LoginItem.shared.state)",
+            "loginItemError": LoginItem.shared.error,
             "notificationAuthorization": authorization.rawValue,
             "deliveredNotifications": notifications.map { ["title": $0.request.content.title, "body": $0.request.content.body] },
             "windows": NSApp.windows.filter(\.isVisible).map(\.title),

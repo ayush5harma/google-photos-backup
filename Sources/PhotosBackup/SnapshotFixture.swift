@@ -32,6 +32,21 @@ enum SnapshotFixture {
 
     private static let appearances: [(String, NSAppearance.Name)] = [("light", .aqua), ("dark", .darkAqua)]
 
+    /// scripts/e2e.py (photosbackup://debug/render): the live model, not a
+    /// fixture, drawn the same way: the menu bar panel and every section.
+    static func renderLive(_ model: AppModel, into output: URL) async {
+        try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        for (name, appearance) in appearances {
+            NSApp.appearance = NSAppearance(named: appearance)
+            await render(PanelSnapshot().environment(model), size: nil, appearance: appearance,
+                         to: output.appendingPathComponent("live-menubar-\(name).png"))
+            for section in AppSection.allCases {
+                await captureMain(section: section, to: output.appendingPathComponent("live-section-\(section.rawValue)-\(name).png"))
+            }
+        }
+        NSApp.appearance = nil
+    }
+
     static func run(_ model: AppModel, into output: URL) async {
         // Every setting from scratch: the sandbox's defaults suite is named
         // after the bundle id, not the sandbox folder, so another sandboxed

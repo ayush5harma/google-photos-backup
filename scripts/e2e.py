@@ -258,16 +258,25 @@ def s_launch(h: Harness) -> None:
     h.check("not signed in", s["hasAuthData"] is False)
     h.check("first launch selects All Photos", s["selectedAlbumIDs"] == ["all-photos"])
     h.check("conditions are read", s["conditions"] not in ("", "Unknown"), s["conditions"])
-    h.settings(onboardingCompleted=True, automatic=False)
-    s = h.state()
-    h.check("settings change through the model", s["settings"]["onboardingCompleted"] and not s["settings"]["automatic"])
+    h.check("backs up automatically by default", s["settings"]["automatic"] is True)
 
 
 def s_connect(h: Harness) -> None:
+    # Still inside the welcome guide, with All Photos selected and automatic
+    # backups on: signing in must not start a whole-library upload.
     h.link(f"debug/connect?auth={FAKE_AUTH.replace('&', '%26').replace('=', '%3D')}")
     s = h.wait("the account to connect", lambda s: s["hasAuthData"] and "connected" in s["account"], timeout=60)
     h.check("pasted credential verified through the bridge", "e2e.tester@example.com" in s["account"], s["account"])
     h.check("connect is logged without the token", not any("aas_et" in e["message"] for e in s["events"]))
+    time.sleep(8)
+    s = h.state()
+    started = s["phase"] != "idle" or any(r["kind"] == "photos" for r in s["runs"])
+    if started:
+        h.link("stop")
+    h.check("signing in during the welcome guide starts no backup", not started, f"phase={s['phase']}")
+    h.settings(onboardingCompleted=True, automatic=False)
+    s = h.state()
+    h.check("settings change through the model", s["settings"]["onboardingCompleted"] and not s["settings"]["automatic"])
 
 
 def choose_small_album(h: Harness) -> dict[str, Any]:
@@ -429,6 +438,12 @@ def s_shell(h: Harness) -> None:
     h.link("open/activity")
     time.sleep(1.5)
     h.check("photosbackup://open shows the main window", len(h.state()["windows"]) >= 1, str(h.state()["windows"]))
+    h.link("debug/login?on=1")
+    s = h.wait("launch at login", lambda s: s["loginItem"] in ("enabled", "requiresApproval") or s.get("loginItemError"), timeout=20, poll=1)
+    h.check("Launch at login registers the app", s["loginItem"] in ("enabled", "requiresApproval"), f"{s['loginItem']} {s.get('loginItemError') or ''}")
+    h.link("debug/login?on=0")
+    s = h.wait("launch at login off", lambda s: s["loginItem"] == "disabled" or s.get("loginItemError"), timeout=20, poll=1)
+    h.check("and unregisters it", s["loginItem"] == "disabled", f"{s['loginItem']} {s.get('loginItemError') or ''}")
     h.link("bogus-command")
     time.sleep(1)
     h.check("unknown links are ignored and logged", any("does not know" in e["message"] for e in h.state()["events"]))
