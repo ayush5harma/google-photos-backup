@@ -265,6 +265,9 @@ final class BackupEngine {
         case let .addToAlbum(albumID, albumTitle, assetIDs, mediaKeys):
             if failedAlbums.contains(albumID) { return .nothing }
             return await addToAlbum(assetIDs, mediaKeys: mediaKeys, albumID: albumID, albumTitle: albumTitle, auth: auth, runtime: runtime)
+        case .reupload:
+            // Not planned yet: run() does not pass reuploadEdits.
+            return .nothing
         }
     }
 
