@@ -46,7 +46,7 @@ final class MessagesArchiveController {
         self.model = model
     }
 
-    /// True from a start until its work has returned, also after the
+    /// 2026-10-15: True from a start until its work has returned, also after the
     /// archive was turned off mid-run: a run stops only between steps, and a
     /// second one on the same folder must wait for it.
     private(set) var isBusy = false
@@ -67,7 +67,7 @@ final class MessagesArchiveController {
         ArchiveLocation.defaultFolder(home: FileManager.default.homeDirectoryForCurrentUser, sandbox: AppEnvironment.sandbox)
     }
 
-    /// Pins an archive at the old default (~/Documents) so it never moves silently.
+    /// 2026-10-15: Pins an archive at the old default so it never moves silently.
     private func keepArchiveAtPreviousDefault() {
         if let old = ArchiveLocation.folderToKeep(setting: model.settings.archiveFolder, home: FileManager.default.homeDirectoryForCurrentUser,
                                                   sandbox: AppEnvironment.sandbox) {
@@ -75,7 +75,7 @@ final class MessagesArchiveController {
         }
     }
 
-    /// The cloud the folder is stored in, if any, for an honest note.
+    /// 2026-10-15: An archive in a sync folder reaches other devices, so disclose its service.
     var syncService: String? {
         let path = folder.path
         if let cached = syncServiceCache, cached.path == path { return cached.service }
@@ -86,7 +86,6 @@ final class MessagesArchiveController {
 
     @ObservationIgnored private var syncServiceCache: (path: String, service: String?)?
 
-    /// "This folder syncs to Google Drive, so your archive is stored there too."
     var syncNote: String? {
         syncService.map { "This folder syncs to \($0), so your archive is stored there too." }
     }
@@ -95,7 +94,7 @@ final class MessagesArchiveController {
 
     // MARK: - Running
 
-    /// Archive now, whatever the schedule says. While a run is still
+    /// 2026-10-15: Archive now, whatever the schedule says. While a run is still
     /// finishing, the start waits for it and happens then.
     func start(trigger: RunTrigger) {
         guard model.settings.messagesArchive else {
@@ -133,7 +132,7 @@ final class MessagesArchiveController {
             let work = Task.detached(priority: .utility) {
                 try archiver.run(progress: report)
             }
-            // Returns only once the work has: cancelling it is a request.
+            // 2026-10-15: Wait for the writer to return; cancellation is only a request.
             let result = await withTaskCancellationHandler { await work.result } onCancel: { work.cancel() }
             self?.finished(generation, result, trigger: trigger, started: started)
         }
@@ -158,7 +157,7 @@ final class MessagesArchiveController {
         task?.cancel()
     }
 
-    /// The one way the archive is turned on (the Messages section, Settings,
+    /// 2026-10-15: The one way the archive is turned on (Messages, Settings,
     /// the welcome guide): the first run starts at once. Not during the
     /// welcome guide, where Full Disk Access is usually still missing: the
     /// first automatic run after it (launch, the 30-minute timer) archives.
@@ -169,7 +168,7 @@ final class MessagesArchiveController {
         else if !isBusy { status = .idle }
     }
 
-    /// The one way it is turned off: a run in progress is cancelled and its
+    /// 2026-10-15: The one way it is turned off: a run in progress is cancelled and its
     /// result ignored; the controller stays busy until the run has returned.
     func turnOff() {
         generation += 1
@@ -218,7 +217,7 @@ final class MessagesArchiveController {
         case let .failure(error):
             lastFailure = Date()
             let archiveError = error as? MessagesArchiveError
-            // History, the timeline and notifications get the redacted
+            // 2026-10-15: History, the timeline and notifications get the redacted
             // reason: a system description can name folders and files.
             let reason = redactor.redact(archiveError?.description ?? "the archive stopped (error \((error as NSError).code))")
             status = archiveError == .needsFullDiskAccess ? .needsFullDiskAccess : .failed(reason)
