@@ -129,6 +129,35 @@ import Testing
         #expect(limiter.hitLimit(at: start.addingTimeInterval(1000)).timeIntervalSince(start.addingTimeInterval(1000)) == 60)
     }
 
+    @Test func aRunGivesUpAfterFiveHoldsWithNothingGettingThrough() {
+        var limiter = RateLimiter()
+        var now = start
+        for _ in 0..<RateLimiter.maximumHoldsPerRun {
+            now = limiter.hitLimit(at: now)
+            #expect(!limiter.runShouldGiveUp)
+        }
+        // Refusals during a hold do not count as more holds.
+        _ = limiter.hitLimit(at: now.addingTimeInterval(-1))
+        #expect(!limiter.runShouldGiveUp)
+        _ = limiter.hitLimit(at: now)
+        #expect(limiter.runShouldGiveUp)
+
+        // A new run starts its allowance over but keeps Google's hold.
+        let hold = limiter.holdUntil
+        limiter.runStarted()
+        #expect(!limiter.runShouldGiveUp)
+        #expect(limiter.holdUntil == hold)
+    }
+
+    @Test func aBatchThatGetsThroughResetsTheAllowance() {
+        var limiter = RateLimiter()
+        var now = start
+        for _ in 0..<4 { now = limiter.hitLimit(at: now) }
+        limiter.batchSucceeded()
+        for _ in 0..<RateLimiter.maximumHoldsPerRun { now = limiter.hitLimit(at: now) }
+        #expect(!limiter.runShouldGiveUp)
+    }
+
     @Test func remainingHoldEndsByItself() {
         var limiter = RateLimiter()
         #expect(limiter.hold(at: start) == nil)

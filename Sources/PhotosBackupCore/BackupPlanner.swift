@@ -95,17 +95,21 @@ public enum BackupPlanner {
     }
 
     /// What to do with an asset changed since its backup, once its current
-    /// resources are known. Only "unedited then and now" is certain to leave
-    /// Google's copy right (the change was a favourite or a keyword); any
-    /// other case uploads, and gpmc's hash check answers "existing" without
-    /// sending anything when Google already has those bytes.
+    /// resources are known. An asset that is unedited now changed only in
+    /// its metadata (a favourite, a keyword, Photos' own analysis) unless it
+    /// was uploaded edited, which means an edit was reverted. That includes
+    /// uploads from before stamps (nil): nearly all were unedited, and
+    /// re-exporting every one on its first metadata change would cost far
+    /// more than the rare reverted edit it might catch. Any edited rendition
+    /// uploads, and gpmc's hash check answers "existing" without sending
+    /// anything when Google already has those bytes.
     public enum EditAction: Equatable, Sendable {
         case refreshStamp
         case upload
     }
 
     public static func editAction(wasEdited: Bool?, isEdited: Bool) -> EditAction {
-        wasEdited == false && !isEdited ? .refreshStamp : .upload
+        !isEdited && wasEdited != true ? .refreshStamp : .upload
     }
 
     /// Selected assets backed up before stamps were kept, with their date

@@ -69,6 +69,16 @@ public enum ConditionsEvaluator {
         return nil
     }
 
+    /// How long a run a person started waits for a network that is gone.
+    public static let manualOfflineLimit: TimeInterval = 120
+
+    /// Whether a wait should end the run instead: Back Up Now with no
+    /// network fails after two minutes with a clear answer, while an
+    /// automatic run may wait as long as it takes (it holds nobody up).
+    public static func givesUpWaiting(for reason: WaitReason, startedByPerson: Bool, since: Date, now: Date) -> Bool {
+        reason == .offline && startedByPerson && now.timeIntervalSince(since) >= manualOfflineLimit
+    }
+
     /// "Wi-Fi, on power" for the run history and the diagnostic report.
     public static func summary(network: NetworkConditions, power: PowerConditions) -> String {
         var parts: [String] = []
