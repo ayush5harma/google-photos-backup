@@ -1,6 +1,6 @@
 # App icon
 
-The mark combines eight translucent Photos-inspired color lenses with one continuous infinity loop. A pearl glass tile supports light interfaces; a graphite tile supports dark interfaces. The silhouette and spacing are identical in both appearances. There is no separate badge, lettering, cloud or arrow.
+The mark combines eight translucent Photos-inspired color lenses with one continuous, translucent infinity loop. The loop uses 62% white opacity so the petal colors remain visible; the combined mark fills approximately 80% of the tile width. A pearl glass tile supports light interfaces; a graphite tile supports dark interfaces. The silhouette and spacing are identical in both appearances. There is no separate badge, lettering, cloud or arrow.
 
 The reproducible AppKit artwork lives in `scripts/make-icon.swift`:
 

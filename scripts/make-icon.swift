@@ -42,6 +42,12 @@ edge.stroke()
 
 // 2026-10-15: Eight overlapping lenses recall Photos; broad color areas survive
 // reduction to 32 px while a restrained rim conveys glass at larger sizes.
+NSGraphicsContext.saveGraphicsState()
+let markScale = NSAffineTransform()
+markScale.translateX(by: 512, yBy: 512)
+markScale.scale(by: 1.14)
+markScale.translateX(by: -512, yBy: -512)
+markScale.concat()
 let palette: [NSColor] = [color(1, 0.26, 0.28), color(1, 0.54, 0.12),
     color(1, 0.80, 0.10), color(0.43, 0.80, 0.18), color(0.08, 0.76, 0.66),
     color(0.12, 0.59, 0.98), color(0.39, 0.35, 0.95), color(0.85, 0.24, 0.73)]
@@ -82,12 +88,13 @@ loop.lineCapStyle = .round
 loop.lineJoinStyle = .round
 NSGraphicsContext.saveGraphicsState()
 let loopShadow = NSShadow()
-loopShadow.shadowColor = color(0.15, 0.12, 0.35, 0.24)
+loopShadow.shadowColor = color(0.15, 0.12, 0.35, 0.14)
 loopShadow.shadowBlurRadius = 10
 loopShadow.shadowOffset = NSSize(width: 0, height: -4)
 loopShadow.set()
-NSColor.white.withAlphaComponent(0.96).setStroke()
+NSColor.white.withAlphaComponent(0.62).setStroke()
 loop.stroke()
+NSGraphicsContext.restoreGraphicsState()
 NSGraphicsContext.restoreGraphicsState()
 NSGraphicsContext.restoreGraphicsState()
 guard let png = bitmap.representation(using: .png, properties: [:]) else { exit(1) }
