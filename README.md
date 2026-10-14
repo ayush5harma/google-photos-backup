@@ -1,198 +1,83 @@
-# Photos Backup for Mac
+# Google Photos Backup for Mac
 
-```text
-          .-----------------------.       .--.
-         /                         \   .-(    )-.
-        |    /\          /\         | (  cloud  )
-        |   /  \   /\   /  \   _     |  '-(  )-'
-        |  /    \_/  \_/    \_/ \    |     '--'
-        |       framed mountains     |
-         \                         /
-          '-----------------------'
-                 selected albums
-                    to backup
-```
+<p align="center"><img src="docs/app-icon.png" width="128" height="128" alt="Photos Backup app icon"></p>
 
-**Back up your Apple Photos albums to Google Photos, keep a readable archive
-of your Messages, and run it all from the menu bar.**
+Back up your Apple Photos library to Google Photos from a native macOS app. Choose albums or your whole library, then follow progress from the menu bar. Photos Backup can also upload photos and videos from Messages and keep a readable, local archive of your conversations.
 
-A native SwiftUI app with resumable uploads, album mirroring, and a menu bar
-panel that shows progress without keeping a window open. Choose your albums,
-optionally add the photos and videos from Messages, and optionally keep a
-private, browsable copy of every conversation in a folder on your Mac.
+Uploads use [gpmc](https://github.com/xob0t/gpmc), an unofficial Google Photos client. Its **Pixel XL original-quality mode** is intended to use Google's unlimited original-quality storage behavior. Google controls whether uploads work and how they count against storage, and can change either behavior. Check your Google Photos account's storage after your first backup. Photos Backup is an independent project, unaffiliated with Apple or Google.
 
-[Get started](#get-started) · [Automate it](#automate-it) ·
-[Privacy](#privacy) · [Architecture](docs/ARCHITECTURE.md) ·
-[Technical reference](docs/REFERENCE.md) · [Contributing](CONTRIBUTING.md)
+[Download for macOS](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Set up](#set-up-on-macos) · [Privacy](#privacy) · [Technical reference](docs/REFERENCE.md) · [Contribute](CONTRIBUTING.md)
 
-Independent community project; not affiliated with Apple or Google.
+## Download
 
-```mermaid
-flowchart LR
-  Photos[Photos albums] --> App[Photos Backup]
-  Media[Messages photos and videos] --> App
-  App --> Stage[Private staging]
-  Stage --> GPMC[gpmc upload flow]
-  GPMC --> Google[Google Photos]
-  Chats[Messages conversations] --> App
-  App --> Archive[Archive folder on this Mac]
-```
+Download the **macOS Apple silicon (arm64)** or **macOS Intel (x86_64)** ZIP from the [latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest). Version 0.2.0 supports macOS 14 or later. The prebuilt app includes its uploader; you do not need Xcode, Python, uv, or other developer tools.
+
+Unzip the download, move **Photos Backup.app** to Applications, and open it. The app is currently signed ad hoc and is **not notarized by Apple**. If macOS blocks its first launch, find the blocked app in **System Settings > Privacy & Security**, choose **Open Anyway**, and confirm the prompt only if you trust this download. Keep macOS security protections on. The app name remains **Photos Backup.app** so existing installs retain their identity.
+
+**Windows:** A WinUI 3 app is in development. There is no Windows release yet.
+
+## Set up on macOS
+
+1. Open **Photos Backup.app** and follow the welcome guide. Grant Photos access so the app can read the library and albums you want to back up.
+2. Choose **Sign In with Google**. Sign in on Google's page inside the app and complete the consent step. Photos Backup stores the resulting credential in your macOS login Keychain.
+3. Choose **All Photos** for the whole library, or select albums in **Albums**. You can change the selection later. Photos kept only in iCloud are downloaded by Photos when the app exports them.
+4. Choose **Back Up Now** in the window or menu bar panel. The menu bar shows progress, and **Activity** shows recent runs and failed items. Leave the app running for automatic backups; **Settings > General > Open at login** can start it when you sign in to your Mac.
+
+Automatic backups are on by default after the welcome guide. They run when the library changes, at launch, after wake, and periodically. You can pause, stop, or retry failed items. The app reads Apple Photos and uploads copies; it never deletes media from your Mac or Google Photos. Edited photos can be uploaded again, so Google Photos may contain both versions.
 
 ## A look at the app
 
 [![The menu bar panel](docs/menu-bar-panel-light.png)](docs/menu-bar-panel-light.png)
-[![The menu bar panel while backing up, dark](docs/menu-bar-panel-backing-up-dark.png)](docs/menu-bar-panel-backing-up-dark.png)
+[![A backup in progress in dark mode](docs/menu-bar-panel-backing-up-dark.png)](docs/menu-bar-panel-backing-up-dark.png)
 
-<details>
-<summary>See the welcome guide</summary>
+<details><summary>See the welcome guide</summary>
 
-[![The first page of the welcome guide](docs/welcome-guide-light.png)](docs/welcome-guide-light.png)
+[![The welcome guide](docs/welcome-guide-light.png)](docs/welcome-guide-light.png)
 
 </details>
 
-Screenshots are rendered from made-up data by the app's fixture mode; they never
-show a real library, account or conversation. See
-[screenshot instructions](docs/SCREENSHOTS.md).
+These screenshots use [made-up fixture data](docs/SCREENSHOTS.md), not a real library, account, or conversation.
 
-## What it does
+## What gets backed up
 
-### Photos backup
+- **Photos and albums.** A photo selected through several albums uploads once. Photos Backup can recreate your own album names in Google Photos. Live Photos currently upload as still images.
+- **Messages media, optional.** Turn on **Back up photos and videos from Messages** in Settings to upload locally available attachments. Message text, chat names, and contacts are not uploaded.
+- **Messages archive, optional.** Turn on **Keep an archive of my messages** for browsable conversations, attachments, and dated database copies. The default folder is `~/Messages Archive`; you can choose another. If it syncs through a cloud service, the archive is stored there too. Later edits and unsends replace the displayed text; the archive can also retain text it saw before the change. Messages deleted from the Mac remain in the archive.
 
-- Pick albums through PhotoKit, including originals stored in iCloud. A photo in
-  several albums uploads once, and your own albums are recreated in Google Photos
-  under the same names.
-- Uploads resume from what Google has confirmed. A failed item is retried in the
-  same run (three attempts, one, two and four seconds apart), and a Google
-  "slow down" answer holds every upload for a minute or more before it carries on.
-- Automatic runs wait on a metered network, in Low Data Mode, on battery or in
-  Low Power Mode, as you choose. Back Up Now, chosen photos, retries and links
-  run anyway.
-- A photo you edit after it was backed up is uploaded again as edited. The Mac
-  stays awake while a run is uploading.
-- Activity shows live uploads, the last 40 runs and a redacted timeline, with
-  Retry Failed, a per-item retry and the failure detail. Settings can export a
-  diagnostic report that opens with a "What stands out" summary.
+Both Messages features are off by default and need **Full Disk Access** for Photos Backup under **System Settings > Privacy & Security > Full Disk Access**. Contacts access is optional and only helps show names in the local archive.
 
-### Messages
+## Privacy
 
-Two separate features, both off until you turn them on, both needing Full Disk
-Access:
+Selected media, capture dates, and album names go to your connected Google Photos account. Backup state and logs stay under the app's Application Support folder; temporary upload copies are removed after each batch. Your Google credential stays in the login Keychain and is passed to the uploader through a pipe. A Messages archive stays in its chosen folder, with owner-only file permissions. If you choose a cloud-synced folder, that provider can receive the archive. The app does not modify your Photos library or Messages database.
 
-- **Messages media to Google Photos.** The photos and videos from your
-  conversations that are on this Mac go to Google Photos, as before.
-- **Messages archive.** A private, readable copy of every conversation in a
-  folder you choose (default `~/Documents/Messages Archive`): a page per
-  conversation styled like Messages, the same data as `messages.json`, the
-  attachments, and an index. It updates incrementally and runs once a day. Nothing
-  in it leaves your Mac.
+The uploader uses a reverse-engineered Google API. Upload availability, quality handling, and storage accounting may change without notice. The Pixel XL profile does not guarantee unlimited storage for your account. See [limitations and operational details](docs/REFERENCE.md#not-done-yet) and [security reporting](SECURITY.md).
 
-### Menu bar app
+## Automate it
 
-- A window-style menu bar panel with a live status item, and a menu-bar-only
-  mode (turn off Show in Dock).
-- Open at login, notifications for automatic runs and problems (throttled), and
-  keyboard shortcuts in the Backup menu.
-- A Settings window with General, Backup, Messages, Account and Advanced tabs,
-  and a seven-page welcome guide on a fresh install.
+Use a `photosbackup://` link in a macOS Shortcut's **Open URLs** action, or open one from a terminal. The links run the same actions as the app's buttons.
 
-The uploader uses [gpmc](https://github.com/xob0t/gpmc), an **unofficial Google
-Photos API client**. Upload availability and storage accounting depend on
-Google and may change. This app uploads in one direction and does not delete
-anything from Apple Photos, Messages, or Google Photos.
+| Link | Action |
+| --- | --- |
+| `photosbackup://backup` | Back Up Now, including Messages media when enabled |
+| `photosbackup://backup/photos` | Back up Photos only |
+| `photosbackup://backup/messages-media` | Back up Messages media only |
+| `photosbackup://archive` | Archive Messages now, when enabled |
+| `photosbackup://pause`, `resume`, `stop` | Control the current run |
+| `photosbackup://retry-failed` | Retry failed items |
+| `photosbackup://open` | Open the window |
+| `photosbackup://settings` | Open Settings |
 
-## Get started
+The [technical reference](docs/REFERENCE.md#links) lists the section-specific links and their requirements.
 
-Requires macOS 14 or later, Apple silicon, a Swift 6 toolchain (Xcode or Command
-Line Tools), and [uv](https://docs.astral.sh/uv/) for the bundled Python runtime.
+## Build and contribute
+
+The release ZIP is the easiest way to use the app. To build from source, use macOS 14 or later, a Swift 6 toolchain, and [uv](https://docs.astral.sh/uv/):
 
 ```sh
-git clone https://github.com/ayush5harma/photos-backup-mac.git
-cd photos-backup-mac
+git clone https://github.com/ayush5harma/google-photos-backup.git
+cd google-photos-backup
 scripts/build-app.sh
 open "build/Photos Backup.app"
 ```
 
-To install into `/Applications`, use `scripts/build-app.sh --install`. To sign
-ad hoc instead of with a keychain identity, use `--identity -`.
-
-1. Follow the welcome guide: allow Photos access, sign in with Google, choose
-   albums, and decide about Messages, the menu bar and notifications.
-2. Select **Back Up Now** in the menu bar panel or the Overview.
-
-The app is not notarized. A stable signing identity helps macOS retain Photos
-and Keychain permissions between builds. See
-[build and signing details](docs/REFERENCE.md#build-and-run).
-
-## Automate it
-
-`photosbackup://` links run the same actions as the buttons, with or without a
-window open. In Shortcuts, add an **Open URLs** action with one of these, or use
-`open` from a terminal. Links are followed exactly or not at all.
-
-| Link | Does |
-| --- | --- |
-| `photosbackup://backup` | Back Up Now (photos, plus Messages media when it is on) |
-| `photosbackup://backup/photos` | Back up photos only |
-| `photosbackup://backup/messages-media` | Back up Messages media only |
-| `photosbackup://archive` | Archive Messages now (needs the archive turned on) |
-| `photosbackup://pause`, `resume`, `stop` | Control the current run; `resume` only continues a paused run |
-| `photosbackup://retry-failed` | Retry the items that failed |
-| `photosbackup://open` | Open the window, or `open/overview`, `albums`, `messages`, `activity` |
-| `photosbackup://settings` | Open Settings, or `settings/general`, `backup`, `messages`, `account`, `advanced` |
-
-```sh
-open "photosbackup://backup/photos"
-```
-
-Runs a link starts are recorded as "Shortcut or link" and are not announced as
-automatic.
-
-## Privacy
-
-- **On your Mac.** Backup state, run history, the event timeline and logs live
-  under `~/Library/Application Support/io.github.ayush5harma.PhotosBackup/`.
-  Exported copies are staged temporarily in the app's Caches folder and removed
-  after each batch. The Messages archive lives in the folder you choose, with
-  owner-only permissions (folders 0700, files 0600). Your Google credential is
-  kept in the login Keychain and reaches the uploader over a pipe.
-- **To Google.** The photos and videos you select, their capture dates and your
-  album names, sent to your connected Google Photos account. With Messages media
-  on, the images and videos from your conversations go there too. Message text,
-  chat names and contacts are never uploaded.
-- **Full Disk Access.** macOS protects the Messages database and its
-  attachments, and Photos permission does not cover them. Both Messages features
-  need Photos Backup to have Full Disk Access in **System Settings > Privacy &
-  Security**; the app reads Messages and never changes it. Contacts access is
-  optional and only used to show names in the archive.
-- **Reports and logs.** The timeline and the diagnostic report remove tokens,
-  email addresses, phone numbers, staging paths and your home folder's name.
-  Keep credentials, media and unredacted logs out of issues, and report
-  vulnerabilities through [the private reporting channel](SECURITY.md).
-
-Live Photos currently upload as still images. Known limitations are listed in
-the [technical reference](docs/REFERENCE.md#not-done-yet).
-
-The Messages media behavior comes from
-[icloud-to-google-photos](https://github.com/ayush5harma/icloud-to-google-photos),
-adapted to this app's native upload flow. Its emulator controls and destructive
-iCloud offload are not part of this app.
-
-## Requirements
-
-- macOS 14 or later on Apple silicon (an Intel build should work but has not
-  been tried).
-- A Google account for Google Photos.
-- To build: a Swift 6 toolchain and uv.
-- For Messages features: Full Disk Access for Photos Backup.
-
-## Contribute
-
-Read [CONTRIBUTING.md](CONTRIBUTING.md) for setup, tests, and pull requests.
-Reproducible bug reports, accessibility improvements, documentation, and tests
-are welcome. If the app is useful, star the repository or share it with other
-Mac users who need photo backups.
-
-## License and credits
-
-[MIT](LICENSE). Uploads use [gpmc](https://github.com/xob0t/gpmc); the sign-in
-flow follows [gotohp](https://github.com/xob0t/gotohp), both by xob0t.
+See the [technical reference](docs/REFERENCE.md#build-and-run), [architecture](docs/ARCHITECTURE.md), and [contribution guide](CONTRIBUTING.md). Licensed under [MIT](LICENSE); uploads use [gpmc](https://github.com/xob0t/gpmc), and the sign-in flow follows [gotohp](https://github.com/xob0t/gotohp).

@@ -60,9 +60,10 @@ decoding text from the attributed body with `TypedStream`), builds each
 transcript (`TranscriptBuilder`, with `HandleNames` from Contacts when allowed),
 renders pages (`ArchiveHTML`), copies attachments that are on the Mac, keeps
 dated database copies, and records signatures in `ArchiveManifest` so the next
-run skips unchanged conversations. `ArchiveFiles` applies the 0700/0600 rules and
-writes through a temporary file. The controller schedules a daily run, with a
-six-hour pause after a failed automatic run.
+run skips unchanged conversations. It can retain text seen before a later edit
+or unsend, but cannot recover text it never archived. `ArchiveFiles` applies
+the 0700/0600 rules and writes through a temporary file. The controller
+schedules a daily run, with a six-hour pause after a failed automatic run.
 
 **Mac shell.** The window, a window-style `MenuBarExtra` and the Settings scene
 share one `AppModel`. Core's `MenuBarStatus` reduces the engine to the single
@@ -92,7 +93,9 @@ Photos access is granted by macOS. Messages media scanning and the Messages
 archive are off by default and read-only; both require Full Disk Access and use
 only locally available attachments. Media scanning uploads only images and
 videos, never message text, contacts, or missing iCloud attachments. The archive
-writes message text to a folder on this Mac and uploads nothing.
+writes message text to `~/Messages Archive` by default and uploads nothing.
+If the user chooses a folder in a cloud sync location, that service also
+receives the archive; Settings identifies detected sync locations.
 
 Credentials remain in the login Keychain. The app keeps resumable state and
 logs in Application Support, and stages exports temporarily before sending

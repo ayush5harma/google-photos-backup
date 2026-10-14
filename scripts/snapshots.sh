@@ -29,7 +29,7 @@ if [ "${SNAPSHOT_FIXTURE:-0}" = 1 ]; then
   trap 'rm -rf "$SANDBOX"' EXIT
   mkdir -p "$OUT"
   PHOTOS_BACKUP_SANDBOX="$SANDBOX" PHOTOS_BACKUP_SNAPSHOTS="$OUT" PHOTOS_BACKUP_SNAPSHOT_FIXTURE=1 \
-    PHOTOS_BACKUP_SNAPSHOT_ONLY="${2:-}" "$BIN" >/dev/null 2>&1 &
+    PHOTOS_BACKUP_SNAPSHOT_ONLY="${2:-}" PHOTOS_BACKUP_FIXTURE_ICON="$ROOT/docs/app-icon.png" "$BIN" >/dev/null 2>&1 &
   pid=$!
   for _ in $(seq 1 240); do
     kill -0 "$pid" 2>/dev/null || break

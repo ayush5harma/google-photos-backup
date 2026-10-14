@@ -243,21 +243,30 @@ struct Banner: View {
     }
 }
 
-/// The app's mark: the icon's blue tile and stacked photos, drawn small.
+// 2026-10-15: The welcome guide and menu panel share the shipped Dock icon,
+// so fixture screenshots cannot advertise a different brand from the app.
 struct AppMark: View {
     var size: CGFloat = 32
+    private static let artwork: NSImage? = {
+        #if DEBUG
+        if let path = ProcessInfo.processInfo.environment["PHOTOS_BACKUP_FIXTURE_ICON"],
+           AppEnvironment.isSandboxed {
+            return NSImage(contentsOfFile: path)
+        }
+        #endif
+        return Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+            .flatMap { NSImage(contentsOf: $0) }
+    }()
 
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: size * 0.235, style: .continuous)
-                .fill(LinearGradient(colors: [Color(red: 0.33, green: 0.62, blue: 1.0), Color(red: 0.05, green: 0.36, blue: 0.93)],
-                                     startPoint: .top, endPoint: .bottom))
-            RoundedRectangle(cornerRadius: size * 0.235, style: .continuous)
-                .strokeBorder(.white.opacity(0.18), lineWidth: max(0.5, size / 64))
-            Image(systemName: "photo.on.rectangle.angled")
-                .font(.system(size: size * 0.5, weight: .medium))
-                .foregroundStyle(.white)
-                .shadow(color: .black.opacity(0.15), radius: size / 40, y: size / 80)
+        Group {
+            if let artwork = Self.artwork {
+                Image(nsImage: artwork).resizable().interpolation(.high).scaledToFit()
+            } else {
+                Image(systemName: "photo.on.rectangle.angled")
+                    .resizable().scaledToFit().foregroundStyle(.blue)
+                    .padding(size * 0.16)
+            }
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
