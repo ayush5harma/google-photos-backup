@@ -6,7 +6,7 @@ import ServiceManagement
 import UserNotifications
 
 /// Debug builds only, and only in a PHOTOS_BACKUP_SANDBOX run: the
-/// photosbackup://debug/... links scripts/e2e.sh drives the app with. They
+/// photosbackup://debug/... links scripts/e2e.py drives the app with. They
 /// read state out and set up a scenario; every real action goes through the
 /// public photosbackup:// links, the same way a person's Shortcut would.
 ///

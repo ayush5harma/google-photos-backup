@@ -64,7 +64,7 @@ final class ConditionsMonitor {
     }
 
     #if DEBUG
-    /// scripts/e2e.sh only (photosbackup://debug/conditions): pins the network
+    /// scripts/e2e.py only (photosbackup://debug/conditions): pins the network
     /// or power to a value until "real" hands it back to the monitors.
     @ObservationIgnored private var pinnedNetwork: NetworkConditions?
     @ObservationIgnored private var pinnedPower: PowerConditions?

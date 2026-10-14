@@ -5,7 +5,7 @@ import Foundation
 /// Debug builds only: PHOTOS_BACKUP_SANDBOX=<dir> puts Application Support,
 /// Caches, the settings domain and the keychain item somewhere the real app
 /// never looks, while the bundle id (and so every privacy grant tied to it)
-/// stays the real one. scripts/e2e.sh relies on this to drive a build
+/// stays the real one. scripts/e2e.py relies on this to drive a build
 /// against the real Photos library without touching the real app's history,
 /// settings or Google credential. Release builds ignore the variable.
 enum AppEnvironment {
