@@ -409,10 +409,6 @@ class ProcessTests(unittest.TestCase):
         self.assertIn("rich console noise", proc.stderr)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class FailureLogPathTests(unittest.TestCase):
     def test_native_logged_path_matches_posix_result_key(self):
         path = Path("fixture photos") / "retry.jpg"
@@ -421,3 +417,7 @@ class FailureLogPathTests(unittest.TestCase):
                                    f"Error uploading file {path}: 429 Client Error", (), None)
         handler.emit(record)
         self.assertEqual(handler.reasons[path.absolute().as_posix()], "429 Client Error")
+
+
+if __name__ == "__main__":
+    unittest.main()

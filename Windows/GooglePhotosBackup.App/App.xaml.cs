@@ -19,14 +19,19 @@ public partial class App : Application
         var smokeIndex = Array.IndexOf(arguments, "--smoke-test");
         if (smokeIndex >= 0)
         {
+            var reportPath = smokeIndex + 1 < arguments.Length && !arguments[smokeIndex + 1].StartsWith("--", StringComparison.Ordinal)
+                ? arguments[smokeIndex + 1] : null;
+            var stage = "construct-window";
             try
             {
                 // 2026-10-15: The CI launch check constructs real XAML without reading credentials or reaching Google.
                 var window = new MainWindow(smokeTest: true);
                 _window = window;
                 window.Activate();
+                stage = "load-window";
                 await window.WhenLoadedAsync();
                 await Task.Delay(100);
+                stage = "dpapi-roundtrip";
                 var tempRoot = Path.Combine(Path.GetTempPath(), "GooglePhotosBackupSmoke-" + Guid.NewGuid().ToString("N"));
                 bool encryptedCredentialRoundTrip;
                 try
@@ -42,16 +47,35 @@ public partial class App : Application
                 if (!encryptedCredentialRoundTrip) throw new InvalidOperationException("DPAPI fixture roundtrip failed.");
                 var screenshotIndex = Array.IndexOf(arguments, "--screenshot");
                 if (screenshotIndex >= 0 && screenshotIndex + 1 < arguments.Length)
-                    await window.SaveScreenshotAsync(arguments[screenshotIndex + 1]);
-                if (smokeIndex + 1 < arguments.Length && !arguments[smokeIndex + 1].StartsWith("--", StringComparison.Ordinal))
                 {
-                    var reportPath = arguments[smokeIndex + 1];
+                    stage = "capture-screenshot";
+                    await window.SaveScreenshotAsync(arguments[screenshotIndex + 1]);
+                }
+                if (reportPath is not null)
+                {
                     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
                     File.WriteAllText(reportPath, JsonSerializer.Serialize(new { status = "ok", encryptedCredentialRoundTrip }));
                 }
                 Environment.Exit(0);
             }
-            catch (Exception) { Environment.Exit(1); }
+            catch (Exception error)
+            {
+                // 2026-10-15: Smoke evidence names only the stage/type; exception messages can contain local paths.
+                if (reportPath is not null)
+                {
+                    try
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
+                        File.WriteAllText(reportPath, JsonSerializer.Serialize(new
+                        {
+                            status = "failed", stage, errorType = error.GetType().Name,
+                            hResult = $"0x{error.HResult:X8}", message = error.Message
+                        }));
+                    }
+                    catch (Exception) { }
+                }
+                Environment.Exit(1);
+            }
             return;
         }
 

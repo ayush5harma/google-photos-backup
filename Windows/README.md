@@ -13,12 +13,12 @@ The preview targets Windows 10 version 1809 or later on x64; Windows 11 is recom
 ## Set up and back up
 
 1. Open **Settings** and choose **Sign in with Google**. Complete Google's sign-in in the embedded window. The app checks the resulting credential before saving it, encrypted with Windows DPAPI for your Windows account.
-2. Open **Folders** and add the photo or video folders you want to back up. Subfolders are scanned too. Symbolic links and reparse points are skipped.
+2. Open **Folders** and add the photo or video folders you want to back up. Subfolders are scanned too. Nested symbolic links and reparse points are skipped; select a real folder as the root. An unreadable source stops the scan rather than reporting a successful backup.
 3. Choose your upload quality in **Settings**. Original quality uses gpmc's Pixel XL mode. Google determines storage accounting; verify your account after a small initial backup. Unlimited storage is not guaranteed.
 4. Enable album mirroring if you want each selected root folder represented as an album in Google Photos.
 5. Open **Overview** and start a backup. Keep the app open. You can pause between batches, resume, or stop the run. **Activity** shows completed runs and failure counts.
 
-Only confirmed uploads enter the local resume state. A later run skips unchanged, confirmed files and retries pending files; edited files may upload again. Overlapping folder selections are deduplicated. The app uploads copies and does not delete source files or Google Photos media.
+Only confirmed uploads enter the local resume state. A later run skips unchanged, confirmed files and retries pending files and album updates; edited files may upload again. Overlapping folder selections are deduplicated. The app uploads copies and does not delete source files or Google Photos media.
 
 This preview does not yet provide automatic scheduling, a tray app, Windows Photos library integration, or the macOS Messages features. Google sign-in and real account uploads still need interactive Windows validation; automated tests use synthetic data and a fake Google service.
 
