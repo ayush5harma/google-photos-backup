@@ -71,7 +71,7 @@ The [technical reference](docs/REFERENCE.md#links) lists the section-specific li
 
 ## Build and contribute
 
-The release ZIP is the easiest way to use the app. To build from source, use macOS 14 or later, a Swift 6 toolchain, and [uv](https://docs.astral.sh/uv/):
+The release ZIP is the easiest way to use the app. To build from source, use macOS 14 or later, Xcode 26 or later, and [uv](https://docs.astral.sh/uv/):
 
 ```sh
 git clone https://github.com/ayush5harma/google-photos-backup.git
