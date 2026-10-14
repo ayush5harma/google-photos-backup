@@ -21,6 +21,12 @@ def main():
         events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
         assert any(event.get("type") == "reclaim" and event.get("enabled") is False for event in events), \
             "Unverified iCloud deletion must stay disabled"
+    crypto = subprocess.run([python, "-I", "-B", "-c",
+        "import os,sys; from pathlib import Path; sys.path.insert(0,str(Path(sys.argv[1]).parent)); "
+        "import icloud_bridge as bridge; "
+        "assert os.name != 'nt' or bridge._dpapi(bridge._dpapi(b'synthetic-session',False),True) == b'synthetic-session'",
+        script], capture_output=True, text=True, timeout=30)
+    assert crypto.returncode == 0, "Packaged iCloud credential protection failed"
     print("Packaged iCloud provider: signed-out guidance and reclaim guard passed")
 
 
