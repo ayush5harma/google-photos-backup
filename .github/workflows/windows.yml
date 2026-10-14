@@ -54,6 +54,7 @@ jobs:
           uv run --no-project --python 3.13 python -B -m unittest discover -s Bridge/tests
           if ($LASTEXITCODE -ne 0) { throw 'Bridge fixture tests failed.' }
       - name: Build and verify relocated native application
+        if: ${{ !cancelled() }}
         run: ./scripts/build-windows.ps1
       - name: Upload package
         uses: actions/upload-artifact@v4

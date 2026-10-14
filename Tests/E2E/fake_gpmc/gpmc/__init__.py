@@ -26,7 +26,7 @@ Scenario keys (all optional):
   "album_error": "500 Server Error: ..."   album calls raise this
   "delay": 0.2                   seconds each file takes (to test Stop)
 
-Ledger (JSON, written under an exclusive flock):
+Ledger (JSON, written under an exclusive file lock):
   {"media": {"<sha1 hex>": "<media key>"},
    "counters": {"uploads": n, "auth": n, "<file name>": attempts},
    "uploads": [{"filename", "sha1", "status": "uploaded" | "existing" | "failed", "message"?}],
@@ -36,7 +36,6 @@ Ledger (JSON, written under an exclusive flock):
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import hashlib
 import json
 import logging
@@ -92,12 +91,32 @@ def _ledger_path(scenario: dict[str, Any]) -> Path:
 
 
 @contextlib.contextmanager
+def _process_lock(path: Path) -> Iterator[None]:
+    # 2026-10-15: A separate byte lock survives ledger truncation on Windows.
+    with open(str(path) + ".lock", "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+            handle.write(b"0")
+            handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            yield
+
+
+@contextlib.contextmanager
 def _ledger(scenario: dict[str, Any]) -> Iterator[dict[str, Any]]:
     """The ledger, locked against other threads and other bridge processes."""
     path = _ledger_path(scenario)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with _lock, open(path, "a+", encoding="utf-8") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+    with _lock, _process_lock(path), open(path, "a+", encoding="utf-8") as handle:
         handle.seek(0)
         text = handle.read()
         data = json.loads(text) if text.strip() else {}

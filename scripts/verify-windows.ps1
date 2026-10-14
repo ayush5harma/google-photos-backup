@@ -67,6 +67,9 @@ try {
         $Start.UseShellExecute = $false
         $Start.ArgumentList.Add('--smoke-test')
         $Start.ArgumentList.Add($SmokeReport)
+        $Screenshot = Join-Path $ReportDirectory 'ui-smoke.png'
+        $Start.ArgumentList.Add('--screenshot')
+        $Start.ArgumentList.Add($Screenshot)
         $Process = [System.Diagnostics.Process]::Start($Start)
         try {
             if (-not $Process.WaitForExit(45000)) {
@@ -78,6 +81,9 @@ try {
             if (-not (Test-Path $SmokeReport)) { throw 'Synthetic WinUI launch did not produce its initialization report.' }
             $UIReport = Get-Content -Raw $SmokeReport | ConvertFrom-Json
             if ($UIReport.status -ne 'ok') { throw 'Synthetic WinUI initialization was not successful.' }
+            if ($UIReport.encryptedCredentialRoundTrip -ne $true) { throw 'Synthetic DPAPI credential round-trip failed.' }
+            if (-not (Test-Path $Screenshot) -or (Get-Item $Screenshot).Length -eq 0) { throw 'Synthetic WinUI screenshot was not produced.' }
+            $Report.encryptedCredentialRoundTrip = $true
             $Report.uiSmoke = 'passed: constructed MainWindow and exited without authentication or network access'
         } finally { $Process.Dispose() }
     }
