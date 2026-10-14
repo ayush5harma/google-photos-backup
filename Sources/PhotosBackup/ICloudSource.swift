@@ -261,6 +261,7 @@ final class ICloudSource {
             case "auth": "Apple or Google sign-in expired or was refused. Check both accounts, then resume."
             case "unsupported_2sa": "Legacy Apple two-step verification is not supported. Use an account with two-factor authentication, or back up through the Mac Photos library."
             case "network": "The network interrupted this backup. Try again when connected."
+            case "icloud_unavailable": "iCloud Photos is unavailable or still indexing. Check Photos on iCloud.com and web access, then retry when the library is ready."
             default: "The iCloud source could not finish. Check the account and try again."
             }
         case .unknown: break

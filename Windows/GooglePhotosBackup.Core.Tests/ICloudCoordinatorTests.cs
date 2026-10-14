@@ -175,6 +175,22 @@ public sealed class ICloudCoordinatorTests
             coordinator.BackupAsync("first@example.com", Credential(), CancellationToken.None));
     }
 
+    [Fact]
+    public async Task LibraryIndexingReportsRetryGuidanceWithoutPrivateDiagnostics()
+    {
+        var bridge = new FakeBridge((_, emit, _) =>
+        {
+            emit(new JsonObject { ["type"] = "fatal", ["kind"] = "icloud_unavailable", ["message"] = "private account details" });
+            return Task.FromResult(3);
+        });
+        var coordinator = new ICloudCoordinator(bridge, "state", "stage");
+        var status = await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.StatusAsync("first@example.com", CancellationToken.None));
+        var backup = await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.BackupAsync("first@example.com", Credential(), CancellationToken.None));
+        Assert.Contains("indexing", status.Message);
+        Assert.Contains("retry", backup.Message);
+        Assert.DoesNotContain("private account", status.Message + backup.Message);
+    }
+
     private static string Credential() =>
         "Email=first%40gmail.com&Token=private&androidId=1234567890abcdef";
 

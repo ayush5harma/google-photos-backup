@@ -531,6 +531,11 @@ def run(request: Any, emit: Callable[[dict[str, Any]], None],
         emit(event("fatal", kind="mfa_delivery", message="Could not send verification code. Try again."))
         return 3
     except Exception as error:
+        if type(error).__name__ == "PyiCloudServiceNotActivatedException":
+            # 2026-10-15: The live Apple check returned CheckIndexingState
+            # before FINISHED; the library can become available on a retry.
+            emit(event("fatal", kind="icloud_unavailable", message="iCloud Photos is still preparing the library or web access is unavailable. Try again later."))
+            return 3
         kind = "auth" if _is_auth_error(error) or isinstance(error, GoogleAuthError) else "network" if _is_network_error(error) else "internal"
         # 2026-10-15: HTTP exceptions can include account data and headers;
         # a fixed message keeps those values out of protocol output.

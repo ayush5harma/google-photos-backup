@@ -46,12 +46,13 @@ public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirector
         if (phoneId is not null) request["phone_id"] = phoneId;
         ICloudAuthStatus? status = null;
         var error = false;
+        var libraryUnavailable = false;
         var legacyTwoStep = false;
         TrustedPhones = [];
         DeviceCodeAvailable = false;
         var exit = await bridge.ExecuteAsync(request, message =>
         {
-            if (Text(message, "type") == "fatal") { error = true; legacyTwoStep = Text(message, "kind") == "unsupported_2sa"; }
+            if (Text(message, "type") == "fatal") { error = true; libraryUnavailable = Text(message, "kind") == "icloud_unavailable"; legacyTwoStep = Text(message, "kind") == "unsupported_2sa"; }
             if (Text(message, "type") != "auth") return;
             if (Text(message, "account") is { } returnedAccount &&
                 !string.Equals(returnedAccount, account.Trim(), StringComparison.OrdinalIgnoreCase))
@@ -72,6 +73,7 @@ public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirector
                     .Where(phone => phone.Id >= 0 && phone.Label.Length > 0)
                     .ToArray();
         }, cancellationToken).ConfigureAwait(false);
+        if (libraryUnavailable) throw new InvalidOperationException("iCloud Photos is unavailable or still indexing. Check Photos on iCloud.com and web access, then retry when the library is ready.");
         if (legacyTwoStep) throw new InvalidOperationException("Legacy Apple two-step verification is not supported. Use two-factor authentication or back up a local folder.");
         if (exit != 0 || error || status is null) throw new InvalidOperationException("iCloud sign-in could not be checked. Try again.");
         return status.Value;
@@ -88,6 +90,7 @@ public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirector
         };
         ICloudBackupResult? result = null;
         var error = false;
+        var libraryUnavailable = false;
         var expired = false;
         var exit = await bridge.ExecuteAsync(request, message =>
         {
@@ -98,6 +101,7 @@ public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirector
                     break;
                 case "fatal":
                     error = true;
+                    libraryUnavailable = Text(message, "kind") == "icloud_unavailable";
                     expired |= Text(message, "kind") is "auth_expired" or "session_expired";
                     break;
                 case "progress":
@@ -111,6 +115,7 @@ public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirector
                     break;
             }
         }, cancellationToken).ConfigureAwait(false);
+        if (libraryUnavailable) throw new InvalidOperationException("iCloud Photos is unavailable or still indexing. Check Photos on iCloud.com and web access, then retry when the library is ready.");
         if (expired) throw new InvalidOperationException("Your iCloud session expired. Sign in again and resume.");
         if (exit != 0 || error || result is null) throw new InvalidOperationException("iCloud backup stopped. Sign in again if needed, then resume.");
         return result;

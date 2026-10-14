@@ -219,6 +219,18 @@ class ICloudBridgeTests(unittest.TestCase):
         self.assertEqual(self.events[-1]["kind"], "internal")
         self.assertNotIn("private-password", str(self.events))
 
+    def test_photo_library_indexing_reports_retry_later(self):
+        class PyiCloudServiceNotActivatedException(Exception):
+            pass
+
+        def unavailable(*args):
+            raise PyiCloudServiceNotActivatedException("private account and server details")
+
+        self.assertEqual(self.request("sign-in", unavailable, password="private-password"), 3)
+        self.assertEqual(self.events[-1]["kind"], "icloud_unavailable")
+        self.assertIn("Try again later", self.events[-1]["message"])
+        self.assertNotIn("private account", str(self.events))
+
     def test_failure_then_resume_commits_only_confirmed_component(self):
         asset = FakeAsset()
         factory = lambda *_: FakeService(assets=[asset])
