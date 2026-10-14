@@ -73,6 +73,9 @@ final class AppRouter {
     @ObservationIgnored var openSettingsAction: OpenSettingsAction?
     /// The welcome guide, asked for again from Settings.
     var showingWelcome = false
+    /// Whether the window that opens at launch has been dealt with (kept,
+    /// or closed for a menu-bar-only start).
+    @ObservationIgnored var handledLaunchWindow = false
 
     static let settingsTabKey = "settingsTab"
 
@@ -164,22 +167,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// does not drain the main queue, so neither the wait nor the run it
     /// waits for ever progressed (measured 2026-10-14: still alive after
     /// 4 minutes, no main-actor task ran).
+    ///
+    /// A log out, restart or shut down must not be cancelled (that aborts it
+    /// with "Photos Backup interrupted"), so those wait in place instead,
+    /// running the loop in its default mode, which does drain the main queue.
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        let engine = model.engine
         model.cancelMessagesScan()
         model.archive.cancel()
-        guard engine.isActive, !quitting else { return .terminateNow }
+        guard isBusy, !quitting else { return .terminateNow }
         quitting = true
-        engine.stop()
+        model.engine.stop()
+        if isSystemQuit {
+            let deadline = Date().addingTimeInterval(Self.stopWait)
+            while isBusy, Date() < deadline { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.1)) }
+            return .terminateNow
+        }
         Task { @MainActor in
-            let deadline = Date().addingTimeInterval(15)
-            while engine.isActive, Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
+            let deadline = Date().addingTimeInterval(Self.stopWait)
+            while self.isBusy, Date() < deadline { try? await Task.sleep(for: .milliseconds(100)) }
             sender.terminate(nil)
         }
         return .terminateCancel
     }
 
+    private static let stopWait: TimeInterval = 15
     private var quitting = false
+
+    /// A run is recording what Google confirmed, or the archive is writing.
+    private var isBusy: Bool { model.engine.isActive || model.archive.isRunning }
+
+    /// The quit Apple event carries a reason only when the system sent it
+    /// (log out, restart, shut down); Command-Q and the Quit button have none.
+    private var isSystemQuit: Bool {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["PHOTOS_BACKUP_SIMULATE_SYSTEM_QUIT"] == "1" { return true }
+        #endif
+        return NSAppleEventManager.shared().currentAppleEvent?.attributeDescriptor(forKeyword: AEKeyword(kAEQuitReason)) != nil
+    }
 
     func applicationWillTerminate(_ notification: Notification) {
         BridgeProcess.terminateAll()
@@ -218,7 +242,6 @@ struct RootView: View {
     // Also settable at launch: `open -a "Photos Backup" --args -section albums`.
     @AppStorage("section", store: AppEnvironment.defaults) private var section: AppSection = .home
     @State private var router = AppRouter.shared
-    @State private var launched = false
 
     var body: some View {
         NavigationSplitView {
@@ -246,8 +269,10 @@ struct RootView: View {
         .onAppear {
             router.openWindowAction = openWindow
             router.openSettingsAction = openSettings
-            guard !launched else { return }
-            launched = true
+            // Once per launch, not per window: the view is rebuilt every time
+            // the window is opened again.
+            guard !router.handledLaunchWindow else { return }
+            router.handledLaunchWindow = true
             // Menu bar only: the app starts quietly in the menu bar. The
             // welcome guide and links still bring the window up.
             #if DEBUG

@@ -10,11 +10,13 @@ extension AppModel {
         log(.app, "Link: \(command.logTitle)")
         switch command {
         case .backUp(.everything):
+            guard hasAuthData else { return log(.app, "Link could not back up: sign in first", problem: true) }
             startBackupNow(trigger: trigger)
         case .backUp(.photos):
             guard hasAuthData, canReadPhotos else { return log(.app, "Link could not back up photos: sign in and allow Photos access first", problem: true) }
             engine.start(trigger: trigger)
         case .backUp(.messagesMedia):
+            guard hasAuthData else { return log(.app, "Link could not back up Messages media: sign in first", problem: true) }
             backUpMessages(includingPhotos: false, trigger: trigger)
         case .archive:
             guard settings.messagesArchive else { return log(.archive, "Link asked to archive Messages, but the archive is off") }

@@ -19,12 +19,12 @@ struct AccountSettingsTab: View {
                     if model.hasAuthData {
                         Button("Check Connection") { Task { await model.checkAccount() } }
                             .disabled(model.connectState == .connecting || model.account == .checking)
-                        Button("Sign In Again…") { model.beginSignIn() }
+                        Button("Sign In Again…") { model.perform(.signIn) }
                             .disabled(model.connectState == .connecting)
                         Spacer()
                         Button("Disconnect…", role: .destructive) { confirmDisconnect = true }
                     } else {
-                        Button("Sign In with Google…") { model.beginSignIn() }
+                        Button("Sign In with Google…") { model.perform(.signIn) }
                             .buttonStyle(.borderedProminent)
                             .disabled(model.connectState == .connecting)
                         Spacer()
@@ -193,9 +193,9 @@ struct AccountMenu: View {
             if model.hasAuthData {
                 Text(model.accountEmail ?? "Google account")
                 Button("Check Connection") { Task { await model.checkAccount() } }
-                Button("Sign In Again…") { model.beginSignIn() }
+                Button("Sign In Again…") { model.perform(.signIn) }
             } else {
-                Button("Sign In with Google…") { model.beginSignIn() }
+                Button("Sign In with Google…") { model.perform(.signIn) }
             }
             Divider()
             Button("Account Settings…") { AppRouter.shared.openSettings(.account) }

@@ -328,4 +328,10 @@ extension Date {
         if abs(timeIntervalSinceNow) < 60 { return "just now" }
         return formatted(.relative(presentation: .named))
     }
+
+    /// "in 2 minutes" for a time still ahead; "shortly" once it has passed,
+    /// never "Resumes 3 seconds ago" while a timed wait winds down.
+    var comingDescription: String {
+        timeIntervalSinceNow > 1 ? formatted(.relative(presentation: .named)) : "shortly"
+    }
 }

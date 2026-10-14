@@ -40,8 +40,11 @@ if [ "${SNAPSHOT_FIXTURE:-0}" = 1 ]; then
     echo "the app did not finish in 240 s" >&2
     exit 1
   fi
+  # The app's own status: a crash or a refused guard must fail the script.
+  status=0
+  wait "$pid" || status=$?
   ls "$OUT"
-  exit 0
+  exit "$status"
 fi
 
 SOURCE="$ROOT/build/Photos Backup.app"
@@ -77,4 +80,7 @@ if kill -0 "$pid" 2>/dev/null; then
   echo "the app did not finish in 60 s" >&2
   exit 1
 fi
+status=0
+wait "$pid" || status=$?
 ls "$OUT"
+exit "$status"

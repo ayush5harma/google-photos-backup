@@ -38,7 +38,7 @@ extension WaitReason {
         case .lowDataMode: "Continues when Low Data Mode is off."
         case .onBattery: "Continues when your Mac is plugged in."
         case .lowPowerMode: "Continues when Low Power Mode is off."
-        case let .rateLimited(until), let .retrying(until): "Continues \(until.formatted(.relative(presentation: .named)))."
+        case let .rateLimited(until), let .retrying(until): "Continues \(until.comingDescription)."
         }
     }
 }
@@ -170,7 +170,7 @@ extension AppModel {
                                    action: .openFullDiskAccess))
         }
         if engine.phase == .waiting, let reason = engine.waitReason {
-            let until = reason.until.map { "Resumes \($0.formatted(.relative(presentation: .named)))." }
+            let until = reason.until.map { "Resumes \($0.comingDescription)." }
             items.append(Attention(id: "waiting", symbol: reason.symbol, title: reason.title,
                                    detail: until ?? "Uploads continue by themselves when this changes.",
                                    actionTitle: "Options…", action: .openSettings(.backup), tint: .secondary))

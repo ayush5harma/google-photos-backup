@@ -345,6 +345,13 @@ private struct PanelMenu: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if model.settings.messagesMedia {
+                PanelMenuRow(title: model.isMessagesScanning ? "Looking for Messages Media…" : "Back Up Messages Media",
+                             symbol: "photo.on.rectangle") {
+                    model.backUpMessages()
+                }
+                .disabled(model.engine.isActive || model.isMessagesScanning || !model.hasAuthData)
+            }
             if model.settings.messagesArchive {
                 PanelMenuRow(title: model.archive.isRunning ? "Archiving Messages…" : "Archive Messages Now", symbol: "archivebox") {
                     model.archive.start(trigger: .manual)

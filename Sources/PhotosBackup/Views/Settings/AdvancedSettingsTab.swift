@@ -25,7 +25,7 @@ struct AdvancedSettingsTab: View {
                         HStack(spacing: 10) {
                             Text(usage.total.byteString).fontWeight(.medium)
                             Button("Clean Up") { cleanUp() }
-                                .disabled(cleaning)
+                                .disabled(cleaning || model.engine.isActive || model.archive.isRunning)
                         }
                     }
                     if let freed {

@@ -72,7 +72,9 @@ final class Notifier: NSObject {
     }
 
     func problem(_ message: String, category: EventCategory, settings: BackupSettings) {
-        guard settings.notifyAboutProblems, throttle.allows(category) else { return }
+        // The hour starts only with a notification actually shown, so one
+        // refused before permission was given does not mute the next.
+        guard settings.notifyAboutProblems, center != nil, authorization == .allowed, throttle.allows(category) else { return }
         // One notification per category, replaced rather than stacked.
         post(id: "problem-\(category.rawValue)", title: Self.title(for: category), body: message, section: .activity)
     }

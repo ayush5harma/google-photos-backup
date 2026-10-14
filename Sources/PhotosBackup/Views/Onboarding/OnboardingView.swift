@@ -84,7 +84,7 @@ struct OnboardingView: View {
 }
 
 enum OnboardingPage: Int, CaseIterable, Identifiable {
-    case welcome, photos, account, albums, messages, startup, done
+    case welcome, photos, albums, account, messages, startup, done
     var id: Int { rawValue }
 }
 
