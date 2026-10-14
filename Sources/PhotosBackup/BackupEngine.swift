@@ -35,6 +35,9 @@ struct ActivityItem: Identifiable, Equatable {
     var filename: String
     var size: Int64?
     var status: Status
+    /// Google's own words for a failure, in full, for the detail sheet.
+    var detail: String?
+    var date = Date()
 }
 
 private struct PreparedMessagesItem: Sendable {
@@ -50,6 +53,8 @@ private struct PreparedMessagesItem: Sendable {
 final class BackupEngine {
     enum Phase: Equatable {
         case idle, running, pausing, paused, stopping
+        /// Alive but holding before the next batch; `waitReason` says why.
+        case waiting
     }
 
     private(set) var phase: Phase = .idle
@@ -59,6 +64,10 @@ final class BackupEngine {
     private(set) var runDone = 0
     private(set) var lastError: String?
     private(set) var lastRun: Date?
+    /// Set while phase is `.waiting`.
+    private(set) var waitReason: WaitReason?
+    /// The run in progress, counted as it goes; it joins the history at the end.
+    private(set) var currentRun: RunRecord?
 
     @ObservationIgnored private unowned let model: AppModel
     @ObservationIgnored private let bridge = BridgeProcess()
@@ -77,11 +86,12 @@ final class BackupEngine {
 
     var remaining: Int { max(0, runTotal - runDone) }
     var runFraction: Double { runTotal == 0 ? 0 : Double(runDone) / Double(runTotal) }
-    var isActive: Bool { phase == .running || phase == .pausing || phase == .stopping }
+    var isActive: Bool { phase == .running || phase == .pausing || phase == .stopping || phase == .waiting }
+    var failedCount: Int { activity.filter { if case .failed = $0.status { true } else { false } }.count }
 
     // MARK: - Controls
 
-    func start() {
+    func start(trigger: RunTrigger = .manual) {
         guard task == nil else {
             if phase == .pausing { phase = .running }
             return
@@ -96,26 +106,26 @@ final class BackupEngine {
             // Photos picked while the last pass was finishing were never
             // planned; failed picks were dropped by run(), and a halted run
             // (stop, fatal error) does not restart, so this ends.
-            if !halted, self.phase == .idle, (!self.picked.isEmpty || !self.messages.isEmpty) { self.start() }
+            if !halted, self.phase == .idle, (!self.picked.isEmpty || !self.messages.isEmpty) { self.start(trigger: trigger) }
         }
     }
 
     /// A hand-picked selection, uploaded ahead of the albums.
     func backUp(picked ids: [String]) {
         picked.append(contentsOf: ids.filter { !picked.contains($0) })
-        start()
+        start(trigger: .picker)
     }
 
     /// Messages attachments are outside PhotoKit. Their content-hash ids share
     /// the confirmed-upload state, while their separate queue lets this run
     /// without Photos permission or a selected album.
-    func backUp(messages items: [MessagesMediaItem], includingPhotos: Bool) {
+    func backUp(messages items: [MessagesMediaItem], includingPhotos: Bool, trigger: RunTrigger = .manual) {
         let queued = Set(messages.map(\.id))
         let pending = items.filter { model.state.uploaded[$0.id] == nil && !queued.contains($0.id) }
         messages.append(contentsOf: pending)
         if !pending.isEmpty {
             messagesOnly = !includingPhotos
-            start()
+            start(trigger: trigger)
         }
     }
 
@@ -153,6 +163,26 @@ final class BackupEngine {
     func clearFinished() {
         activity.removeAll { $0.status.isFinished }
     }
+
+    /// STUB (foundation commit): the engine-parity piece implements these.
+    /// Queue one failed item again (a photo, a pick or a Messages item).
+    func retry(_ id: String) {}
+    /// Queue every failed item again.
+    func retryFailed() {}
+
+    #if DEBUG
+    /// Snapshot fixtures only: a populated engine to draw.
+    func applyFixture(activity: [ActivityItem], runTotal: Int, runDone: Int, phase: Phase,
+                      lastRun: Date?, waitReason: WaitReason? = nil, lastError: String? = nil) {
+        self.activity = activity
+        self.runTotal = runTotal
+        self.runDone = runDone
+        self.phase = phase
+        self.lastRun = lastRun
+        self.waitReason = waitReason
+        self.lastError = lastError
+    }
+    #endif
 
     // MARK: - The run
 

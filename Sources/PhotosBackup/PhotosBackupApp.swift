@@ -2,18 +2,27 @@ import PhotosBackupCore
 import SwiftUI
 
 enum AppSection: String, CaseIterable, Identifiable {
-    case home, albums, activity, settings
+    // Settings moved to the Settings window (Command-,); a stored "settings"
+    // selection falls back to home.
+    case home, albums, messages, activity
 
     var id: String { rawValue }
 
-    var title: String { rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .home: "Overview"
+        case .albums: "Albums"
+        case .messages: "Messages"
+        case .activity: "Activity"
+        }
+    }
 
     var symbol: String {
         switch self {
-        case .home: "house"
+        case .home: "square.grid.2x2"
         case .albums: "rectangle.stack"
-        case .activity: "arrow.up.circle"
-        case .settings: "gearshape"
+        case .messages: "message"
+        case .activity: "clock.arrow.circlepath"
         }
     }
 }
@@ -36,6 +45,10 @@ struct PhotosBackupApp: App {
                 }
         }
         .defaultSize(width: 900, height: 760)
+
+        Settings {
+            SettingsView().environment(model)
+        }
 
         MenuBarExtra {
             MenuContent().environment(model)
@@ -87,7 +100,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 struct RootView: View {
     @Environment(AppModel.self) private var model
     // Also settable at launch: `open -a "Photos Backup" --args -section albums`.
-    @AppStorage("section") private var section: AppSection = .home
+    @AppStorage("section", store: AppEnvironment.defaults) private var section: AppSection = .home
 
     var body: some View {
         NavigationSplitView {
@@ -99,8 +112,8 @@ struct RootView: View {
             switch section {
             case .home: HomeView(section: $section)
             case .albums: AlbumsView(section: $section)
+            case .messages: MessagesView(section: $section)
             case .activity: ActivityView(section: $section)
-            case .settings: SettingsView()
             }
         }
         .frame(minWidth: 720, minHeight: 560)

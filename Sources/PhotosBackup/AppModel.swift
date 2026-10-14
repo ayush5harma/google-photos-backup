@@ -19,50 +19,121 @@ struct BackupSettings: Codable, Equatable {
     /// The attachment ROWID reached by the last bounded Messages scan.
     var messagesCursor = 0
 
+    // General
+    var showInDock = true
+    var menuBarShowsProgress = true
+    var notifyWhenFinished = true
+    var notifyAboutProblems = true
+    /// False only for a fresh install; settings saved before onboarding
+    /// existed decode as true, so people already set up never see it.
+    var onboardingCompleted = false
+
+    // When to hold uploads. A Mac on a phone's hotspot or in Low Data Mode
+    // is the Mac's version of the iOS app's "Wi-Fi only".
+    var pauseOnExpensiveNetwork = true
+    var pauseInLowDataMode = true
+    var pauseOnBattery = false
+    var pauseInLowPowerMode = true
+
+    /// Upload the edited version again when a photo is edited after its
+    /// backup, as the iOS app does.
+    var reuploadEdits = true
+
+    // Messages archive: a readable copy of every conversation, written to a
+    // folder on this Mac. Opt-in for the same reason as Messages media.
+    var messagesArchive = false
+    /// nil means the default, ~/Documents/Messages Archive.
+    var archiveFolder: String?
+    var archiveAutomatically = true
+    var archiveAttachments = true
+    var archiveContactNames = true
+    /// Dated copies of chat.db kept beside the readable archive; 0 keeps none.
+    var archiveSnapshotsToKeep = 7
+
     init() {}
 
-    private enum CodingKeys: String, CodingKey { case quality, threads, batchSize, mirrorAlbums, automatic, messagesMedia, messagesCursor }
+    private enum CodingKeys: String, CodingKey {
+        case quality, threads, batchSize, mirrorAlbums, automatic, messagesMedia, messagesCursor
+        case showInDock, menuBarShowsProgress, notifyWhenFinished, notifyAboutProblems, onboardingCompleted
+        case pauseOnExpensiveNetwork, pauseInLowDataMode, pauseOnBattery, pauseInLowPowerMode
+        case reuploadEdits
+        case messagesArchive, archiveFolder, archiveAutomatically, archiveAttachments, archiveContactNames, archiveSnapshotsToKeep
+    }
 
     init(from decoder: Decoder) throws {
         self.init()
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        quality = try values.decodeIfPresent(UploadQuality.self, forKey: .quality) ?? quality
-        threads = try values.decodeIfPresent(Int.self, forKey: .threads) ?? threads
-        batchSize = try values.decodeIfPresent(Int.self, forKey: .batchSize) ?? batchSize
-        mirrorAlbums = try values.decodeIfPresent(Bool.self, forKey: .mirrorAlbums) ?? mirrorAlbums
-        automatic = try values.decodeIfPresent(Bool.self, forKey: .automatic) ?? automatic
-        messagesMedia = try values.decodeIfPresent(Bool.self, forKey: .messagesMedia) ?? messagesMedia
-        messagesCursor = max(0, try values.decodeIfPresent(Int.self, forKey: .messagesCursor) ?? messagesCursor)
+        func value<T: Decodable>(_ key: CodingKeys, _ fallback: T) throws -> T {
+            try values.decodeIfPresent(T.self, forKey: key) ?? fallback
+        }
+        quality = try value(.quality, quality)
+        threads = Self.threadRange.clamp(try value(.threads, threads))
+        batchSize = Self.batchRange.clamp(try value(.batchSize, batchSize))
+        mirrorAlbums = try value(.mirrorAlbums, mirrorAlbums)
+        automatic = try value(.automatic, automatic)
+        messagesMedia = try value(.messagesMedia, messagesMedia)
+        messagesCursor = max(0, try value(.messagesCursor, messagesCursor))
+        showInDock = try value(.showInDock, showInDock)
+        menuBarShowsProgress = try value(.menuBarShowsProgress, menuBarShowsProgress)
+        notifyWhenFinished = try value(.notifyWhenFinished, notifyWhenFinished)
+        notifyAboutProblems = try value(.notifyAboutProblems, notifyAboutProblems)
+        onboardingCompleted = try value(.onboardingCompleted, true)
+        pauseOnExpensiveNetwork = try value(.pauseOnExpensiveNetwork, pauseOnExpensiveNetwork)
+        pauseInLowDataMode = try value(.pauseInLowDataMode, pauseInLowDataMode)
+        pauseOnBattery = try value(.pauseOnBattery, pauseOnBattery)
+        pauseInLowPowerMode = try value(.pauseInLowPowerMode, pauseInLowPowerMode)
+        reuploadEdits = try value(.reuploadEdits, reuploadEdits)
+        messagesArchive = try value(.messagesArchive, messagesArchive)
+        archiveFolder = try values.decodeIfPresent(String.self, forKey: .archiveFolder)
+        archiveAutomatically = try value(.archiveAutomatically, archiveAutomatically)
+        archiveAttachments = try value(.archiveAttachments, archiveAttachments)
+        archiveContactNames = try value(.archiveContactNames, archiveContactNames)
+        archiveSnapshotsToKeep = Self.snapshotRange.clamp(try value(.archiveSnapshotsToKeep, archiveSnapshotsToKeep))
     }
+
+    /// The bridge accepts 1-8 threads; batches outside 5-100 either thrash
+    /// the uploader start-up or stage too much at once.
+    static let threadRange = 1...8
+    static let batchRange = 5...100
+    static let snapshotRange = 0...30
 
     private static let key = "settings"
 
     static func load() -> BackupSettings {
-        guard let data = UserDefaults.standard.data(forKey: key),
+        guard let data = AppEnvironment.defaults.data(forKey: key),
               let settings = try? JSONDecoder().decode(BackupSettings.self, from: data) else { return BackupSettings() }
         return settings
     }
 
     func save() {
-        if let data = try? JSONEncoder().encode(self) { UserDefaults.standard.set(data, forKey: Self.key) }
+        if let data = try? JSONEncoder().encode(self) { AppEnvironment.defaults.set(data, forKey: Self.key) }
     }
 }
 
+extension ClosedRange where Bound == Int {
+    func clamp(_ value: Int) -> Int { Swift.min(Swift.max(value, lowerBound), upperBound) }
+}
+
 struct AppPaths {
+    let support: URL
     let state: URL
     let logs: URL
     let staging: URL
 
     var bridgeLog: URL { logs.appendingPathComponent("bridge.log") }
+    /// The last runs (RunRecord JSON array).
+    var history: URL { support.appendingPathComponent("history.json") }
+    /// The event timeline (EventRecord JSON array).
+    var events: URL { support.appendingPathComponent("events.json") }
+    /// What the Messages archive last wrote, mirrored from its manifest.
+    var archiveOverview: URL { support.appendingPathComponent("messages-archive.json") }
 
     static let standard: AppPaths = {
-        let files = FileManager.default
-        let name = Bundle.main.bundleIdentifier ?? "PhotosBackup"
-        let support = files.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(name, isDirectory: true)
-        let caches = files.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent(name, isDirectory: true)
-        return AppPaths(state: support.appendingPathComponent("state.json"),
+        let support = AppEnvironment.supportDirectory
+        return AppPaths(support: support,
+                        state: support.appendingPathComponent("state.json"),
                         logs: support.appendingPathComponent("Logs", isDirectory: true),
-                        staging: caches.appendingPathComponent("Staging", isDirectory: true))
+                        staging: AppEnvironment.cachesDirectory.appendingPathComponent("Staging", isDirectory: true))
     }()
 }
 
@@ -141,6 +212,14 @@ final class AppModel {
     private(set) var runtimeDescription = "Checking..."
     private(set) var messagesStatus: MessagesStatus = .off
     @ObservationIgnored lazy var engine = BackupEngine(model: self)
+    /// The readable Messages archive (conversations, attachments, chat.db copies).
+    @ObservationIgnored lazy var archive = MessagesArchiveController(model: self)
+    /// Network and power, for the "pause on..." settings.
+    let conditions = ConditionsMonitor()
+    /// Run history, the event timeline, storage and the diagnostic report.
+    @ObservationIgnored lazy var diagnostics = Diagnostics(paths: paths)
+    @ObservationIgnored let notifier = Notifier()
+    @ObservationIgnored private var wakeObserver: NSObjectProtocol?
 
     init() {
         let paths = AppPaths.standard
@@ -184,12 +263,29 @@ final class AppModel {
         // library, account, timer, or Messages source from persisted settings.
         if Snapshots.isRequested { return }
         #endif
+        log(.app, "Launched")
+        conditions.onChange = { [weak self] in self?.conditionsChanged() }
+        conditions.start(settings: settings)
         if library.isAuthorized { await connectLibrary() }
         if case .connected = account { await checkAccount() }
         timer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.automaticRun() }
+            Task { @MainActor in self?.automaticRun(trigger: .timer) }
         }
-        automaticRun()
+        // A Mac that slept through the timer catches up shortly after waking,
+        // once the network is back.
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(30))
+                self?.automaticRun(trigger: .wake)
+            }
+        }
+        automaticRun(trigger: .launch)
+    }
+
+    /// The run itself holds while a condition blocks it; this only starts
+    /// one that was never started because of it.
+    private func conditionsChanged() {
+        if conditions.blocking(for: settings) == nil { automaticRun(trigger: .conditions) }
     }
 
     func requestPhotosAccess() async {
@@ -222,28 +318,31 @@ final class AppModel {
             try? await Task.sleep(for: .seconds(20))
             guard !Task.isCancelled else { return }
             await reloadAlbums()
-            automaticRun()
+            automaticRun(trigger: .libraryChange)
         }
     }
 
-    func automaticRun() {
-        guard settings.automatic, hasAuthData, engine.phase == .idle else { return }
+    func automaticRun(trigger: RunTrigger = .timer) {
         #if DEBUG
         if Snapshots.isRequested { return }
         #endif
+        if settings.messagesArchive, settings.archiveAutomatically { archive.runIfDue(trigger: trigger) }
+        guard settings.automatic, hasAuthData, engine.phase == .idle else { return }
+        // Automatic runs wait for the conditions; Back Up Now does not.
+        guard conditions.blocking(for: settings) == nil else { return }
         if settings.messagesMedia {
-            backUpMessages(includingPhotos: true)
+            backUpMessages(includingPhotos: true, trigger: trigger)
         } else if library.isAuthorized {
-            engine.start()
+            engine.start(trigger: trigger)
         }
     }
 
-    func startBackupNow() {
-        if settings.messagesMedia { backUpMessages(includingPhotos: true) }
-        else if library.isAuthorized { engine.start() }
+    func startBackupNow(trigger: RunTrigger = .manual) {
+        if settings.messagesMedia { backUpMessages(includingPhotos: true, trigger: trigger) }
+        else if library.isAuthorized { engine.start(trigger: trigger) }
     }
 
-    func backUpMessages(includingPhotos: Bool = false) {
+    func backUpMessages(includingPhotos: Bool = false, trigger: RunTrigger = .manual) {
         #if DEBUG
         // Snapshot runs must never inherit a real user's Messages access from
         // persisted settings. They render the UI without touching private data.
@@ -276,13 +375,13 @@ final class AppModel {
                 // attachment skipped while iCloud had not downloaded it can be found later.
                 self.settings.messagesCursor = report.nextCursor ?? 0
                 self.messagesStatus = .ready(found: pending.count, skipped: report.skipped, partial: report.nextCursor != nil)
-                self.engine.backUp(messages: pending, includingPhotos: includingPhotos)
-                if includingPhotos, pending.isEmpty, self.library.isAuthorized, self.engine.phase == .idle { self.engine.start() }
+                self.engine.backUp(messages: pending, includingPhotos: includingPhotos, trigger: trigger)
+                if includingPhotos, pending.isEmpty, self.library.isAuthorized, self.engine.phase == .idle { self.engine.start(trigger: trigger) }
             case let .failure(error):
                 self.messagesStatus = .failed(MessagesMediaScanner.describe(error))
                 // A Messages scan is additive. Its failure must never prevent
                 // a selected Photos-library backup from running.
-                if includingPhotos, self.library.isAuthorized, self.engine.phase == .idle { self.engine.start() }
+                if includingPhotos, self.library.isAuthorized, self.engine.phase == .idle { self.engine.start(trigger: trigger) }
             }
         }
     }
@@ -291,7 +390,7 @@ final class AppModel {
         Task { @MainActor in
             await reloadAlbums()
             if settings.messagesMedia { backUpMessages(includingPhotos: true) }
-            else if library.isAuthorized, hasAuthData, engine.phase == .idle { engine.start() }
+            else if library.isAuthorized, hasAuthData, engine.phase == .idle { engine.start(trigger: .manual) }
         }
     }
 
@@ -330,7 +429,7 @@ final class AppModel {
             state.selectedAlbumIDs.insert(album.id)
         }
         saveState()
-        if state.selectedAlbumIDs.contains(album.id) { automaticRun() }
+        if state.selectedAlbumIDs.contains(album.id) { automaticRun(trigger: .albumSelected) }
     }
 
     func saveState() {
@@ -417,7 +516,7 @@ final class AppModel {
             await engine.stopAndWait()
             guard !engine.isActive else {
                 connectState = .failed("The backup is still stopping. Sign in again in a moment.")
-                automaticRun()
+                automaticRun(trigger: .signIn)
                 return
             }
         }
@@ -439,7 +538,8 @@ final class AppModel {
         }
         connectState = .idle
         showingSignIn = false
-        automaticRun()
+        log(.account, "Connected \(email ?? "an account")")
+        automaticRun(trigger: .signIn)
     }
 
     func removeAuthData() {
@@ -500,10 +600,26 @@ final class AppModel {
         runtimeDescription = description
     }
 
+    // MARK: - Hooks for the engine and the archive
+
+    /// Every run ends here: it joins the history and may notify.
+    func runFinished(_ record: RunRecord) {
+        diagnostics.record(record)
+        notifier.runFinished(record, settings: settings)
+    }
+
+    /// A line in the event timeline (never a token or message text).
+    func log(_ category: EventCategory, _ message: String, problem: Bool = false) {
+        diagnostics.log(category, message, problem: problem)
+        if problem { notifier.problem(message, category: category, settings: settings) }
+    }
+
     static func describe(_ kind: FatalKind, _ message: String) -> String {
         switch kind {
         case .auth: "Google refused the account (\(message)). Sign in again in Settings."
         case .network: "Google could not be reached (\(message)). The next run retries."
+        case .rateLimit: "Google asked the app to slow down (\(message)). Uploads resume by themselves."
+        case .storageFull: "Your Google account is out of storage (\(message)). Free up space or change the upload quality."
         case .request: "The app sent the uploader a bad request: \(message)"
         case .internal, .unknown: "The uploader failed: \(message)"
         }

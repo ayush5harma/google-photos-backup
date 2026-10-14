@@ -95,6 +95,10 @@ public enum UploadPhase: String, Sendable {
 
 public enum FatalKind: String, Sendable {
     case auth, network, request, `internal`, unknown
+    /// Google answered 429: every upload waits, then the run carries on.
+    case rateLimit = "rate_limit"
+    /// The Google account has no room left; nothing more can be stored.
+    case storageFull = "storage_full"
 }
 
 public enum BridgeEvent: Equatable, Sendable {

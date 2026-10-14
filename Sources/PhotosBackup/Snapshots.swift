@@ -43,7 +43,7 @@ enum Snapshots {
 
         try? await Task.sleep(for: .seconds(2))
         for section in AppSection.allCases {
-            UserDefaults.standard.set(section.rawValue, forKey: "section")
+            AppEnvironment.defaults.set(section.rawValue, forKey: "section")
             try? await Task.sleep(for: .seconds(1.5))
             // The frame view, not the content view: the window's own
             // background is drawn there.

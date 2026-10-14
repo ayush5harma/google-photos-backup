@@ -90,6 +90,7 @@ struct HomeView: View {
         case .pausing: "Pausing after this batch..."
         case .paused: "Paused"
         case .stopping: "Stopping..."
+        case .waiting: engine.waitReason?.title ?? "Waiting..."
         case .idle: summary.total == 0 ? "Nothing selected" : summary.pending == 0 ? "Backed up" : "Ready to back up"
         }
     }
@@ -216,6 +217,7 @@ struct PickPhotosButton<Label: View>: View {
 /// What still stands between the user and a working backup.
 struct SetupBanners: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openSettings) private var openSettings
     @Binding var section: AppSection
 
     var body: some View {
@@ -234,13 +236,13 @@ struct SetupBanners: View {
                    action: ("Sign In", { model.beginSignIn() }))
         case let .failed(message):
             Banner(symbol: "person.crop.circle.badge.exclamationmark", text: message, color: .orange,
-                   action: ("Settings", { section = .settings }))
+                   action: ("Settings", { openSettings() }))
         case .connected, .checking:
             EmptyView()
         }
         if let error = model.engine.lastError ?? model.stateError {
             Banner(symbol: "exclamationmark.triangle", text: error, color: .orange,
-                   action: error.contains("Sign in") ? ("Settings", { section = .settings }) : nil)
+                   action: error.contains("Sign in") ? ("Settings", { openSettings() }) : nil)
         }
     }
 
