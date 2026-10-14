@@ -123,7 +123,14 @@ public struct RateLimiter: Equatable, Sendable {
     public static let initialHold: TimeInterval = 60
     public static let maximumHold: TimeInterval = 600
 
+    /// Holds a run may sit through with nothing getting through in between
+    /// (1 + 2 + 4 + 8 + 10 minutes); the next 429 ends the run, so a run
+    /// cannot hold forever and keep automatic runs from starting.
+    public static let maximumHoldsPerRun = 5
+
     public private(set) var holdUntil: Date?
+    /// Holds started in the current run since a batch last got through.
+    public private(set) var holdsThisRun = 0
     private var nextHold = RateLimiter.initialHold
 
     public init() {}
@@ -136,13 +143,24 @@ public struct RateLimiter: Equatable, Sendable {
         let until = now.addingTimeInterval(nextHold)
         nextHold = min(Self.maximumHold, nextHold * 2)
         holdUntil = until
+        holdsThisRun += 1
         return until
     }
 
     public mutating func batchSucceeded() {
         holdUntil = nil
         nextHold = Self.initialHold
+        holdsThisRun = 0
     }
+
+    /// The hold itself outlives a run (Google's limit does); the count of
+    /// holds a run sat through does not.
+    public mutating func runStarted() {
+        holdsThisRun = 0
+    }
+
+    /// True once Google has refused past the run's allowance of holds.
+    public var runShouldGiveUp: Bool { holdsThisRun > Self.maximumHoldsPerRun }
 
     /// When the hold in force ends, or nil when uploads may go.
     public func hold(at now: Date) -> Date? {
