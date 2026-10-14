@@ -109,12 +109,14 @@ final class BackupEngine {
     @ObservationIgnored private var retries = RetryTracker()
     /// Lives across runs: Google's hold does not end because a run did.
     @ObservationIgnored private var rateLimiter = RateLimiter()
-    /// Back Up Now and Retry go ahead on a metered network or battery.
+    /// Back Up Now, picks, Retry and Shortcuts go ahead on a metered network
+    /// or battery (RunTrigger.overridesConditions); other runs wait.
     @ObservationIgnored private var overridesConditions = false
     /// Retry asked for items while a run was going; it makes another pass.
     @ObservationIgnored private var retryRequested = false
     @ObservationIgnored private var sleepActivity: NSObjectProtocol?
     @ObservationIgnored private var lastLoggedFailure: String?
+    @ObservationIgnored private let redactor = Redactor()
 
     private static let activityLimit = 2000
     /// A failure's first line, this long at most, is the row's label; the
@@ -141,11 +143,11 @@ final class BackupEngine {
             // Asked for in person while an automatic run holds for battery
             // or a metered network: the person's choice wins, as it would
             // have had this been the run that started.
-            if !trigger.isAutomatic { overridesConditions = true }
+            if trigger.overridesConditions { overridesConditions = true }
             return
         }
         phase = .running
-        overridesConditions = !trigger.isAutomatic
+        overridesConditions = trigger.overridesConditions
         task = Task { [weak self] in
             let halted = await self?.run(trigger: trigger) ?? true
             guard let self else { return }
@@ -433,7 +435,8 @@ final class BackupEngine {
         } else if phase == .paused {
             record.outcome = .paused
         } else if halted {
-            record.outcome = .failed(lastError ?? "The run ended early.")
+            // history.json is not the report: redact before it is stored.
+            record.outcome = .failed(redactor.redact(lastError ?? "The run ended early."))
         } else {
             record.outcome = .completed
         }
@@ -469,7 +472,7 @@ final class BackupEngine {
             if failedAlbums.contains(albumID) { return .nothing }
             return await addToAlbum(assetIDs, mediaKeys: mediaKeys, albumID: albumID, albumTitle: albumTitle, auth: auth, runtime: runtime)
         case let .reupload(assetIDs):
-            let changed = checkEdits(assetIDs)
+            let changed = await checkEdits(assetIDs)
             guard !changed.isEmpty else { return .nothing }
             planned(changed.count)
             return await upload(changed, album: nil, auth: auth, runtime: runtime, settings: settings)
@@ -488,8 +491,8 @@ final class BackupEngine {
 
     /// The changed assets that need uploading; a change that left Google's
     /// copy right (a favourite, a keyword) only refreshes the stamp.
-    private func checkEdits(_ assetIDs: [String]) -> [String] {
-        let states = AssetExporter.editStates(of: assetIDs)
+    private func checkEdits(_ assetIDs: [String]) async -> [String] {
+        let states = await AssetExporter.editStates(of: assetIDs)
         var changed: [String] = []
         var refreshed = false
         for id in assetIDs {
@@ -498,10 +501,10 @@ final class BackupEngine {
                 changed.append(id)
                 continue
             }
-            let was = model.state.uploaded[id]?.editStamp?.edited
-            switch BackupPlanner.editAction(wasEdited: was, isEdited: state.edited) {
+            let was = model.state.uploaded[id]?.editStamp
+            switch BackupPlanner.editAction(was: was, isEdited: state.edited, editIdentity: state.identity) {
             case .refreshStamp:
-                model.state.refreshStamp(assetID: id, EditStamp(modified: modified, edited: false))
+                model.state.refreshStamp(assetID: id, EditStamp(modified: modified, edited: state.edited, editIdentity: state.identity))
                 refreshed = true
             case .upload:
                 changed.append(id)
@@ -627,6 +630,7 @@ final class BackupEngine {
             var answered = Set<String>()
             var failed: [(id: String, message: String, retryable: Bool?)] = []
             var fatal: (FatalKind, String)?
+            var albumLimited = false
             let request = BridgeRequest.upload(auth, items: pending.compactMap { byID[$0]?.bridgeItem }, quality: settings.quality,
                                                threads: settings.threads, album: target)
             let exit: Int32
@@ -645,9 +649,17 @@ final class BackupEngine {
                     case let .album(googleID, _):
                         if let album { self.model.state.recordAlbum(album.id, googleAlbumID: googleID, added: confirmed) }
                     case let .albumFailed(message):
-                        if let album {
+                        guard let album else { break }
+                        if FailureClassifier.classify(message: message, bridgeRetryable: nil) == .rateLimited {
+                            // Google refused before doing anything: hold, and
+                            // the next pass adds these items with an album
+                            // step that waits for the hold (with its cap).
+                            albumLimited = true
+                        } else {
+                            // The title stays out: it lands in the timeline
+                            // and the shareable report.
                             self.failedAlbums.insert(album.id)
-                            self.lastError = "Backed up, but not added to the album \u{201C}\(album.title)\u{201D}: \(message)"
+                            self.lastError = "Backed up, but not added to a Google Photos album: \(message)"
                         }
                     case let .fatal(kind, message):
                         fatal = (kind, message)
@@ -666,7 +678,7 @@ final class BackupEngine {
             if !confirmed.isEmpty { progressed = true }
 
             var next: [String] = []
-            var limited = false
+            var limited = albumLimited
             for failure in failed {
                 let kind = FailureClassifier.classify(message: failure.message, bridgeRetryable: failure.retryable)
                 limited = limited || kind == .rateLimited
@@ -840,7 +852,7 @@ final class BackupEngine {
                 return .halt
             default:
                 failedAlbums.insert(albumID)
-                lastError = "Could not add photos to the album \u{201C}\(albumTitle)\u{201D}: \(message)"
+                lastError = "Could not add photos to a Google Photos album: \(message)"
                 model.log(.photos, lastError ?? message, problem: true)
                 return added ? .progressed : .nothing
             }

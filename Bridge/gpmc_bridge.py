@@ -182,7 +182,13 @@ def _is_network_error(error: BaseException) -> bool:
 # rate-limited Google, a bug) is not proof the credential is bad, and the app
 # keeps a credential unless it is: a fresh sign-in works only once.
 _REFUSED_STATUSES = {401, 403}
-_TRANSIENT_STATUSES = {408, 429, 500, 502, 503, 504}
+
+
+def _is_transient_status(status: int | None) -> bool:
+    """408 and any 5xx: Google or the path to it had trouble, and the same
+    request may work later (the per-file rule in _is_retryable_failure and
+    the app's FailureClassifier say the same). 429 is classified first."""
+    return status is not None and (status == 408 or 500 <= status <= 599)
 
 
 def _http_status(error: BaseException) -> int | None:
@@ -193,7 +199,7 @@ def _classify(error: BaseException, during_auth: bool = False) -> tuple[str, int
     status = _http_status(error)
     if status == 429:
         return "rate_limit", EXIT_RATE_LIMIT
-    if _is_network_error(error) or type(error).__name__ == "RetryError" or status in _TRANSIENT_STATUSES:
+    if _is_network_error(error) or type(error).__name__ == "RetryError" or _is_transient_status(status):
         return "network", EXIT_NETWORK
     if status in _REFUSED_STATUSES or "does not contain bearer token" in str(error):
         return "auth", EXIT_AUTH

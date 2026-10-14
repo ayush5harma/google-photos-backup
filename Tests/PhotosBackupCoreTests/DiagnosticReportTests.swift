@@ -134,6 +134,20 @@ private func problem(_ message: String, hoursAgo: Double, _ category: EventCateg
         for secret in ["ann.lee", "aas_et/abc", "/Users/ann", "555"] { #expect(!text.contains(secret), "\(secret)") }
     }
 
+    @Test func everyTimeIsLocalISO8601WithItsOffset() throws {
+        var snapshot = healthy()
+        snapshot.runs = [completedRun(hoursAgo: 30)]
+        snapshot.events = [problem("x", hoursAgo: 1)]
+        let india = try #require(TimeZone(identifier: "Asia/Kolkata"))
+        let text = DiagnosticReport.build(snapshot, redactor: Redactor(homeDirectory: "/Users/ann"), timeZone: india)
+        // generatedAt 2033-05-18T03:33:20Z is 09:03:20 in India.
+        #expect(text.contains("Generated 2033-05-18T09:03:20+05:30"))
+        // The run started 30 h earlier and ended a minute later: 21:34:20Z.
+        #expect(text.contains("(last on 2033-05-17T03:04:20+05:30)"))
+        #expect(text.contains("2033-05-18T08:03:20+05:30 [run] x"))
+        #expect(!text.contains("Z)"))
+    }
+
     @Test func saysSoWhenNothingStandsOut() {
         let text = DiagnosticReport.build(healthy(), redactor: Redactor(homeDirectory: "/Users/ann"))
         #expect(text.contains("What stands out\n- Nothing stands out.\n"))

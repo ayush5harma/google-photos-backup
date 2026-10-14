@@ -46,7 +46,39 @@ private let redactor = Redactor(homeDirectory: "/Users/ann")
         #expect(redactor.redact(ordinary) == ordinary)
     }
 
+    @Test(arguments: [
+        ("call +91 98765 43210 now", "call [phone ending 10] now"),
+        ("call 9876543210 now", "call [phone ending 10] now"),
+        ("call 98765 43210 now", "call [phone ending 10] now"),
+        ("call (555) 123-4567 now", "call [phone ending 67] now"),
+        ("call 555-123-4567 now", "call [phone ending 67] now"),
+        ("call 555.123.4567.", "call [phone ending 67]."),
+    ])
+    func commonPhoneFormatsAreMasked(text: String, expected: String) {
+        #expect(redactor.redact(text) == expected)
+    }
+
+    @Test(arguments: [
+        "Backed up 1,234 of 5,678 items in 2026",
+        "uploaded 8589934592 bytes and 123456789 bytes",
+        "took 00:05:30, 1h 23m, 95 s",
+        "epoch 1700000000 at 2026-10-14T10:00:00+05:30",
+        "media key AF1QipN98765432109xyz, exit 3, attempt 2 of 3, HTTP 503",
+        "version 0.9.0, 12.5 MB, 3.13.15, 100 of 2000",
+    ])
+    func ordinaryNumbersAreLeftAlone(text: String) {
+        #expect(redactor.redact(text) == text)
+    }
+
+    @Test func stagingPathsLoseTheirFileNames() {
+        let staged = "/Users/ann/Library/Caches/io.github.x/Staging/0F8E5D7A-1B2C-4D3E-8F90-A1B2C3D4E5F6/0/Passport scan.jpg"
+        #expect(redactor.redact("[Errno 2] No such file or directory: '\(staged)'")
+            == "[Errno 2] No such file or directory: '<staging>/…'")
+        #expect(redactor.redact("could not read \(staged): permission denied") == "could not read <staging>/…: permission denied")
+    }
+
     @Test func homeFolderPathsBecomeTilde() {
+        #expect(redactor.redact("It is in /Users/ann. Then /Users/ann!") == "It is in ~. Then ~!")
         #expect(redactor.redact("log at /Users/ann/Library/Logs/x.log") == "log at ~/Library/Logs/x.log")
         #expect(redactor.redact("home is /Users/ann") == "home is ~")
         // Another folder that merely starts with the same name is left alone.

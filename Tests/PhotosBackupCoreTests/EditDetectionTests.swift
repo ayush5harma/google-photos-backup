@@ -85,15 +85,37 @@ private func uploaded(_ stamps: [String: EditStamp?], selected: Set<String> = ["
     }
 
     @Test(arguments: [
-        (false as Bool?, false, BackupPlanner.EditAction.refreshStamp),  // a metadata change (a favourite, a keyword)
-        (false as Bool?, true, BackupPlanner.EditAction.upload),         // edited since the backup
-        (true as Bool?, true, BackupPlanner.EditAction.upload),          // edited again
-        (true as Bool?, false, BackupPlanner.EditAction.upload),         // edit reverted to the original
-        (nil as Bool?, false, BackupPlanner.EditAction.refreshStamp),    // from before stamps and unedited now
-        (nil as Bool?, true, BackupPlanner.EditAction.upload),
+        // Unedited now.
+        (false as Bool?, nil as String?, false, nil as String?, BackupPlanner.EditAction.refreshStamp),  // a favourite, a keyword
+        (nil, nil, false, nil, .refreshStamp),            // from before stamps
+        (true, "e1", false, nil, .upload),                // edit reverted to the original
+        (true, nil, false, nil, .upload),
+        // Edited now.
+        (false, nil, true, "e1", .upload),                // edited since the backup
+        (nil, nil, true, "e1", .upload),
+        (true, "e1", true, "e1", .refreshStamp),          // same edit: metadata or a re-render only
+        (true, "e1", true, "e2", .upload),                // edited again
+        (true, nil, true, "e1", .upload),                 // no identity then: cannot tell
+        (true, "e1", true, nil, .upload),                 // adjustment data unreadable now
     ])
-    func whatToDoWithAChangedAsset(wasEdited: Bool?, isEdited: Bool, expected: BackupPlanner.EditAction) {
-        #expect(BackupPlanner.editAction(wasEdited: wasEdited, isEdited: isEdited) == expected)
+    func whatToDoWithAChangedAsset(wasEdited: Bool?, wasIdentity: String?, isEdited: Bool, identity: String?,
+                                   expected: BackupPlanner.EditAction) {
+        let stamp = EditStamp(modified: t0, edited: wasEdited, editIdentity: wasIdentity)
+        #expect(BackupPlanner.editAction(was: stamp, isEdited: isEdited, editIdentity: identity) == expected)
+    }
+
+    @Test func aMissingStampActsLikeOneFromBeforeStamps() {
+        #expect(BackupPlanner.editAction(was: nil, isEdited: false, editIdentity: nil) == .refreshStamp)
+        #expect(BackupPlanner.editAction(was: nil, isEdited: true, editIdentity: "e1") == .upload)
+    }
+
+    @Test func stampsWithoutAnEditIdentityStillDecode() throws {
+        let json = #"{"date":"2026-10-01T10:00:00Z","existing":false,"mediaKey":"k","editStamp":{"modified":"2026-10-01T09:00:00Z","edited":true}}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let record = try decoder.decode(BackupRecord.self, from: Data(json.utf8))
+        #expect(record.editStamp?.edited == true)
+        #expect(record.editStamp?.editIdentity == nil)
     }
 }
 

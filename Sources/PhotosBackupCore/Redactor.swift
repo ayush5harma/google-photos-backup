@@ -14,6 +14,8 @@ public struct Redactor: Sendable {
 
     public func redact(_ text: String) -> String {
         var text = text
+        // First, so no later rule sees the photo's own file name in it.
+        text = Self.replace(Self.stagingPattern, in: text, with: "<staging>/\u{2026}")
         for (pattern, template) in Self.secretPatterns {
             text = Self.replace(pattern, in: text, with: template)
         }
@@ -48,10 +50,18 @@ public struct Redactor: Sendable {
     /// auth_data); the lazy match stops at the first `@` or `%40`.
     private static let emailPattern = #"([A-Za-z0-9](?:[A-Za-z0-9._+-]|%[0-9A-Fa-f]{2})*?)(?:@|%40)([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})"#
 
-    /// International numbers with a leading +, and North American ones in
-    /// their usual punctuation. Bare digit runs (byte counts, timestamps,
-    /// media keys) and ISO dates are deliberately not matched.
-    private static let phonePattern = #"(?:\+[0-9][0-9 ().-]{6,18}[0-9])|(?:\(?\b[0-9]{3}\)?[ .-][0-9]{3}[ .-][0-9]{4}\b)"#
+    /// A file the app exported (`.../Staging/<uuid>/<n>/<original name>`),
+    /// up to a quote, a line end or ": ", so a name with spaces goes whole.
+    private static let stagingPattern = #"(?:/[^/\s'"]+)*/Staging/[0-9A-Fa-f-]{36}(?:[^'"\n:]|:(?! ))*"#
+
+    /// International numbers with a leading +, North American ones in their
+    /// usual punctuation, and Indian mobile numbers (ten digits from 6-9,
+    /// whole or 5+5). Other bare digit runs (byte counts, epoch seconds,
+    /// media keys, years) and dates are deliberately not matched; a ten-digit
+    /// count that is followed by "bytes" is left alone too.
+    private static let phonePattern = #"(?:\+[0-9][0-9 ().-]{6,18}[0-9])"#
+        + #"|(?:\(?\b[0-9]{3}\)?[ .-][0-9]{3}[ .-][0-9]{4}\b)"#
+        + #"|(?:(?<![A-Za-z0-9.,:])[6-9][0-9]{4}[ -]?[0-9]{5}(?![A-Za-z0-9.,:])(?!\s*bytes))"#
 
     private static func maskEmail(local: String, domain: String) -> String {
         "\(local.first.map(String.init) ?? "")***@\(domain)"
@@ -66,8 +76,9 @@ public struct Redactor: Sendable {
     private func redactHome(in text: String) -> String {
         let home = homeDirectory.hasSuffix("/") ? String(homeDirectory.dropLast()) : homeDirectory
         guard home.count > 1 else { return text }
-        // Only a whole path component: /Users/ann must not eat /Users/anne.
-        return Self.replaceMatches(NSRegularExpression.escapedPattern(for: home) + #"(?=/|$|[\s"'),;:])"#, in: text) { _ in "~" }
+        // Only a whole path component: /Users/ann must not eat /Users/anne,
+        // but may end a sentence (/Users/ann.).
+        return Self.replaceMatches(NSRegularExpression.escapedPattern(for: home) + #"(?=/|$|[\s"'),;:.!?])"#, in: text) { _ in "~" }
     }
 
     // MARK: - Regular expressions

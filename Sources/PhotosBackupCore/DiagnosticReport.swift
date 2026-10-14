@@ -76,11 +76,7 @@ public enum DiagnosticReport {
     static let longHold: TimeInterval = 60 * 60
 
     public static func build(_ snapshot: DiagnosticSnapshot, redactor: Redactor, timeZone: TimeZone = .current) -> String {
-        let date = DateFormatter()
-        date.locale = Locale(identifier: "en_US_POSIX")
-        date.timeZone = timeZone
-        date.dateFormat = "yyyy-MM-dd HH:mm"
-        func when(_ value: Date) -> String { date.string(from: value) }
+        func when(_ value: Date) -> String { timestamp(value, timeZone: timeZone) }
 
         var lines = [
             "Photos Backup diagnostic report",
@@ -89,7 +85,7 @@ public enum DiagnosticReport {
             "",
             "What stands out",
         ]
-        let findings = findings(snapshot)
+        let findings = findings(snapshot, timeZone: timeZone)
         lines += findings.isEmpty ? ["- Nothing stands out."] : findings.map { "- \($0)" }
 
         lines += ["", "App and Mac",
@@ -138,7 +134,7 @@ public enum DiagnosticReport {
     }
 
     /// The rules behind "What stands out", in order of how much they block.
-    public static func findings(_ snapshot: DiagnosticSnapshot) -> [String] {
+    public static func findings(_ snapshot: DiagnosticSnapshot, timeZone: TimeZone = .current) -> [String] {
         let now = snapshot.generatedAt
         var findings: [String] = []
 
@@ -168,7 +164,7 @@ public enum DiagnosticReport {
         if snapshot.automaticBackups {
             let lastCompleted = snapshot.runs.filter { $0.outcome == .completed }.compactMap(\.finishedAt).max()
             if lastCompleted.map({ $0 < now.addingTimeInterval(-day) }) ?? true {
-                let since = lastCompleted.map { " (last on \(ISO8601DateFormatter().string(from: $0)))" } ?? ""
+                let since = lastCompleted.map { " (last on \(timestamp($0, timeZone: timeZone)))" } ?? ""
                 findings.append("No backup has completed in the last 24 hours although automatic backups are on\(since).")
             }
         }
@@ -207,6 +203,16 @@ public enum DiagnosticReport {
         if let status = FailureClassifier.statusCode(in: message) { return "HTTP \(status)" }
         let blanked = message.replacingOccurrences(of: #"[0-9]+"#, with: "#", options: .regularExpression)
         return "\u{201C}\(blanked.prefix(80))\u{201D}"
+    }
+
+    /// Every time in the report: ISO 8601 in local time with its UTC offset
+    /// (2026-10-14T22:40:05+05:30), so the reader knows both.
+    static func timestamp(_ date: Date, timeZone: TimeZone) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = timeZone
+        formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ssxxx"
+        return formatter.string(from: date)
     }
 
     private static func times(_ count: Int) -> String {
