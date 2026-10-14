@@ -89,7 +89,7 @@ private func uploaded(_ stamps: [String: EditStamp?], selected: Set<String> = ["
         (false as Bool?, true, BackupPlanner.EditAction.upload),         // edited since the backup
         (true as Bool?, true, BackupPlanner.EditAction.upload),          // edited again
         (true as Bool?, false, BackupPlanner.EditAction.upload),         // edit reverted to the original
-        (nil as Bool?, false, BackupPlanner.EditAction.upload),          // unknown: let Google's hash check decide
+        (nil as Bool?, false, BackupPlanner.EditAction.refreshStamp),    // from before stamps and unedited now
         (nil as Bool?, true, BackupPlanner.EditAction.upload),
     ])
     func whatToDoWithAChangedAsset(wasEdited: Bool?, isEdited: Bool, expected: BackupPlanner.EditAction) {
