@@ -292,12 +292,16 @@ final class BackupEngine {
         currentRun = RunRecord(kind: messagesOnly ? .messagesMedia : .photos, trigger: trigger, conditions: model.conditions.summary)
         model.diagnostics.runActive = true
 
+        // messagesOnly is run-scoped: left set by a run that could not start,
+        // the next photo run would stop after the Messages queue.
         guard let runtime = BridgeRuntime.locate() else {
             lastError = "The uploader runtime is missing; build the app with scripts/build-app.sh."
+            messagesOnly = false
             return true
         }
         guard let auth = model.authData else {
             lastError = "Sign in with Google in Settings to start backing up."
+            messagesOnly = false
             return true
         }
         holdAwake()
@@ -486,11 +490,9 @@ final class BackupEngine {
 
     private func upload(messages items: [MessagesMediaItem], auth: String,
                         runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
+        // Rows appear once the batch may go, not while it is held offline.
+        guard await waitUntilClear(retryAt: nil) else { return phase == .stopping ? .halt : .nothing }
         items.forEach { show($0.id, filename: $0.filename, status: .hashing) }
-        guard await waitUntilClear(retryAt: nil) else {
-            markStopped(items.map(\.id))
-            return phase == .stopping ? .halt : .nothing
-        }
         let batch = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: batch) }
         let prepared = await Task.detached(priority: .utility) { () -> [BatchItem] in
