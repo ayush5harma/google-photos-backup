@@ -173,7 +173,7 @@ struct ArchiveHTML {
         }
         if let replyTo = message.replyTo {
             let quoted = byID[replyTo]
-            let quote = quoted.map { quote($0) } ?? "an earlier message"
+            let quote = quoted.map { self.quote($0) } ?? "an earlier message"
             let who = quoted?.senderName ?? ""
             html += "<a class=\"reply\" href=\"#m-\(Self.escape(replyTo))\"><span class=\"who\">\(Self.escape(who.isEmpty ? "Reply" : "Replying to " + who))</span>\(Self.escape(quote))</a>"
         }

@@ -64,14 +64,12 @@ struct MessagesSnapshot {
 
     init(of source: URL, in temporaryDirectory: URL) throws {
         let files = FileManager.default
-        guard files.fileExists(atPath: source.path) else {
-            // Without Full Disk Access the file is invisible rather than
-            // unreadable; listing its folder tells the two cases apart.
-            do { _ = try files.contentsOfDirectory(atPath: source.deletingLastPathComponent().path) }
-            catch let error where MessagesArchiveError.isPermissionDenied(error) { throw MessagesArchiveError.needsFullDiskAccess }
-            catch {}
-            throw MessagesArchiveError.databaseMissing
-        }
+        // 2026-10-15: TCC and sandbox denial can make fileExists report
+        // false for a present chat.db. open preserves EPERM/EACCES, while
+        // ENOENT means there really is no database at that path.
+        let sourceDescriptor = open(source.path, O_RDONLY | O_CLOEXEC)
+        guard sourceDescriptor >= 0 else { throw Self.sourceOpenError(errno) }
+        close(sourceDescriptor)
         directory = temporaryDirectory.appendingPathComponent("\(Self.directoryPrefix)\(UUID().uuidString)", isDirectory: true)
         database = directory.appendingPathComponent("chat.db")
         do { try files.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
@@ -86,6 +84,12 @@ struct MessagesSnapshot {
             try? files.removeItem(at: directory)
             throw MessagesArchiveError.isPermissionDenied(error) ? MessagesArchiveError.needsFullDiskAccess : MessagesArchiveError.snapshotFailed
         }
+    }
+
+    static func sourceOpenError(_ code: Int32) -> MessagesArchiveError {
+        if code == EPERM || code == EACCES { return .needsFullDiskAccess }
+        if code == ENOENT { return .databaseMissing }
+        return .snapshotFailed
     }
 
     func remove() { try? FileManager.default.removeItem(at: directory) }

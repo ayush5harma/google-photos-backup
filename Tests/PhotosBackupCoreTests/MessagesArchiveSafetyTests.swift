@@ -113,6 +113,11 @@ import Testing
         // A deleted archive.json is rebuilt the same way.
         try FileManager.default.removeItem(at: manifest)
         #expect(try fixture.archiver().run().overview.conversations.count == 2)
+        // A valid JSON object without the manifest's chats is damaged too.
+        try Data("{}".utf8).write(to: manifest)
+        let emptyObject = try fixture.archiver().run()
+        #expect(emptyObject.manifestRebuilt)
+        #expect(emptyObject.overview.conversations.count == 2)
     }
 
     @Test func aChosenFolderWithOtherFilesGetsAnArchiveFolderInside() throws {
@@ -122,10 +127,22 @@ import Testing
         try FileManager.default.createDirectory(at: chosen, withIntermediateDirectories: true)
         #expect(MessagesArchiver.archiveFolder(forChosen: chosen) == chosen)
         try Data().write(to: chosen.appendingPathComponent(".DS_Store"))
-        #expect(MessagesArchiver.archiveFolder(forChosen: chosen) == chosen)
+        #expect(MessagesArchiver.archiveFolder(forChosen: chosen) == chosen.appendingPathComponent("Messages Archive", isDirectory: true))
         try Data("<p>my own page</p>".utf8).write(to: chosen.appendingPathComponent("index.html"))
         let inside = MessagesArchiver.archiveFolder(forChosen: chosen)
         #expect(inside == chosen.appendingPathComponent("Messages Archive", isDirectory: true))
+
+        try FileManager.default.createDirectory(at: inside, withIntermediateDirectories: true)
+        let unrelatedPage = inside.appendingPathComponent("index.html")
+        try Data("<p>another page</p>".utf8).write(to: unrelatedPage)
+        let secondInside = chosen.appendingPathComponent("Messages Archive 2", isDirectory: true)
+        #expect(MessagesArchiver.archiveFolder(forChosen: chosen) == secondInside)
+        #expect(try String(contentsOf: unrelatedPage, encoding: .utf8) == "<p>another page</p>")
+        try FileManager.default.createDirectory(at: secondInside.appendingPathComponent("Conversations"), withIntermediateDirectories: true)
+        var childManifest = ArchiveManifest()
+        childManifest.lastArchived = Date()
+        try childManifest.save(to: secondInside)
+        #expect(MessagesArchiver.archiveFolder(forChosen: chosen) == secondInside)
 
         try oneChat(fixture, messages: 1)
         try FileManager.default.removeItem(at: chosen.appendingPathComponent("index.html"))
@@ -193,6 +210,12 @@ import Testing
         try Data("half".utf8).write(to: partial)
         let rootPartial = fixture.archive.appendingPathComponent(".index.html.\(UUID().uuidString).partial")
         try Data("half".utf8).write(to: rootPartial)
+        let unrelated = fixture.archive.appendingPathComponent(".download.partial")
+        try Data("mine".utf8).write(to: unrelated)
+        let misleading = fixture.archive.appendingPathComponent(".index.html.not-a-uuid.partial")
+        try Data("mine too".utf8).write(to: misleading)
+        let unrelatedDirectory = fixture.archive.appendingPathComponent(".index.html.\(UUID().uuidString).partial", isDirectory: true)
+        try FileManager.default.createDirectory(at: unrelatedDirectory, withIntermediateDirectories: true)
         let stale = fixture.temporary.appendingPathComponent("photos-backup-archive-\(UUID().uuidString)", isDirectory: true)
         let fresh = fixture.temporary.appendingPathComponent("photos-backup-archive-\(UUID().uuidString)", isDirectory: true)
         for folder in [stale, fresh] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
@@ -200,8 +223,17 @@ import Testing
         _ = try fixture.archiver().run()
         #expect(!FileManager.default.fileExists(atPath: partial.path))
         #expect(!FileManager.default.fileExists(atPath: rootPartial.path))
+        #expect(try String(contentsOf: unrelated, encoding: .utf8) == "mine")
+        #expect(try String(contentsOf: misleading, encoding: .utf8) == "mine too")
+        #expect(FileManager.default.fileExists(atPath: unrelatedDirectory.path))
         #expect(!FileManager.default.fileExists(atPath: stale.path))
         #expect(FileManager.default.fileExists(atPath: fresh.path))
+    }
+
+    @Test func deniedDatabaseReadIsDifferentFromMissingDatabase() {
+        #expect(MessagesSnapshot.sourceOpenError(EACCES) == .needsFullDiskAccess)
+        #expect(MessagesSnapshot.sourceOpenError(EPERM) == .needsFullDiskAccess)
+        #expect(MessagesSnapshot.sourceOpenError(ENOENT) == .databaseMissing)
     }
 
     @Test func rowsStillInTheWriteAheadLogAreArchived() throws {
@@ -359,5 +391,29 @@ import Testing
         #expect(ArchiveLocation.describe(.timer) == "daily archive")
         #expect(ArchiveLocation.describe(.launch) == "daily archive")
         #expect(ArchiveLocation.describe(.automation) == "Shortcut or link")
+    }
+}
+
+@Suite struct ArchiveFileComparisonTests {
+    @Test func aLargeUnchangedPageKeepsItsDateAndSameSizeChangesAreWritten() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("archive-compare-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let page = folder.appendingPathComponent("index.html")
+        let original = Data(repeating: 0x41, count: 200_000)
+        #expect(try ArchiveFiles.writeIfChanged(original, to: page))
+        let oldDate = Date(timeIntervalSince1970: 1_700_000_000)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: page.path)
+        #expect(try !ArchiveFiles.writeIfChanged(original, to: page))
+        let unchangedDate = try #require(FileManager.default.attributesOfItem(atPath: page.path)[.modificationDate] as? Date)
+        #expect(unchangedDate == oldDate)
+
+        var changed = original
+        changed[150_000] = 0x42
+        #expect(try ArchiveFiles.writeIfChanged(changed, to: page))
+        #expect(try Data(contentsOf: page) == changed)
+        #expect(try ArchiveFiles.writeIfChanged(Data(), to: page))
+        #expect(try Data(contentsOf: page).isEmpty)
+        #expect(try !ArchiveFiles.writeIfChanged(Data(), to: page))
     }
 }

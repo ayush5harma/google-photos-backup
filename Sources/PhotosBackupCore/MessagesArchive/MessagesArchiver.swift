@@ -203,15 +203,33 @@ public struct MessagesArchiver: Sendable {
 
     // MARK: - Where the archive goes
 
-    /// The folder to write for one a person chose: the folder itself when it
-    /// is empty or already an archive, else a "Messages Archive" folder
-    /// inside it, so choosing Documents or a web project never overwrites
-    /// an index.html of theirs.
+    /// 2026-10-15: A chosen folder or its conventional child can already
+    /// hold an unrelated index.html. Use an empty folder or recognizable
+    /// archive, otherwise choose the next unused numbered child.
     public static func archiveFolder(forChosen chosen: URL) -> URL {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: chosen.path)) ?? []
-        let isArchive = names.contains(ArchiveManifest.fileName) || names.contains(conversationsFolder)
-        if isArchive || names.allSatisfy({ $0.hasPrefix(".") }) { return chosen }
-        return chosen.appendingPathComponent(defaultFolderName, isDirectory: true)
+        if isArchiveFolder(chosen) { return chosen }
+        if let names = try? FileManager.default.contentsOfDirectory(atPath: chosen.path), names.isEmpty { return chosen }
+        var number = 1
+        while true {
+            let name = number == 1 ? defaultFolderName : "\(defaultFolderName) \(number)"
+            let candidate = chosen.appendingPathComponent(name, isDirectory: true)
+            if !FileManager.default.fileExists(atPath: candidate.path) || isArchiveFolder(candidate) { return candidate }
+            number += 1
+        }
+    }
+
+    private static func isArchiveFolder(_ folder: URL) -> Bool {
+        let conversations = folder.appendingPathComponent(conversationsFolder, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: conversations.path, isDirectory: &isDirectory), isDirectory.boolValue else { return false }
+        switch ArchiveManifest.load(from: folder) {
+        case .loaded: return true
+        case .absent, .unreadable:
+            let slugs = (try? FileManager.default.contentsOfDirectory(atPath: conversations.path)) ?? []
+            return slugs.contains { slug in
+                FileManager.default.fileExists(atPath: conversations.appendingPathComponent(slug).appendingPathComponent("messages.json").path)
+            }
+        }
     }
 
     /// Only what the archive itself wrote, whatever else shares the folder.

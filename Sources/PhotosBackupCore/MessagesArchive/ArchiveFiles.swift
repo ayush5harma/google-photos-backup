@@ -30,22 +30,49 @@ enum ArchiveFiles {
         }
     }
 
-    /// Writes only when the bytes differ, so an unchanged archive keeps its
-    /// modification dates (and Time Machine has nothing new to copy).
+    /// 2026-10-15: Check size then hash in chunks so a large existing HTML
+    /// page does not occupy another full buffer while preserving its date
+    /// when unchanged (and avoiding another Time Machine copy).
     @discardableResult
     static func writeIfChanged(_ data: Data, to url: URL) throws -> Bool {
-        if let existing = try? Data(contentsOf: url), existing == data { return false }
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        if attributes?[.type] as? FileAttributeType == .typeRegular,
+           (attributes?[.size] as? NSNumber)?.int64Value == Int64(data.count),
+           let existingHash = try? fileHash(at: url), existingHash == SHA256.hash(data: data) { return false }
         try write(data, to: url)
         return true
     }
 
-    /// Half-written files (".name.<uuid>.partial") a killed run left behind.
-    /// Called only while holding the folder's run lock.
+    private static func fileHash(at url: URL) throws -> SHA256.Digest {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hash = SHA256()
+        while let chunk = try handle.read(upToCount: 64 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
+        return hash.finalize()
+    }
+
+    /// 2026-10-15: A killed run can leave our named temporary files. Match
+    /// only known output names and regular files so a chosen folder's own
+    /// hidden files or directories are never removed.
     static func removePartials(in folder: URL) {
         let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
-        for name in names where name.hasPrefix(".") && name.hasSuffix(partialSuffix) {
-            try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
+        for name in names where isOwnedPartial(name) {
+            let url = folder.appendingPathComponent(name)
+            if size(of: url) != nil { try? FileManager.default.removeItem(at: url) }
         }
+    }
+
+    private static func isOwnedPartial(_ name: String) -> Bool {
+        guard name.hasPrefix("."), name.hasSuffix(partialSuffix) else { return false }
+        let stem = String(name.dropFirst().dropLast(partialSuffix.count))
+        guard let separator = stem.lastIndex(of: "."), UUID(uuidString: String(stem[stem.index(after: separator)...])) != nil else { return false }
+        let output = String(stem[..<separator])
+        if ["archive.json", "index.html", "style.css", "messages.json"].contains(output) { return true }
+        guard output.hasPrefix("chat-"), output.hasSuffix(".db") else { return false }
+        let date = output.dropFirst(5).dropLast(3)
+        return date.count == 10 && date[date.index(date.startIndex, offsetBy: 4)] == "-"
+            && date[date.index(date.startIndex, offsetBy: 7)] == "-"
+            && date.enumerated().allSatisfy { index, character in index == 4 || index == 7 ? character == "-" : character.isNumber }
     }
 
     static func setPrivate(_ url: URL) throws {

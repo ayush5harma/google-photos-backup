@@ -278,14 +278,16 @@ final class MessagesArchiveController {
         return decoder
     }()
 
-    /// The end of a conversation, for the preview, from its messages.json.
+    /// 2026-10-15: Mapping can avoid a second byte buffer. The current JSON
+    /// format still requires decoding the full array to show its last rows.
     func recentMessages(in conversation: ArchivedConversation) async -> [ArchivedMessage] {
         #if DEBUG
         if let fixtureTranscripts { return fixtureTranscripts[conversation.id] ?? [] }
         #endif
         let url = folder.appendingPathComponent(conversation.relativePath).appendingPathComponent("messages.json")
         return await Task.detached(priority: .userInitiated) {
-            guard let data = try? Data(contentsOf: url), let transcript = try? ConversationTranscript.decode(data) else { return [] }
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+                  let transcript = try? ConversationTranscript.decode(data) else { return [] }
             return Array(transcript.messages.suffix(Self.previewLimit))
         }.value
     }

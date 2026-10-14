@@ -48,7 +48,12 @@ struct ArchiveManifest: Codable, Equatable {
     static func load(from folder: URL) -> Loaded {
         let url = folder.appendingPathComponent(fileName)
         guard FileManager.default.fileExists(atPath: url.path) else { return .absent }
-        guard let data = try? Data(contentsOf: url), let manifest = try? ArchiveJSON.decoder.decode(ArchiveManifest.self, from: data) else {
+        // 2026-10-15: Defaults aid older manifests, but an unrelated or
+        // damaged `{}` must trigger reconstruction from conversation files.
+        guard let data = try? Data(contentsOf: url),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              object["chats"] is [String: Any],
+              let manifest = try? ArchiveJSON.decoder.decode(ArchiveManifest.self, from: data) else {
             return .unreadable
         }
         return .loaded(manifest)
