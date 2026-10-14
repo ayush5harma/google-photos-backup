@@ -60,7 +60,7 @@ public partial class App : Application
             }
             catch (Exception error)
             {
-                // 2026-10-15: Smoke evidence names only the stage/type; exception messages can contain local paths.
+                // 2026-10-15: This path uses fixture data only; CI can report XAML failure details without user credentials.
                 if (reportPath is not null)
                 {
                     try
@@ -69,7 +69,10 @@ public partial class App : Application
                         File.WriteAllText(reportPath, JsonSerializer.Serialize(new
                         {
                             status = "failed", stage, errorType = error.GetType().Name,
-                            hResult = $"0x{error.HResult:X8}", message = error.Message
+                            hResult = $"0x{error.HResult:X8}", message = error.Message,
+                            innerType = error.InnerException?.GetType().Name,
+                            innerMessage = error.InnerException?.Message,
+                            stack = error.ToString()[..Math.Min(error.ToString().Length, 8000)]
                         }));
                     }
                     catch (Exception) { }

@@ -25,4 +25,16 @@
     <Content Include="..\..\docs\app-icon.png" Link="Assets\app-icon.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\app-icon.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
+  <!-- 2026-10-15: WindowsAppSDK issue #6720 measured that unpackaged .NET 10 publish omits the generated app PRI, breaking XAML resources at launch. -->
+  <Target Name="AddProjectPriToResolvedFileToPublish"
+          BeforeTargets="ComputeResolvedFilesToPublishList"
+          DependsOnTargets="$(GenerateProjectPriFile)">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(ProjectPriFullPath)"
+                             Condition="Exists('$(ProjectPriFullPath)')">
+        <RelativePath>$(ProjectPriFileName)</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
+  </Target>
 </Project>

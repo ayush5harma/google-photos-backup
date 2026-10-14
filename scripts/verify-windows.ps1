@@ -29,6 +29,13 @@ $Python = Join-Path $Bundle 'runtime/python/python.exe'
 $Bridge = Join-Path $Bundle 'runtime/bridge/gpmc_bridge.py'
 Assert-X64PE $App
 Assert-X64PE $Python
+$Resources = @(Get-ChildItem $Bundle -Recurse -File | Where-Object { $_.Extension -in @('.pri', '.xbf') } | Sort-Object FullName | ForEach-Object {
+    [ordered]@{ path = [System.IO.Path]::GetRelativePath($Bundle, $_.FullName); bytes = $_.Length; sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant() }
+})
+$Resources | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8 (Join-Path $ReportDirectory 'xaml-resources.json')
+if (-not ((Test-Path (Join-Path $Bundle 'GooglePhotosBackup.pri')) -or (Test-Path (Join-Path $Bundle 'resources.pri')))) {
+    throw 'The application PRI resource index is missing from the published bundle.'
+}
 if (-not (Test-Path (Join-Path $Bundle 'coreclr.dll'))) { throw 'The .NET self-contained runtime is missing.' }
 if (-not (Test-Path (Join-Path $Bundle 'Microsoft.UI.Xaml.dll'))) { throw 'The self-contained WinUI runtime is missing.' }
 $NativeModules = @(Get-ChildItem (Join-Path $Bundle 'runtime/python') -Recurse -Filter '*.pyd')
