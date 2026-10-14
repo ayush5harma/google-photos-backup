@@ -55,7 +55,7 @@ class FakeClient:
     def __init__(self, existing=(), failing=(), auth_error=None, album_error=None, on_album=None):
         self.api = FakeApi(auth_error)
         self.existing = set(existing)
-        self.failing = set(failing)
+        self.failing = dict(failing) if isinstance(failing, dict) else set(failing)
         self.album_error = album_error
         self.on_album = on_album
         self.upload_calls = []
@@ -77,7 +77,8 @@ class FakeClient:
 
             event("hashing", 10)
             if name in self.failing:
-                logging.getLogger().error(f"Error uploading file {path}: 413 too large")
+                reason = self.failing[name] if isinstance(self.failing, dict) else "413 too large"
+                logging.getLogger().error(f"Error uploading file {path}: {reason}")
                 event("error")
                 continue
             if name in self.existing:
@@ -220,8 +221,30 @@ class UploadTests(unittest.TestCase):
         code, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg", "big.mov")}, client)
 
         self.assertEqual(code, 0)
-        self.assertEqual(of_type(events, "item_failed"), [{"type": "item_failed", "v": 1, "id": "asset-big.mov", "message": "413 too large"}])
+        self.assertEqual(of_type(events, "item_failed"), [{"type": "item_failed", "v": 1, "id": "asset-big.mov", "message": "413 too large", "retryable": False}])
         self.assertEqual(of_type(events, "done")[0]["failed"], 1)
+
+    def test_failed_file_says_whether_sending_it_again_can_help(self):
+        reasons = {
+            "busy.jpg": "503 Server Error: Service Unavailable for url: https://photos.googleapis.com/x",
+            "slow.jpg": "429 Client Error: Too Many Requests for url: https://photos.googleapis.com/x",
+            "gone.jpg": "HTTPSConnectionPool(host='photos.googleapis.com', port=443): Read timed out. (read timeout=60)",
+            "big.jpg": "413 Client Error: Request Entity Too Large for url: https://photos.googleapis.com/x",
+            "odd.jpg": "File upload rejected by api",
+        }
+        client = FakeClient(failing=reasons)
+        _, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items(*reasons)}, client)
+
+        retryable = {e["id"]: e["retryable"] for e in of_type(events, "item_failed")}
+        self.assertEqual(retryable, {"asset-busy.jpg": True, "asset-slow.jpg": True, "asset-gone.jpg": True,
+                                     "asset-big.jpg": False, "asset-odd.jpg": False})
+        self.assertEqual(of_type(events, "item_failed")[0]["message"], reasons[of_type(events, "item_failed")[0]["id"][6:]])
+
+    def test_an_escaped_network_exception_is_retryable(self):
+        client = FakeClient()
+        client.upload = lambda **kwargs: (_ for _ in ()).throw(ConnectionError("no route"))
+        _, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg")}, client)
+        self.assertEqual(of_type(events, "item_failed")[0]["retryable"], True)
 
     def test_new_album_is_created_with_new_and_existing_items(self):
         client = FakeClient(existing={"b.jpg"})
@@ -265,7 +288,13 @@ class UploadTests(unittest.TestCase):
             (FakeHTTPError(401), "auth"),
             (RuntimeError("Auth response does not contain bearer token"), "auth"),
             (FakeHTTPError(503), "network"),
-            (FakeHTTPError(429), "network"),
+            (FakeHTTPError(501), "network"),
+            (FakeHTTPError(505), "network"),
+            (FakeHTTPError(520), "network"),
+            (FakeHTTPError(599), "network"),
+            (FakeHTTPError(408), "network"),
+            (FakeHTTPError(400), "internal"),
+            (FakeHTTPError(429), "rate_limit"),
             (type("RetryError", (Exception,), {})("max retries"), "network"),
             (RuntimeError("something odd"), "internal"),
         ]
@@ -276,6 +305,11 @@ class UploadTests(unittest.TestCase):
     def test_a_credential_missing_fields_is_refused(self):
         _, events, _ = run({"command": "check-auth", "auth_data": AUTH}, factory_error=KeyError("client_sig"))
         self.assertEqual(events[0]["kind"], "auth")
+
+    def test_rate_limit_while_signing_in_is_its_own_kind(self):
+        code, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg")}, FakeClient(auth_error=FakeHTTPError(429)))
+        self.assertEqual(code, gpmc_bridge.EXIT_RATE_LIMIT)
+        self.assertEqual(events, [{"type": "fatal", "v": 1, "kind": "rate_limit", "message": "429 Client Error"}])
 
     def test_unreachable_network_is_not_an_auth_failure(self):
         code, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg")}, factory_error=ConnectionError("no route"))
@@ -312,6 +346,12 @@ class OtherCommandTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(client.album_calls, [("name", "Trip", ["k1", "k2"])])
         self.assertEqual(of_type(events, "album")[0]["album_id"], "album-new")
+
+    def test_add_to_album_rate_limit_is_its_own_kind(self):
+        client = FakeClient(album_error=FakeHTTPError(429))
+        code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k1"], "album": {"id": "a"}}, client)
+        self.assertEqual(code, gpmc_bridge.EXIT_RATE_LIMIT)
+        self.assertEqual(events[-1]["kind"], "rate_limit")
 
     def test_add_to_album_failure_is_fatal(self):
         client = FakeClient(album_error=RuntimeError("500"))

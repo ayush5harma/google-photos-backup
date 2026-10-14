@@ -1,16 +1,39 @@
 import Foundation
 
+/// Which version of a Photos asset a backup holds, so an edit made later
+/// can be told apart from the version Google has.
+public struct EditStamp: Codable, Equatable, Sendable {
+    /// PHAsset.modificationDate when the uploaded rendition was exported.
+    public var modified: Date
+    /// Whether that rendition was the edited one; nil when not known (an
+    /// upload from before stamps were kept).
+    public var edited: Bool?
+    /// For an edited rendition: a SHA-256 of the asset's adjustment data,
+    /// which changes only when the edit does (not on a favourite, a keyword
+    /// or a re-render). nil when unedited, unknown, or Photos had none.
+    public var editIdentity: String?
+
+    public init(modified: Date, edited: Bool?, editIdentity: String? = nil) {
+        self.modified = modified
+        self.edited = edited
+        self.editIdentity = editIdentity
+    }
+}
+
 /// One Photos asset that Google Photos has confirmed, by its media key.
 public struct BackupRecord: Codable, Equatable, Sendable {
     public var mediaKey: String
     public var date: Date
     /// Google already had these bytes (gpmc's hash check), so nothing was sent.
     public var existing: Bool
+    /// Photos assets only; Messages items never change.
+    public var editStamp: EditStamp?
 
-    public init(mediaKey: String, date: Date, existing: Bool) {
+    public init(mediaKey: String, date: Date, existing: Bool, editStamp: EditStamp? = nil) {
         self.mediaKey = mediaKey
         self.date = date
         self.existing = existing
+        self.editStamp = editStamp
     }
 }
 
@@ -39,8 +62,22 @@ public struct BackupState: Codable, Equatable, Sendable {
 
     public init() {}
 
-    public mutating func recordUpload(assetID: String, mediaKey: String, existing: Bool, at date: Date = Date()) {
-        uploaded[assetID] = BackupRecord(mediaKey: mediaKey, date: date, existing: existing)
+    public mutating func recordUpload(assetID: String, mediaKey: String, existing: Bool, at date: Date = Date(), stamp: EditStamp? = nil) {
+        // A re-uploaded edit that Google stored as a new item is not in the
+        // mirrored albums yet: forgetting the old membership makes the
+        // planner add the new media key to them.
+        if let previous = uploaded[assetID], previous.mediaKey != mediaKey {
+            for (albumID, mirror) in mirrors where mirror.addedAssetIDs.contains(assetID) {
+                mirrors[albumID]?.addedAssetIDs.remove(assetID)
+            }
+        }
+        uploaded[assetID] = BackupRecord(mediaKey: mediaKey, date: date, existing: existing, editStamp: stamp)
+    }
+
+    /// The asset changed but Google's copy is still the right version (a
+    /// favourite or a keyword, not an edit): remember the new date only.
+    public mutating func refreshStamp(assetID: String, _ stamp: EditStamp) {
+        uploaded[assetID]?.editStamp = stamp
     }
 
     public mutating func recordAlbum(_ albumID: String, googleAlbumID: String, added assetIDs: some Sequence<String>) {

@@ -15,12 +15,16 @@ public struct AlbumSnapshot: Equatable, Sendable, Identifiable {
     public let title: String
     public let kind: AlbumKind
     public let assetIDs: [String]
+    /// Each asset's PHAsset.modificationDate, read during the same
+    /// enumeration; an asset without one is never taken for edited.
+    public let modified: [String: Date]
 
-    public init(id: String, title: String, kind: AlbumKind, assetIDs: [String]) {
+    public init(id: String, title: String, kind: AlbumKind, assetIDs: [String], modified: [String: Date] = [:]) {
         self.id = id
         self.title = title
         self.kind = kind
         self.assetIDs = assetIDs
+        self.modified = modified
     }
 }
 
@@ -32,6 +36,8 @@ public enum PlannedStep: Equatable, Sendable {
     case upload(albumID: String, albumTitle: String?, assetIDs: [String])
     /// Assets Google already has that are missing from the mirrored album.
     case addToAlbum(albumID: String, albumTitle: String, assetIDs: [String], mediaKeys: [String])
+    /// Backed-up assets changed since; each is checked before it is sent.
+    case reupload(assetIDs: [String])
 }
 
 public struct AlbumProgress: Equatable, Sendable {
@@ -70,13 +76,94 @@ public enum BackupPlanner {
     ///   - excludingAssets: assets that failed earlier in this run; retried
     ///     on the next run, not in a loop within this one.
     ///   - excludingAlbums: albums whose album call failed in this run.
+    ///   - reuploadEdits: also plan assets changed since their backup,
+    ///     after everything new.
     public static func plan(
         albums: [AlbumSnapshot],
         state: BackupState,
         mirrorAlbums: Bool,
         batchSize: Int,
         excludingAssets: Set<String> = [],
-        excludingAlbums: Set<String> = []
+        excludingAlbums: Set<String> = [],
+        reuploadEdits: Bool = false
+    ) -> [PlannedStep] {
+        let steps = planNew(albums: albums, state: state, mirrorAlbums: mirrorAlbums, batchSize: batchSize,
+                            excludingAssets: excludingAssets, excludingAlbums: excludingAlbums)
+        guard reuploadEdits else { return steps }
+        let changed = changedAssets(albums: albums, state: state, excluding: excludingAssets)
+        return steps + changed.chunked(max(1, batchSize)).map { .reupload(assetIDs: $0) }
+    }
+
+    /// What to do with an asset changed since its backup, once its current
+    /// resources are known. An asset that is unedited now changed only in
+    /// its metadata (a favourite, a keyword, Photos' own analysis) unless it
+    /// was uploaded edited, which means an edit was reverted. That includes
+    /// uploads from before stamps (nil): nearly all were unedited, and
+    /// re-exporting every one on its first metadata change would cost far
+    /// more than the rare reverted edit it might catch.
+    /// An asset edited then and now is the same edit when its edit identity
+    /// (a hash of the adjustment data) is unchanged: only the stamp moves, so
+    /// a favourite costs no download, and a re-render with new bytes cannot
+    /// put a second copy in Google Photos. Without identities to compare it
+    /// uploads, and gpmc's hash check answers "existing" when Google already
+    /// has those bytes.
+    public enum EditAction: Equatable, Sendable {
+        case refreshStamp
+        case upload
+    }
+
+    public static func editAction(was stamp: EditStamp?, isEdited: Bool, editIdentity: String?) -> EditAction {
+        guard isEdited else { return stamp?.edited == true ? .upload : .refreshStamp }
+        guard stamp?.edited == true, let before = stamp?.editIdentity, let now = editIdentity else { return .upload }
+        return before == now ? .refreshStamp : .upload
+    }
+
+    /// Selected assets backed up before stamps were kept, with their date
+    /// now. Stamping them with it means later edits are noticed; an edit
+    /// made before this point is not (it never was).
+    public static func unstampedAssets(albums: [AlbumSnapshot], state: BackupState) -> [String: Date] {
+        var result: [String: Date] = [:]
+        for album in albums where state.selectedAlbumIDs.contains(album.id) {
+            for id in album.assetIDs where result[id] == nil && !isMessagesItem(id) {
+                guard let record = state.uploaded[id], record.editStamp == nil, let date = album.modified[id] else { continue }
+                result[id] = date
+            }
+        }
+        return result
+    }
+
+    /// Selected, backed-up assets whose date moved past their stamp, once
+    /// each, in album order. Whole seconds only: state.json keeps no
+    /// fractions, so a stamp read back can be up to a second earlier than
+    /// the date it was made from.
+    static func changedAssets(albums: [AlbumSnapshot], state: BackupState, excluding: Set<String>) -> [String] {
+        var seen = excluding
+        var changed: [String] = []
+        for album in order(albums) where state.selectedAlbumIDs.contains(album.id) {
+            for id in album.assetIDs where !seen.contains(id) && !isMessagesItem(id) {
+                guard let stamp = state.uploaded[id]?.editStamp, let current = album.modified[id] else { continue }
+                seen.insert(id)
+                if wholeSeconds(current) > wholeSeconds(stamp.modified) { changed.append(id) }
+            }
+        }
+        return changed
+    }
+
+    private static func wholeSeconds(_ date: Date) -> Double {
+        date.timeIntervalSinceReferenceDate.rounded(.down)
+    }
+
+    private static func isMessagesItem(_ id: String) -> Bool {
+        id.hasPrefix("messages:")
+    }
+
+    private static func planNew(
+        albums: [AlbumSnapshot],
+        state: BackupState,
+        mirrorAlbums: Bool,
+        batchSize: Int,
+        excludingAssets: Set<String>,
+        excludingAlbums: Set<String>
     ) -> [PlannedStep] {
         let batchSize = max(1, batchSize)
         var planned = excludingAssets

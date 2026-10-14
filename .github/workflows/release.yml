@@ -1,0 +1,58 @@
+name: macOS release artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/macos-releases]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: macOS ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 2026-10-15: GitHub's standard macos-15 label is Apple Silicon.
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '14.0'
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      PYTHON_VERSION: '3.13'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Check native architecture and tag
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          test "$(uname -m)" = "$EXPECTED_ARCH"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = v0.2.0
+          fi
+      - name: Fixture tests
+        run: |
+          swift test
+          python3 -B -m unittest discover -s Bridge/tests
+      - name: Build native app with bundled Python
+        run: scripts/build-app.sh --identity -
+      - name: Verify and package relocated bundle
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: scripts/package-release.sh 'build/Photos Backup.app' "$EXPECTED_ARCH"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Photos-Backup-0.2.0-macOS-${{ matrix.arch }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+      - name: State signing status
+        run: echo 'Artifacts are ad-hoc signed, not Developer ID signed or notarized. Publication is a separate step.' >> "$GITHUB_STEP_SUMMARY"

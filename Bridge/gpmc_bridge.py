@@ -28,6 +28,14 @@ item, item_failed, album, album_failed, done, stopped, fatal. Each item is
 reported as soon as Google confirms it. A fatal or stopped event is always the
 last line and the exit status names its kind (EXIT_*).
 
+  item_failed {"id", "message", "retryable"}   retryable: sending the same
+      file again may work (network trouble, HTTP 408/429/5xx); added within
+      protocol 1, so readers must not require it.
+  fatal {"kind", "message"}   kind: auth | network | rate_limit | request |
+      internal. rate_limit is Google's HTTP 429. ("storage_full" is reserved:
+      gpmc 0.9.0 drops the response body that tells a full account apart from
+      any other refusal, so this bridge cannot report it.)
+
 SIGTERM stops the run: files still uploading are abandoned (the next run finds
 any Google did commit through gpmc's hash check), except that an album call in
 progress is allowed to finish and report first.
@@ -58,6 +66,7 @@ EXIT_AUTH = 2
 EXIT_NETWORK = 3
 EXIT_REQUEST = 4
 EXIT_STOPPED = 5
+EXIT_RATE_LIMIT = 6
 
 DEFAULT_TIMEOUT = 60
 MAX_THREADS = 8
@@ -173,7 +182,13 @@ def _is_network_error(error: BaseException) -> bool:
 # rate-limited Google, a bug) is not proof the credential is bad, and the app
 # keeps a credential unless it is: a fresh sign-in works only once.
 _REFUSED_STATUSES = {401, 403}
-_TRANSIENT_STATUSES = {408, 429, 500, 502, 503, 504}
+
+
+def _is_transient_status(status: int | None) -> bool:
+    """408 and any 5xx: Google or the path to it had trouble, and the same
+    request may work later (the per-file rule in _is_retryable_failure and
+    the app's FailureClassifier say the same). 429 is classified first."""
+    return status is not None and (status == 408 or 500 <= status <= 599)
 
 
 def _http_status(error: BaseException) -> int | None:
@@ -182,7 +197,9 @@ def _http_status(error: BaseException) -> int | None:
 
 def _classify(error: BaseException, during_auth: bool = False) -> tuple[str, int]:
     status = _http_status(error)
-    if _is_network_error(error) or type(error).__name__ == "RetryError" or status in _TRANSIENT_STATUSES:
+    if status == 429:
+        return "rate_limit", EXIT_RATE_LIMIT
+    if _is_network_error(error) or type(error).__name__ == "RetryError" or _is_transient_status(status):
         return "network", EXIT_NETWORK
     if status in _REFUSED_STATUSES or "does not contain bearer token" in str(error):
         return "auth", EXIT_AUTH
@@ -190,6 +207,40 @@ def _classify(error: BaseException, during_auth: bool = False) -> tuple[str, int
     if during_auth and isinstance(error, (KeyError, ValueError)):
         return "auth", EXIT_AUTH
     return "internal", EXIT_INTERNAL
+
+
+# The texts requests and urllib3 give an HTTP status (gpmc keeps only the
+# text of a per-file error, so that is all there is to go on), and fragments of
+# the texts for a network that failed before Google answered. Mirrors
+# FailureClassifier in Sources/PhotosBackupCore/RetryPolicy.swift.
+_STATUS_PATTERNS = [
+    re.compile(r"\b([1-5][0-9]{2}) (?:Client|Server) Error\b", re.IGNORECASE),
+    re.compile(r"too many ([1-5][0-9]{2}) error responses", re.IGNORECASE),
+    re.compile(r"\bHTTP(?: Error)?:? ([1-5][0-9]{2})\b", re.IGNORECASE),
+    re.compile(r"\bstatus(?: code)?:? ([1-5][0-9]{2})\b", re.IGNORECASE),
+]
+_NETWORK_MARKERS = (
+    "timed out", "timeout", "connection reset", "connection aborted", "connection refused", "connectionerror",
+    "remotedisconnected", "max retries exceeded", "newconnectionerror", "nameresolutionerror", "name resolution",
+    "network is unreachable", "no route to host", "broken pipe", "temporarily unavailable", "eof occurred",
+)
+
+
+def _status_in(message: str) -> int | None:
+    for pattern in _STATUS_PATTERNS:
+        match = pattern.search(message)
+        if match:
+            return int(match[1])
+    return None
+
+
+def _is_retryable_failure(message: str) -> bool:
+    """Whether sending the same file again may succeed."""
+    status = _status_in(message)
+    if status is not None and status >= 400:
+        return status in (408, 429) or status >= 500
+    lowered = message.lower()
+    return "too many requests" in lowered or any(marker in lowered for marker in _NETWORK_MARKERS)
 
 
 def _email(auth_data: str) -> str | None:
@@ -277,6 +328,7 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
 
     counts = {"uploaded": 0, "existing": 0, "failed": 0}
     confirmed: list[str] = []
+    escaped_retryable: set[str] = set()
     executor = ThreadPoolExecutor(max_workers=threads)
     try:
         futures = {executor.submit(upload_one, item): item for item in items}
@@ -290,6 +342,8 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
                 # against one escaping and taking the other files with it.
                 logging.getLogger(__name__).exception("upload of %s raised", path)
                 failures.reasons.setdefault(path, str(error))
+                if _classify(error)[0] in ("network", "rate_limit"):
+                    escaped_retryable.add(path)
                 media_key = None
             if media_key:
                 status = "existing" if path in skipped else "uploaded"
@@ -298,7 +352,9 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
                 emit(_event("item", id=item["id"], media_key=media_key, status=status))
             else:
                 counts["failed"] += 1
-                emit(_event("item_failed", id=item["id"], message=failures.reasons.get(path, "gpmc returned no media key")))
+                message = failures.reasons.get(path, "gpmc returned no media key")
+                retryable = path in escaped_retryable or _is_retryable_failure(message)
+                emit(_event("item_failed", id=item["id"], message=message, retryable=retryable))
     finally:
         # On any way out (a stop, the app gone and stdout broken), files not
         # yet started must not upload behind the app's back.
@@ -381,7 +437,12 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
         return EXIT_REQUEST
     except Exception as error:
         logging.getLogger(__name__).exception("bridge failed")
-        kind, code = ("network", EXIT_NETWORK) if _is_network_error(error) else ("internal", EXIT_INTERNAL)
+        if _http_status(error) == 429:
+            kind, code = "rate_limit", EXIT_RATE_LIMIT
+        elif _is_network_error(error):
+            kind, code = "network", EXIT_NETWORK
+        else:
+            kind, code = "internal", EXIT_INTERNAL
         emit(_event("fatal", kind=kind, message=str(error)))
         return code
     finally:

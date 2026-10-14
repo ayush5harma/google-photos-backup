@@ -14,10 +14,13 @@
 
 set -euo pipefail
 
+# 2026-10-15: CI hosts run newer macOS; artifacts retain the macOS 14 floor.
+export MACOSX_DEPLOYMENT_TARGET=14.0
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_NAME="Photos Backup"
 BUNDLE_ID="io.github.ayush5harma.PhotosBackup"
-VERSION="0.1.0"
+VERSION="0.2.0"
 PYTHON_VERSION="${PYTHON_VERSION:-3.13}"
 OUT="$ROOT/build"
 IDENTITY="${CODESIGN_IDENTITY:-auto}"
@@ -110,6 +113,14 @@ cat >"$CONTENTS/Info.plist" <<PLIST
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPhotoLibraryUsageDescription</key><string>Photos Backup reads the albums you select and uploads their photos and videos to your Google Photos account.</string>
+  <key>NSContactsUsageDescription</key><string>Photos Backup shows contact names in your Messages archive. Names stay on this Mac.</string>
+  <key>CFBundleURLTypes</key>
+  <array>
+    <dict>
+      <key>CFBundleURLName</key><string>$BUNDLE_ID</string>
+      <key>CFBundleURLSchemes</key><array><string>photosbackup</string></array>
+    </dict>
+  </array>
 </dict>
 </plist>
 PLIST
@@ -119,7 +130,7 @@ PLIST
 # hoc signing works too, but each rebuild then asks for both again.
 if [ "$IDENTITY" = auto ]; then
   IDENTITY="$(security find-identity -v -p codesigning 2>/dev/null \
-    | grep -oE '"(Apple Development|iPhone Developer|Developer ID Application): [^"]+"' | head -n 1 | tr -d '"')"
+    | grep -oE '"(Apple Development|iPhone Developer|Developer ID Application): [^"]+"' | head -n 1 | tr -d '"' || true)"
   IDENTITY="${IDENTITY:--}"
 fi
 say "Signing with ${IDENTITY/#-/ad hoc}"

@@ -30,20 +30,27 @@ enum Snapshots {
     static func runIfRequested(_ model: AppModel) async {
         let env = ProcessInfo.processInfo.environment
         guard let directory = env["PHOTOS_BACKUP_SNAPSHOTS"] else { return }
-        guard Bundle.main.bundleIdentifier?.hasSuffix(bundleSuffix) == true else {
-            FileHandle.standardError.write(Data("snapshots need a bundle id ending in \(bundleSuffix); use scripts/snapshots.sh\n".utf8))
+        // PHOTOS_BACKUP_SANDBOX moves settings, state and the keychain item
+        // aside as completely as a separate bundle id does.
+        guard Bundle.main.bundleIdentifier?.hasSuffix(bundleSuffix) == true || AppEnvironment.isSandboxed else {
+            FileHandle.standardError.write(Data("snapshots need a bundle id ending in \(bundleSuffix) or PHOTOS_BACKUP_SANDBOX; use scripts/snapshots.sh\n".utf8))
             NSApp.terminate(nil)
             return
         }
         let output = URL(fileURLWithPath: directory, isDirectory: true)
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+        if SnapshotFixture.isRequested {
+            await SnapshotFixture.run(model, into: output)
+            NSApp.terminate(nil)
+            return
+        }
         let uiOnly = env["PHOTOS_BACKUP_SNAPSHOT_UI_ONLY"] == "1"
         let auth = uiOnly ? nil : env["PHOTOS_BACKUP_SNAPSHOT_AUTH"].flatMap { $0.isEmpty ? nil : $0 }
         if let auth { await model.connect(pasted: auth) }
 
         try? await Task.sleep(for: .seconds(2))
         for section in AppSection.allCases {
-            UserDefaults.standard.set(section.rawValue, forKey: "section")
+            AppEnvironment.defaults.set(section.rawValue, forKey: "section")
             try? await Task.sleep(for: .seconds(1.5))
             // The frame view, not the content view: the window's own
             // background is drawn there.

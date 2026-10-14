@@ -4,7 +4,7 @@ import Security
 /// The gpmc auth_data lives in the login keychain: it embeds a long-lived
 /// Google master token ("aas_et/..."), which is a password in all but name.
 enum Keychain {
-    private static let service = (Bundle.main.bundleIdentifier ?? "PhotosBackup") + ".auth-data"
+    private static let service = AppEnvironment.keychainService
     private static let account = "gpmc"
 
     private static var query: [String: Any] {
