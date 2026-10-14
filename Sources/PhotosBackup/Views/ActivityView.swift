@@ -33,8 +33,8 @@ struct ActivityView: View {
                             .disabled(engine.phase != .running)
                     }
                     Divider().padding(.leading, 40)
-                    control("Stop Backup", "stop.circle", .red) { engine.stop() }
-                        .disabled(engine.phase == .idle || engine.phase == .stopping)
+                    control("Stop Backup", "stop.circle", .red) { model.stopBackup() }
+                        .disabled((engine.phase == .idle && !model.isMessagesScanning) || engine.phase == .stopping)
                     Divider().padding(.leading, 40)
                     control("Clear Finished Uploads", "checkmark.circle", .accentColor) { engine.clearFinished() }
                         .disabled(!engine.activity.contains { $0.status.isFinished })

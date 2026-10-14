@@ -37,6 +37,12 @@ struct ActivityItem: Identifiable, Equatable {
     var status: Status
 }
 
+private struct PreparedMessagesItem: Sendable {
+    let id: String
+    let bridgeItem: BridgeItem
+    let size: Int64?
+}
+
 /// Runs backups: plans from the selected albums, exports each batch from
 /// Photos, uploads it through the bridge and records what Google confirmed.
 @MainActor
@@ -58,6 +64,8 @@ final class BackupEngine {
     @ObservationIgnored private let bridge = BridgeProcess()
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var picked: [String] = []
+    @ObservationIgnored private var messages: [MessagesMediaItem] = []
+    @ObservationIgnored private var messagesOnly = false
     @ObservationIgnored private var failedAssets = Set<String>()
     @ObservationIgnored private var failedAlbums = Set<String>()
 
@@ -88,7 +96,7 @@ final class BackupEngine {
             // Photos picked while the last pass was finishing were never
             // planned; failed picks were dropped by run(), and a halted run
             // (stop, fatal error) does not restart, so this ends.
-            if !halted, self.phase == .idle, !self.picked.isEmpty { self.start() }
+            if !halted, self.phase == .idle, (!self.picked.isEmpty || !self.messages.isEmpty) { self.start() }
         }
     }
 
@@ -96,6 +104,19 @@ final class BackupEngine {
     func backUp(picked ids: [String]) {
         picked.append(contentsOf: ids.filter { !picked.contains($0) })
         start()
+    }
+
+    /// Messages attachments are outside PhotoKit. Their content-hash ids share
+    /// the confirmed-upload state, while their separate queue lets this run
+    /// without Photos permission or a selected album.
+    func backUp(messages items: [MessagesMediaItem], includingPhotos: Bool) {
+        let queued = Set(messages.map(\.id))
+        let pending = items.filter { model.state.uploaded[$0.id] == nil && !queued.contains($0.id) }
+        messages.append(contentsOf: pending)
+        if !pending.isEmpty {
+            messagesOnly = !includingPhotos
+            start()
+        }
     }
 
     func pauseAfterCurrent() {
@@ -112,6 +133,7 @@ final class BackupEngine {
     /// end that read early.
     func stop() {
         picked = []
+        messages = []
         guard task != nil else {
             phase = .idle
             return
@@ -154,11 +176,26 @@ final class BackupEngine {
             lastError = "Sign in with Google in Settings to start backing up."
             return true
         }
-        defer { picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) } }
+        defer {
+            picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
+            messages.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
+            messagesOnly = false
+        }
 
         // Passes repeat because one pass can make work for the next: an asset
         // uploaded for All Photos may also belong to a mirrored album.
         while !shouldHalt {
+            messages.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
+            if !messages.isEmpty {
+                let batch = Array(messages.prefix(model.settings.batchSize))
+                runTotal += batch.count
+                switch await upload(messages: batch, auth: auth, runtime: runtime, settings: model.settings) {
+                case .progressed: continue
+                case .nothing: break
+                case .halt: return true
+                }
+            }
+            if messagesOnly { break }
             await model.reloadAlbums()
             let settings = model.settings
             picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
@@ -265,6 +302,81 @@ final class BackupEngine {
         model.saveState()
 
         let unanswered = items.map(\.id).filter { !answered.contains($0) }
+        if let (kind, message) = fatal {
+            lastError = AppModel.describe(kind, message)
+            markStopped(unanswered)
+            return .halt
+        }
+        if phase == .stopping {
+            markStopped(unanswered)
+            return .halt
+        }
+        if exit != 0 || !unanswered.isEmpty {
+            lastError = "The uploader stopped unexpectedly (exit \(exit)); see the log in Settings."
+            unanswered.forEach { fail($0, "No answer from the uploader") }
+        }
+        return confirmed.isEmpty ? .nothing : .progressed
+    }
+
+    private func upload(messages items: [MessagesMediaItem], auth: String,
+                        runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
+        let batch = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: batch) }
+        items.forEach { show($0.id, filename: "Messages attachment", status: .hashing) }
+        let prepared = await Task.detached(priority: .utility) { () -> [PreparedMessagesItem] in
+            let files = FileManager.default
+            do {
+                try files.createDirectory(at: batch, withIntermediateDirectories: true,
+                                          attributes: [.posixPermissions: 0o700])
+                try files.setAttributes([.posixPermissions: 0o700], ofItemAtPath: batch.path)
+            } catch {
+                return []
+            }
+            return items.compactMap { item in
+                let staged = batch.appendingPathComponent(item.filename)
+                guard (try? files.copyItem(at: URL(fileURLWithPath: item.path), to: staged)) != nil,
+                      MessagesMediaScanner.contentHash(of: staged) == item.contentHash else { return nil }
+                let attributes = try? files.attributesOfItem(atPath: staged.path)
+                let size = (attributes?[.size] as? NSNumber)?.int64Value
+                return PreparedMessagesItem(id: item.id, bridgeItem: BridgeItem(id: item.id, path: staged.path, filename: item.filename), size: size)
+            }
+        }.value
+        if phase == .stopping {
+            markStopped(items.map(\.id))
+            return .halt
+        }
+        let preparedIDs = Set(prepared.map(\.id))
+        for item in items where !preparedIDs.contains(item.id) { fail(item.id, "The Messages attachment changed or is no longer available.") }
+        prepared.forEach { prepared in update(prepared.id) { $0.size = prepared.size } }
+        let bridgeItems = prepared.map(\.bridgeItem)
+        guard !bridgeItems.isEmpty else { return .nothing }
+        var confirmed: [String] = []
+        var answered = Set<String>()
+        var fatal: (FatalKind, String)?
+        let request = BridgeRequest.upload(auth, items: bridgeItems, quality: settings.quality, threads: settings.threads, album: nil)
+        let exit: Int32
+        do {
+            exit = try await bridge.run(request, runtime: runtime, workDirectory: model.paths.logs, log: model.paths.bridgeLog) { event in
+                switch event {
+                case let .progress(id?, phase, completed, total):
+                    self.update(id) { $0.status = Self.status(for: phase, completed: completed, total: total, current: $0.status) }
+                case let .item(id, mediaKey, existing):
+                    self.model.state.recordUpload(assetID: id, mediaKey: mediaKey, existing: existing)
+                    confirmed.append(id); answered.insert(id); self.runDone += 1
+                    self.update(id) { $0.status = existing ? .existing : .uploaded }
+                case let .itemFailed(id, message):
+                    answered.insert(id); self.fail(id, message)
+                case let .fatal(kind, message): fatal = (kind, message)
+                default: break
+                }
+            }
+        } catch {
+            lastError = error.localizedDescription
+            markStopped(bridgeItems.map(\.id))
+            return .halt
+        }
+        model.saveState()
+        let unanswered = bridgeItems.map(\.id).filter { !answered.contains($0) }
         if let (kind, message) = fatal {
             lastError = AppModel.describe(kind, message)
             markStopped(unanswered)

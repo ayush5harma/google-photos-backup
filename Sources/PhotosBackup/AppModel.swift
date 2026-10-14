@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 import Observation
 import Photos
 import PhotosBackupCore
@@ -12,6 +13,27 @@ struct BackupSettings: Codable, Equatable {
     var batchSize = 20
     var mirrorAlbums = true
     var automatic = true
+    /// Messages is a distinct library that may contain other people's media.
+    /// It stays opt-in even when automatic Photos backups are enabled.
+    var messagesMedia = false
+    /// The attachment ROWID reached by the last bounded Messages scan.
+    var messagesCursor = 0
+
+    init() {}
+
+    private enum CodingKeys: String, CodingKey { case quality, threads, batchSize, mirrorAlbums, automatic, messagesMedia, messagesCursor }
+
+    init(from decoder: Decoder) throws {
+        self.init()
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        quality = try values.decodeIfPresent(UploadQuality.self, forKey: .quality) ?? quality
+        threads = try values.decodeIfPresent(Int.self, forKey: .threads) ?? threads
+        batchSize = try values.decodeIfPresent(Int.self, forKey: .batchSize) ?? batchSize
+        mirrorAlbums = try values.decodeIfPresent(Bool.self, forKey: .mirrorAlbums) ?? mirrorAlbums
+        automatic = try values.decodeIfPresent(Bool.self, forKey: .automatic) ?? automatic
+        messagesMedia = try values.decodeIfPresent(Bool.self, forKey: .messagesMedia) ?? messagesMedia
+        messagesCursor = max(0, try values.decodeIfPresent(Int.self, forKey: .messagesCursor) ?? messagesCursor)
+    }
 
     private static let key = "settings"
 
@@ -42,6 +64,25 @@ struct AppPaths {
                         logs: support.appendingPathComponent("Logs", isDirectory: true),
                         staging: caches.appendingPathComponent("Staging", isDirectory: true))
     }()
+}
+
+enum MessagesStatus: Equatable {
+    case off
+    case idle
+    case scanning
+    case ready(found: Int, skipped: Int, partial: Bool)
+    case failed(String)
+
+    var menuTitle: String {
+        switch self {
+        case .off: "Messages media: off"
+        case .idle: "Messages media: ready to scan"
+        case .scanning: "Messages media: scanning…"
+        case let .ready(found, skipped, partial):
+            "Messages media: \(found) ready\(partial ? ", more remain" : "")\(skipped > 0 ? ", \(skipped) unavailable" : "")"
+        case let .failed(reason): "Messages media: \(reason)"
+        }
+    }
 }
 
 enum AccountStatus: Equatable {
@@ -83,6 +124,7 @@ final class AppModel {
     @ObservationIgnored private let store: BackupStore
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var timer: Timer?
+    @ObservationIgnored private var messagesScanGeneration = 0
 
     private(set) var albums: [LibraryAlbum] = []
     private(set) var albumsLoaded = false
@@ -97,6 +139,7 @@ final class AppModel {
     /// never queries the keychain (which can prompt after a re-sign).
     private(set) var hasAuthData = false
     private(set) var runtimeDescription = "Checking..."
+    private(set) var messagesStatus: MessagesStatus = .off
     @ObservationIgnored lazy var engine = BackupEngine(model: self)
 
     init() {
@@ -124,6 +167,9 @@ final class AppModel {
 
     var summary: BackupSummary { BackupPlanner.summary(albums: albums.map(\.snapshot), state: state) }
 
+    var visibleMessagesStatus: MessagesStatus { settings.messagesMedia ? messagesStatus : .off }
+    var isMessagesScanning: Bool { messagesStatus == .scanning }
+
     var selectedAlbums: [LibraryAlbum] { albums.filter { state.selectedAlbumIDs.contains($0.id) } }
 
     func progress(of album: LibraryAlbum) -> AlbumProgress { BackupPlanner.progress(of: album.snapshot, state: state) }
@@ -133,6 +179,11 @@ final class AppModel {
     func launch() async {
         library.onChange = { [weak self] in self?.libraryChanged() }
         await checkRuntime()
+        #if DEBUG
+        // The screenshot bundle is UI-only: it must not observe a real Photos
+        // library, account, timer, or Messages source from persisted settings.
+        if Snapshots.isRequested { return }
+        #endif
         if library.isAuthorized { await connectLibrary() }
         if case .connected = account { await checkAccount() }
         timer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
@@ -176,11 +227,98 @@ final class AppModel {
     }
 
     func automaticRun() {
-        guard settings.automatic, library.isAuthorized, hasAuthData, engine.phase == .idle else { return }
+        guard settings.automatic, hasAuthData, engine.phase == .idle else { return }
         #if DEBUG
         if Snapshots.isRequested { return }
         #endif
-        engine.start()
+        if settings.messagesMedia {
+            backUpMessages(includingPhotos: true)
+        } else if library.isAuthorized {
+            engine.start()
+        }
+    }
+
+    func startBackupNow() {
+        if settings.messagesMedia { backUpMessages(includingPhotos: true) }
+        else if library.isAuthorized { engine.start() }
+    }
+
+    func backUpMessages(includingPhotos: Bool = false) {
+        #if DEBUG
+        // Snapshot runs must never inherit a real user's Messages access from
+        // persisted settings. They render the UI without touching private data.
+        if Snapshots.isRequested { return }
+        #endif
+        guard settings.messagesMedia else {
+            messagesStatus = .off
+            return
+        }
+        guard hasAuthData else {
+            messagesStatus = .failed("sign in before backing up Messages media")
+            return
+        }
+        guard messagesStatus != .scanning else { return }
+        messagesStatus = .scanning
+        let generation = messagesScanGeneration
+        let root = MessagesMediaScanner.defaultConfiguration()
+        let configuration = MessagesMediaScanner.Configuration(attachmentsRoot: root.attachmentsRoot, database: root.database,
+                                                               homeDirectory: root.homeDirectory, cursor: settings.messagesCursor)
+        Task { [weak self] in
+            let result = await Task.detached(priority: .utility) {
+                Result { try MessagesMediaScanner(configuration: configuration).scan() }
+            }.value
+            guard let self else { return }
+            guard self.messagesScanGeneration == generation, self.settings.messagesMedia, self.hasAuthData else { return }
+            switch result {
+            case let .success(report):
+                let pending = report.items.filter { self.state.uploaded[$0.id] == nil }
+                // 2026-10-14: after reaching the tail, rescan from row zero so an
+                // attachment skipped while iCloud had not downloaded it can be found later.
+                self.settings.messagesCursor = report.nextCursor ?? 0
+                self.messagesStatus = .ready(found: pending.count, skipped: report.skipped, partial: report.nextCursor != nil)
+                self.engine.backUp(messages: pending, includingPhotos: includingPhotos)
+                if includingPhotos, pending.isEmpty, self.library.isAuthorized, self.engine.phase == .idle { self.engine.start() }
+            case let .failure(error):
+                self.messagesStatus = .failed(MessagesMediaScanner.describe(error))
+                // A Messages scan is additive. Its failure must never prevent
+                // a selected Photos-library backup from running.
+                if includingPhotos, self.library.isAuthorized, self.engine.phase == .idle { self.engine.start() }
+            }
+        }
+    }
+
+    func refreshNow() {
+        Task { @MainActor in
+            await reloadAlbums()
+            if settings.messagesMedia { backUpMessages(includingPhotos: true) }
+            else if library.isAuthorized, hasAuthData, engine.phase == .idle { engine.start() }
+        }
+    }
+
+    func openFullDiskAccess() {
+        guard let pane = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") else { return }
+        NSWorkspace.shared.open(pane)
+        NSWorkspace.shared.activateFileViewerSelecting([Bundle.main.bundleURL])
+    }
+
+    func setMessagesMedia(_ enabled: Bool) {
+        messagesScanGeneration += 1
+        settings.messagesMedia = enabled
+        messagesStatus = enabled ? .idle : .off
+        if !enabled {
+            settings.messagesCursor = 0
+            engine.stop()
+        }
+    }
+
+    func cancelMessagesScan() {
+        messagesScanGeneration += 1
+        if settings.messagesMedia { messagesStatus = .idle }
+    }
+
+    func stopBackup() {
+        cancelMessagesScan()
+        engine.stop()
     }
 
     // MARK: - State
@@ -210,6 +348,8 @@ final class AppModel {
     }
 
     func resetHistory() {
+        cancelMessagesScan()
+        settings.messagesCursor = 0
         state = state.clearingHistory()
         saveState()
     }
@@ -270,6 +410,8 @@ final class AppModel {
         let previous = state.accountEmail ?? authData.flatMap(GoogleSignIn.email(inCredential:))
         let switching = email.map { new in previous.map { !GoogleSignIn.sameAccount($0, new) } ?? false } ?? false
         if switching {
+            cancelMessagesScan()
+            settings.messagesCursor = 0
             // Let the running backup finish with the old account first, or
             // its last items would be recorded against the new one.
             await engine.stopAndWait()
@@ -301,7 +443,7 @@ final class AppModel {
     }
 
     func removeAuthData() {
-        engine.stop()
+        stopBackup()
         Keychain.delete()
         hasAuthData = false
         account = .missing

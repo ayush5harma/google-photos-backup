@@ -17,7 +17,7 @@ struct HomeView: View {
                 SetupBanners(section: $section)
                 statusCard(summary, engine: engine)
                 HStack(spacing: 14) {
-                    Button { engine.start() } label: {
+                    Button { model.startBackupNow() } label: {
                         tile(symbol: "arrow.up.circle.fill", title: "Back Up Now", detail: "\(summary.backedUp) of \(summary.total) backed up")
                     }
                     .buttonStyle(.plain)
@@ -76,9 +76,9 @@ struct HomeView: View {
                         .buttonStyle(TintedButtonStyle(color: .accentColor))
                         .disabled(engine.phase != .running)
                 }
-                Button(role: .destructive) { engine.stop() } label: { Label("Stop", systemImage: "stop.circle") }
+                Button(role: .destructive) { model.stopBackup() } label: { Label("Stop", systemImage: "stop.circle") }
                     .buttonStyle(TintedButtonStyle(color: .red))
-                    .disabled(engine.phase == .idle || engine.phase == .stopping)
+                    .disabled((engine.phase == .idle && !model.isMessagesScanning) || engine.phase == .stopping)
             }
             .padding(.top, 16)
         }

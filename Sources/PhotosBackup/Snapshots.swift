@@ -37,7 +37,8 @@ enum Snapshots {
         }
         let output = URL(fileURLWithPath: directory, isDirectory: true)
         try? FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-        let auth = env["PHOTOS_BACKUP_SNAPSHOT_AUTH"].flatMap { $0.isEmpty ? nil : $0 }
+        let uiOnly = env["PHOTOS_BACKUP_SNAPSHOT_UI_ONLY"] == "1"
+        let auth = uiOnly ? nil : env["PHOTOS_BACKUP_SNAPSHOT_AUTH"].flatMap { $0.isEmpty ? nil : $0 }
         if let auth { await model.connect(pasted: auth) }
 
         try? await Task.sleep(for: .seconds(2))
@@ -55,7 +56,7 @@ enum Snapshots {
             view.cacheDisplay(in: view.bounds, to: bitmap)
             try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("\(section.rawValue).png"))
         }
-        await snapshotSignIn(model, into: output)
+        if !uiOnly { await snapshotSignIn(model, into: output) }
         if auth != nil { model.removeAuthData() }
         NSApp.terminate(nil)
     }

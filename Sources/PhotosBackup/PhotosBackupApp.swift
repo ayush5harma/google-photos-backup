@@ -62,7 +62,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// app (an orphan would race the next launch on the same photos).
     @MainActor
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let engine = model?.engine, engine.isActive else { return .terminateNow }
+        guard let model else { return .terminateNow }
+        let engine = model.engine
+        model.cancelMessagesScan()
+        guard engine.isActive else { return .terminateNow }
         engine.stop()
         Task { @MainActor in
             let deadline = Date().addingTimeInterval(15)
@@ -116,15 +119,23 @@ struct MenuContent: View {
         let summary = model.summary
         Text(engine.isActive ? "Backing up, \(engine.remaining) remaining" : "\(summary.backedUp) of \(summary.total) backed up")
         Divider()
-        Button("Back Up Now") { engine.start() }
+        Button("Back Up Now") { model.startBackupNow() }
             .disabled(engine.isActive || !model.hasAuthData)
+        Button("Back Up Messages Media") { model.backUpMessages() }
+            .disabled(engine.isActive || model.isMessagesScanning || !model.hasAuthData || !model.settings.messagesMedia)
+        Text(model.visibleMessagesStatus.menuTitle)
+            .foregroundStyle(.secondary)
+        if case .failed = model.visibleMessagesStatus {
+            Button("Grant Full Disk Access…") { model.openFullDiskAccess() }
+        }
         if engine.phase == .paused || engine.phase == .pausing {
             Button("Resume") { engine.resume() }
         } else if engine.phase == .running {
             Button("Pause After Current Uploads") { engine.pauseAfterCurrent() }
         }
-        if engine.isActive { Button("Stop") { engine.stop() } }
+        if engine.isActive || model.isMessagesScanning { Button("Stop") { model.stopBackup() } }
         Divider()
+        Button("Refresh Now") { model.refreshNow() }
         Button("Open Photos Backup") {
             openWindow(id: "main")
             NSApp.activate()

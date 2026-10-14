@@ -19,8 +19,8 @@ public enum UploadQuality: String, Codable, CaseIterable, Sendable, Identifiable
 
     public var title: String {
         switch self {
-        case .original: "Original quality, unlimited"
-        case .saver: "Storage saver, unlimited"
+        case .original: "Original quality (Pixel XL profile)"
+        case .saver: "Storage saver (Pixel 2 profile)"
         case .quota: "Original quality, uses storage"
         }
     }
