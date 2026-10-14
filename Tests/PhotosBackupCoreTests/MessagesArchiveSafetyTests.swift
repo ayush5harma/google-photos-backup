@@ -333,3 +333,31 @@ import Testing
         #expect(ArchiveLocation.providerName("OneDrive-Personal") == "OneDrive")
     }
 }
+
+@Suite struct ArchiveDefaultsTests {
+    @Test func theDefaultFolderIsOutsideDocumentsAndInsideASandbox() {
+        let home = URL(fileURLWithPath: "/Users/someone", isDirectory: true)
+        #expect(ArchiveLocation.defaultFolder(home: home, sandbox: nil).path == "/Users/someone/Messages Archive")
+        let sandbox = URL(fileURLWithPath: "/tmp/sandbox", isDirectory: true)
+        #expect(ArchiveLocation.defaultFolder(home: home, sandbox: sandbox).path == "/tmp/sandbox/Archive")
+    }
+
+    @Test func anArchiveAtThePreviousDefaultStaysThere() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("home-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        let old = ArchiveLocation.previousDefaultFolder(home: home)
+        try FileManager.default.createDirectory(at: old, withIntermediateDirectories: true)
+        #expect(ArchiveLocation.folderToKeep(setting: nil, home: home, sandbox: nil) == nil)
+        try Data("{}".utf8).write(to: old.appendingPathComponent("archive.json"))
+        #expect(ArchiveLocation.folderToKeep(setting: nil, home: home, sandbox: nil) == old)
+        #expect(ArchiveLocation.folderToKeep(setting: "/elsewhere", home: home, sandbox: nil) == nil)
+        #expect(ArchiveLocation.folderToKeep(setting: nil, home: home, sandbox: home) == nil)
+    }
+
+    @Test func archiveRunsAreDescribedInTheArchivesOwnWords() {
+        #expect(ArchiveLocation.describe(.manual) == "Archive Now")
+        #expect(ArchiveLocation.describe(.timer) == "daily archive")
+        #expect(ArchiveLocation.describe(.launch) == "daily archive")
+        #expect(ArchiveLocation.describe(.automation) == "Shortcut or link")
+    }
+}

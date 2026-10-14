@@ -6,6 +6,38 @@ import Foundation
 /// ~/Documents in place. The archive is private message text, so the app
 /// says plainly when it is stored in a cloud as well.
 public enum ArchiveLocation {
+    /// The default archive folder: in the home folder, visible in Finder and
+    /// outside Documents, which iCloud Desktop & Documents (or a symlink, as
+    /// on the developer's Mac into Google Drive) would sync with every
+    /// message in it. A DEBUG sandbox run keeps it inside the sandbox.
+    public static func defaultFolder(home: URL, sandbox: URL?) -> URL {
+        if let sandbox { return sandbox.appendingPathComponent("Archive", isDirectory: true) }
+        return home.appendingPathComponent(MessagesArchiver.defaultFolderName, isDirectory: true)
+    }
+
+    /// The default before 2026-10-15.
+    public static func previousDefaultFolder(home: URL) -> URL {
+        home.appendingPathComponent("Documents/\(MessagesArchiver.defaultFolderName)", isDirectory: true)
+    }
+
+    /// The folder to pin in settings so an archive already at the previous
+    /// default keeps being used instead of moving silently; nil when there is
+    /// nothing to pin.
+    public static func folderToKeep(setting: String?, home: URL, sandbox: URL?) -> URL? {
+        guard setting == nil, sandbox == nil else { return nil }
+        let old = previousDefaultFolder(home: home)
+        return FileManager.default.fileExists(atPath: old.appendingPathComponent(ArchiveManifest.fileName).path) ? old : nil
+    }
+
+    /// The timeline's words for what started an archive run.
+    public static func describe(_ trigger: RunTrigger) -> String {
+        switch trigger {
+        case .manual, .retry: "Archive Now"
+        case .automation: RunTrigger.automation.title
+        default: trigger.isAutomatic ? "daily archive" : trigger.title
+        }
+    }
+
     /// The path with symlinks resolved, for a folder that may not exist yet:
     /// the nearest existing ancestor is resolved and the rest appended.
     public static func realPath(_ url: URL) -> String {

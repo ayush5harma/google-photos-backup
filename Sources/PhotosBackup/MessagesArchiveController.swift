@@ -46,36 +46,79 @@ final class MessagesArchiveController {
         self.model = model
     }
 
-    var isRunning: Bool { if case .running = status { true } else { false } }
+    /// True from a start until its work has returned, also after the
+    /// archive was turned off mid-run: a run stops only between steps, and a
+    /// second one on the same folder must wait for it.
+    private(set) var isBusy = false
+
+    var isRunning: Bool {
+        if isBusy { return true }
+        if case .running = status { return true }
+        return false
+    }
 
     /// The folder the archive is written to (the setting, else the default).
     var folder: URL {
         if let path = model.settings.archiveFolder { return URL(fileURLWithPath: path, isDirectory: true) }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Documents/Messages Archive", isDirectory: true)
+        return Self.defaultFolder
+    }
+
+    static var defaultFolder: URL {
+        ArchiveLocation.defaultFolder(home: FileManager.default.homeDirectoryForCurrentUser, sandbox: AppEnvironment.sandbox)
+    }
+
+    /// Pins an archive at the old default (~/Documents) so it never moves silently.
+    private func keepArchiveAtPreviousDefault() {
+        if let old = ArchiveLocation.folderToKeep(setting: model.settings.archiveFolder, home: FileManager.default.homeDirectoryForCurrentUser,
+                                                  sandbox: AppEnvironment.sandbox) {
+            model.settings.archiveFolder = old.path
+        }
+    }
+
+    /// The cloud the folder is stored in, if any, for an honest note.
+    var syncService: String? {
+        let path = folder.path
+        if let cached = syncServiceCache, cached.path == path { return cached.service }
+        let service = ArchiveLocation.syncService(for: folder)
+        syncServiceCache = (path, service)
+        return service
+    }
+
+    @ObservationIgnored private var syncServiceCache: (path: String, service: String?)?
+
+    /// "This folder syncs to Google Drive, so your archive is stored there too."
+    var syncNote: String? {
+        syncService.map { "This folder syncs to \($0), so your archive is stored there too." }
     }
 
     var lastArchived: Date? { overview?.lastArchived }
 
     // MARK: - Running
 
-    /// Archive now, whatever the schedule says.
+    /// Archive now, whatever the schedule says. While a run is still
+    /// finishing, the start waits for it and happens then.
     func start(trigger: RunTrigger) {
         guard model.settings.messagesArchive else {
             status = .off
             return
         }
-        guard !isRunning else { return }
+        guard !isBusy else {
+            pendingStart = trigger
+            return
+        }
         #if DEBUG
         if Snapshots.isRequested || fixtureTranscripts != nil { return }
         #endif
+        keepArchiveAtPreviousDefault()
+        pendingStart = nil
         generation += 1
         let generation = generation
         let settings = model.settings
         let folder = folder
         let started = Date()
+        isBusy = true
         status = .running(phase: MessagesArchiver.Phase.copying.rawValue, done: 0, total: 0)
-        model.log(.archive, "Messages archive started (\(trigger.title))")
+        model.log(.archive, "Messages archive started (\(ArchiveLocation.describe(trigger)))")
         let report: @Sendable (MessagesArchiver.Phase, Int, Int) -> Void = { [weak self] phase, done, total in
             guard let self else { return }
             Task { @MainActor in self.progressed(generation, phase, done, total) }
@@ -90,10 +133,13 @@ final class MessagesArchiveController {
             let work = Task.detached(priority: .utility) {
                 try archiver.run(progress: report)
             }
+            // Returns only once the work has: cancelling it is a request.
             let result = await withTaskCancellationHandler { await work.result } onCancel: { work.cancel() }
             self?.finished(generation, result, trigger: trigger, started: started)
         }
     }
+
+    @ObservationIgnored private var pendingStart: RunTrigger?
 
     /// Archive if the archive is on and the last one is a day old.
     func runIfDue(trigger: RunTrigger) {
@@ -108,30 +154,43 @@ final class MessagesArchiveController {
     }
 
     func cancel() {
+        pendingStart = nil
         task?.cancel()
     }
 
-    /// Turning the archive on from the Messages section starts the first run.
+    /// The one way the archive is turned on (the Messages section, Settings,
+    /// the welcome guide): the first run starts at once. Not during the
+    /// welcome guide, where Full Disk Access is usually still missing: the
+    /// first automatic run after it (launch, the 30-minute timer) archives.
     func turnOn() {
         model.settings.messagesArchive = true
-        start(trigger: .manual)
+        keepArchiveAtPreviousDefault()
+        if model.settings.onboardingCompleted { start(trigger: .manual) }
+        else if !isBusy { status = .idle }
     }
 
+    /// The one way it is turned off: a run in progress is cancelled and its
+    /// result ignored; the controller stays busy until the run has returned.
     func turnOff() {
         generation += 1
+        pendingStart = nil
         task?.cancel()
         model.settings.messagesArchive = false
         status = .off
     }
 
     private func progressed(_ generation: Int, _ phase: MessagesArchiver.Phase, _ done: Int, _ total: Int) {
-        guard generation == self.generation, isRunning else { return }
+        guard generation == self.generation, case .running = status else { return }
         status = .running(phase: phase.rawValue, done: done, total: total)
     }
 
     private func finished(_ generation: Int, _ result: Result<MessagesArchiver.Report, Error>, trigger: RunTrigger, started: Date) {
-        guard generation == self.generation else { return }
+        isBusy = false
         task = nil
+        defer {
+            if let pending = pendingStart, model.settings.messagesArchive { start(trigger: pending) }
+        }
+        guard generation == self.generation else { return }
         var record = RunRecord(kind: .messagesArchive, trigger: trigger, startedAt: started, finishedAt: Date())
         switch result {
         case let .success(report):
@@ -145,7 +204,13 @@ final class MessagesArchiveController {
             model.log(.archive, "Archived \(report.newMessages) new messages in \(report.conversationsWritten) conversations; "
                 + "\(report.attachmentsCopied) attachments copied, \(report.overview.missingAttachmentCount) not on this Mac"
                 + (report.decodeFailures > 0 ? ", \(report.decodeFailures) unreadable" : "")
-                + (report.rebuilt ? " (rebuilt after the Messages database was replaced)" : ""))
+                + (report.rebuilt ? " (rebuilt after the Messages database was replaced)" : "")
+                + (report.manifestRebuilt ? " (archive index rebuilt from the conversation folders)" : ""))
+            if report.unreadableConversations > 0 {
+                model.log(.archive, "\(report.unreadableConversations) archived conversations could not be read and were left as they are",
+                          problem: true)
+            }
+            if let problem = report.snapshotProblem { model.log(.archive, Self.capitalized(problem), problem: true) }
         case let .failure(error) where error is CancellationError:
             status = overview?.lastArchived.map { .finished($0) } ?? .idle
             record.outcome = .stopped
@@ -153,7 +218,9 @@ final class MessagesArchiveController {
         case let .failure(error):
             lastFailure = Date()
             let archiveError = error as? MessagesArchiveError
-            let reason = archiveError?.description ?? error.localizedDescription
+            // History, the timeline and notifications get the redacted
+            // reason: a system description can name folders and files.
+            let reason = redactor.redact(archiveError?.description ?? "the archive stopped (error \((error as NSError).code))")
             status = archiveError == .needsFullDiskAccess ? .needsFullDiskAccess : .failed(reason)
             record.outcome = .failed(reason)
             model.log(.archive, "Messages archive failed: \(reason)", problem: true)
@@ -161,11 +228,16 @@ final class MessagesArchiveController {
         model.runFinished(record)
     }
 
+    @ObservationIgnored private let redactor = Redactor()
+
+    private static func capitalized(_ text: String) -> String { text.prefix(1).uppercased() + text.dropFirst() }
+
     // MARK: - Overview
 
     /// Re-reads the overview from disk (launch, after a run).
     func loadOverview() async {
         overviewLoaded = true
+        if model.settings.messagesArchive { keepArchiveAtPreviousDefault() }
         contactsAccess = ContactsDirectory.access
         let url = model.paths.archiveOverview
         let loaded = await Task.detached(priority: .utility) { () -> MessagesArchiveOverview? in
@@ -242,14 +314,16 @@ final class MessagesArchiveController {
     func chooseFolder() {
         let panel = NSOpenPanel()
         panel.title = "Choose a Folder for the Messages Archive"
-        panel.message = "Your conversations are written to this folder. The archive in the current folder stays where it is."
+        panel.message = "A folder that already holds other files gets a Messages Archive folder inside it. The archive in the current folder stays where it is."
         panel.prompt = "Choose"
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.canCreateDirectories = true
         panel.allowsMultipleSelection = false
         panel.directoryURL = folder.deletingLastPathComponent()
-        guard panel.runModal() == .OK, let url = panel.url, url.standardizedFileURL != folder.standardizedFileURL else { return }
+        guard panel.runModal() == .OK, let chosen = panel.url else { return }
+        let url = MessagesArchiver.archiveFolder(forChosen: chosen)
+        guard url.standardizedFileURL != folder.standardizedFileURL else { return }
         generation += 1
         task?.cancel()
         model.settings.archiveFolder = url.path

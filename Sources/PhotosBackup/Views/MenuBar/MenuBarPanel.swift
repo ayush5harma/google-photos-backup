@@ -213,6 +213,12 @@ private struct PanelStats: View {
 
     private var archiveValue: String {
         guard model.settings.messagesArchive else { return "Off" }
+        switch model.archive.status {
+        case let .running(_, done, total): return total > 0 ? "Archiving, \(done.formatted()) of \(total.formatted())" : "Archiving…"
+        case .needsFullDiskAccess: return "Needs Full Disk Access"
+        case .failed: return "Could not archive"
+        default: break
+        }
         guard let overview = model.archive.overview else { return "Not archived yet" }
         let conversations = "\(overview.conversations.count.formatted()) chats"
         guard let last = overview.lastArchived else { return conversations }

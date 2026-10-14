@@ -170,9 +170,10 @@ struct MessagesPage: View {
                     }
                     .padding(12)
                     Divider().padding(.leading, 12)
-                    Toggle(isOn: $model.settings.messagesArchive) {
+                    Toggle(isOn: Binding(get: { model.settings.messagesArchive },
+                                         set: { $0 ? model.archive.turnOn() : model.archive.turnOff() })) {
                         OptionLabel(title: "Archive my conversations on this Mac",
-                                    text: "A readable copy of every chat, updated daily, in Documents.")
+                                    text: "A readable copy of every chat, updated daily, in a Messages Archive folder in your home folder.")
                     }
                     .padding(12)
                 }
