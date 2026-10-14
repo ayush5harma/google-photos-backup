@@ -128,17 +128,18 @@ extension ArchiveHTML {
     }
     .reply .who { font-weight: 600; margin-right: 6px; }
     .tapbacks {
-      position: absolute; top: -14px; display: flex; gap: 2px;
+      position: absolute; top: -20px; display: flex; gap: 2px;
       background: var(--badge); border: 2px solid var(--bg); border-radius: 14px; padding: 2px 6px;
       font-size: 13px; line-height: 18px;
     }
-    .them .tapbacks { right: -14px; }
-    .me .tapbacks { left: -14px; }
-    .msg:has(.tapbacks) { margin-top: 18px; }
+    .them .tapbacks { right: -16px; }
+    .me .tapbacks { left: -16px; }
+    .msg:has(.tapbacks) { margin-top: 22px; }
     .meta { font-size: 11px; color: var(--secondary); margin: 3px 10px 0; min-height: 0; }
     .meta time { display: none; }
     .msg:hover .meta time { display: inline; }
     .flag { font-weight: 500; }
+    .flag + .flag::before, .msg:hover .meta time + .flag::before { content: " \\00B7  "; font-weight: 400; }
     .meta:not(:has(.flag)) { margin: 0; }
     .msg:hover .meta:not(:has(.flag)) { margin: 3px 10px 0; }
     @media (max-width: 560px) { .msg { max-width: 86%; } }

@@ -119,7 +119,9 @@ struct ArchiveHTML {
     func conversationPage(_ transcript: ConversationTranscript) -> String {
         let conversation = transcript.conversation
         var html = head(title: conversation.title, stylesheet: "../../style.css")
-        let people = conversation.participants.joined(separator: ", ")
+        // A one-to-one title is already the person; the handle says more.
+        let handle = conversation.id.split(separator: ";").last.map(String.init) ?? ""
+        let people = conversation.isGroup ? conversation.participants.joined(separator: ", ") : (handle == conversation.title ? "" : handle)
         html += "<body class=\"conversation\">\n<header class=\"topbar\">\n<a class=\"back\" href=\"../../index.html\">\u{2039} Conversations</a>\n"
         html += "<div class=\"who\">\(avatar(conversation))<div><h1>\(Self.escape(conversation.title))</h1>"
         html += "<p>\(Self.escape(people.isEmpty ? conversation.service : people + " \u{B7} " + conversation.service)) \u{B7} \(count(conversation.messageCount, "message"))</p></div></div>\n</header>\n"
@@ -192,10 +194,12 @@ struct ArchiveHTML {
             html += "</div>"
         }
         html += "</div>"
-        var notes = [time]
-        if message.edited { notes.append("<span class=\"flag\">Edited</span>") }
-        if let effect = message.effect { notes.append("<span class=\"flag\">Sent with \(Self.escape(effect))</span>") }
-        html += "<div class=\"meta\">\(notes.filter { !$0.isEmpty }.joined(separator: " \u{B7} "))</div>"
+        // The time shows on hover; separators between it and the flags come
+        // from the stylesheet so a hidden time leaves no stray dot.
+        var meta = time
+        if message.edited { meta += "<span class=\"flag\">Edited</span>" }
+        if let effect = message.effect { meta += "<span class=\"flag\">Sent with \(Self.escape(effect))</span>" }
+        html += "<div class=\"meta\">\(meta)</div>"
         return html + "</div>\n"
     }
 
