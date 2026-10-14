@@ -161,6 +161,12 @@ enum ArchiveJSON {
     }()
 }
 
+public extension ArchivedConversation {
+    /// Initials for an avatar; nil when the title is a phone number or an
+    /// email, which get a person symbol instead. The pages use the same rule.
+    var initials: String? { ArchiveHTML.initials(title) }
+}
+
 /// Tapbacks are messages of their own in chat.db, pointing at their target
 /// through associated_message_guid. 2000-2007 add one, 3000-3007 remove it.
 enum Tapback {
