@@ -65,11 +65,11 @@ public sealed class BridgeProcessClient(string pythonPath, string bridgePath) : 
                 // 2026-10-15: Wait for a canceled uploader to exit before a
                 // new run can use the same account and source files.
                 try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
-                catch (TimeoutException) { }
+                catch (Exception error) when (error is TimeoutException or InvalidOperationException) { }
                 if (stderr is not null)
                 {
                     try { await stderr.WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); }
-                    catch (TimeoutException) { }
+                    catch (Exception error) when (error is TimeoutException or IOException) { }
                 }
             }
         }

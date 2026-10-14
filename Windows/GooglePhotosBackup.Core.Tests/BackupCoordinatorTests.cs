@@ -148,6 +148,29 @@ public sealed class BackupCoordinatorTests
     }
 
     [Fact]
+    public async Task MissingSelectedFolderFailsBeforeUploadingOtherFolders()
+    {
+        using var fixture = new TempFolder();
+        File.WriteAllText(Path.Combine(fixture.Root, "a.jpg"), "a");
+        var missing = Path.Combine(fixture.Root, "private-missing-folder");
+        var uploads = 0;
+        var bridge = new FakeBridge((request, emit, _) =>
+        {
+            if (Command(request) == "check-auth") Auth(request, emit);
+            else uploads++;
+            return Task.FromResult(0);
+        });
+        var coordinator = new BackupCoordinator(bridge, fixture.State);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.RunAsync(
+            new BackupOptions([fixture.Root, missing], MirrorFolders: false),
+            Credential("one@example.com"), CancellationToken.None));
+        Assert.Equal("A selected folder or media file could not be read. Check that it exists and you have access, then retry.",
+            error.Message);
+        Assert.DoesNotContain(missing, error.ToString(), StringComparison.Ordinal);
+        Assert.Equal(0, uploads);
+    }
+
+    [Fact]
     public async Task FolderAlbumsAreAddedOnlyAfterConfirmationAndRemembered()
     {
         using var fixture = new TempFolder();
@@ -198,10 +221,80 @@ public sealed class BackupCoordinatorTests
         });
         var coordinator = new BackupCoordinator(bridge, fixture.State);
         var options = new BackupOptions([fixture.Root]);
-        Assert.Equal(1, (await coordinator.RunAsync(options, Credential("one@example.com"), CancellationToken.None)).Uploaded);
-        Assert.Equal(0, (await coordinator.RunAsync(options, Credential("one@example.com"), CancellationToken.None)).Uploaded);
+        Assert.Equal(new BackupSummary(1, 0, 1, false),
+            await coordinator.RunAsync(options, Credential("one@example.com"), CancellationToken.None));
+        Assert.Equal(new BackupSummary(0, 0, 0, false),
+            await coordinator.RunAsync(options, Credential("one@example.com"), CancellationToken.None));
         Assert.Equal(1, uploads);
         Assert.Equal(2, albums);
+    }
+
+    [Fact]
+    public async Task EditedFileReplacesAlbumMembershipWithItsNewMediaKey()
+    {
+        using var fixture = new TempFolder();
+        var path = Path.Combine(fixture.Root, "a.png");
+        File.WriteAllText(path, "first");
+        var uploadCalls = 0;
+        var albumKeys = new List<string>();
+        var bridge = new FakeBridge((request, emit, _) =>
+        {
+            switch (Command(request))
+            {
+                case "check-auth": Auth(request, emit); break;
+                case "upload":
+                    uploadCalls++;
+                    var item = Assert.Single(Items(request));
+                    emit(new JsonObject { ["type"] = "item", ["id"] = item["id"]!.GetValue<string>(),
+                        ["media_key"] = "media-" + uploadCalls, ["status"] = "uploaded" });
+                    break;
+                case "add-to-album":
+                    albumKeys.Add(Assert.Single(request["media_keys"]!.AsArray())!.GetValue<string>());
+                    emit(new JsonObject { ["type"] = "album", ["album_id"] = "album-1" });
+                    break;
+            }
+            return Task.FromResult(0);
+        });
+        var coordinator = new BackupCoordinator(bridge, fixture.State);
+        var options = new BackupOptions([fixture.Root]);
+        await coordinator.RunAsync(options, Credential("one@example.com"), CancellationToken.None);
+        File.WriteAllText(path, "second");
+        await coordinator.RunAsync(options, Credential("one@example.com"), CancellationToken.None);
+        await coordinator.RunAsync(options, Credential("one@example.com"), CancellationToken.None);
+
+        Assert.Equal(2, uploadCalls);
+        Assert.Equal(["media-1", "media-2"], albumKeys);
+    }
+
+    [Fact]
+    public async Task BridgeFailureAfterOneConfirmationResumesOnlyUnconfirmedFile()
+    {
+        using var fixture = new TempFolder();
+        File.WriteAllText(Path.Combine(fixture.Root, "a.jpg"), "a");
+        File.WriteAllText(Path.Combine(fixture.Root, "b.jpg"), "b");
+        var uploadCalls = 0;
+        var bridge = new FakeBridge((request, emit, _) =>
+        {
+            if (Command(request) == "check-auth") { Auth(request, emit); return Task.FromResult(0); }
+            uploadCalls++;
+            var items = Items(request);
+            if (uploadCalls == 1)
+            {
+                Assert.Equal(2, items.Count);
+                Confirm(items[0], emit);
+                throw new InvalidOperationException("private source path or token");
+            }
+            Confirm(Assert.Single(items), emit);
+            return Task.FromResult(0);
+        });
+        var coordinator = new BackupCoordinator(bridge, fixture.State);
+        var options = new BackupOptions([fixture.Root], MirrorFolders: false);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => coordinator.RunAsync(
+            options, Credential("one@example.com"), CancellationToken.None));
+        Assert.Equal("The uploader could not complete.", error.Message);
+        Assert.Equal(new BackupSummary(1, 0, 0, false), await coordinator.RunAsync(
+            options, Credential("one@example.com"), CancellationToken.None));
+        Assert.Equal(2, uploadCalls);
     }
 
     [Fact]
@@ -251,7 +344,7 @@ public sealed class BackupCoordinatorTests
         {
             File.WriteAllText(Path.Combine(outside, "private.jpg"), "outside");
             try { Directory.CreateSymbolicLink(Path.Combine(fixture.Root, "linked"), outside); }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { return; }
+            catch (Exception linkError) when (linkError is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { return; }
             var uploads = 0;
             var bridge = new FakeBridge((request, emit, _) =>
             {
@@ -263,6 +356,32 @@ public sealed class BackupCoordinatorTests
                 new BackupOptions([fixture.Root], MirrorFolders: false), Credential("one@example.com"), CancellationToken.None);
             Assert.Equal(0, uploads);
             Assert.Equal(0, result.Uploaded);
+        }
+        finally { Directory.Delete(outside, recursive: true); }
+    }
+
+    [Fact]
+    public async Task ExplicitlySelectedReparseRootFailsInsteadOfReportingEmptySuccess()
+    {
+        using var fixture = new TempFolder();
+        var outside = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), "photos-outside-" + Guid.NewGuid().ToString("N"))).FullName;
+        try
+        {
+            File.WriteAllText(Path.Combine(outside, "photo.jpg"), "photo");
+            var link = Path.Combine(fixture.Root, "linked");
+            try { Directory.CreateSymbolicLink(link, outside); }
+            catch (Exception linkError) when (linkError is IOException or UnauthorizedAccessException or PlatformNotSupportedException) { return; }
+            var uploads = 0;
+            var bridge = new FakeBridge((request, emit, _) =>
+            {
+                if (Command(request) == "check-auth") Auth(request, emit);
+                else uploads++;
+                return Task.FromResult(0);
+            });
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => new BackupCoordinator(bridge, fixture.State).RunAsync(
+                new BackupOptions([link], MirrorFolders: false), Credential("one@example.com"), CancellationToken.None));
+            Assert.Equal("A selected folder or media file could not be read. Check that it exists and you have access, then retry.", error.Message);
+            Assert.Equal(0, uploads);
         }
         finally { Directory.Delete(outside, recursive: true); }
     }

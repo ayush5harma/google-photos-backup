@@ -155,7 +155,7 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                 }
             }
             if (options.MirrorFolders)
-                await MirrorAlbumsAsync(candidates, state, statePath, authData, linked.Token).ConfigureAwait(false);
+                failed += await MirrorAlbumsAsync(candidates, state, statePath, authData, linked.Token).ConfigureAwait(false);
             linked.Token.ThrowIfCancellationRequested();
             Emit(new BackupProgress("Completed", completed, todo.Count, failed));
             return new BackupSummary(uploaded, existing, failed, false);
@@ -173,8 +173,9 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
         }
     }
 
-    private async Task MirrorAlbumsAsync(List<Candidate> candidates, PersistedState state, string statePath, string authData, CancellationToken ct)
+    private async Task<int> MirrorAlbumsAsync(List<Candidate> candidates, PersistedState state, string statePath, string authData, CancellationToken ct)
     {
+        var failed = 0;
         foreach (var root in candidates.SelectMany(item => item.Roots).Distinct(StringComparer.Ordinal))
         {
             await WaitWhilePausedAsync(ct).ConfigureAwait(false);
@@ -204,9 +205,15 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                     confirmed = true;
                 }, ct).ConfigureAwait(false);
                 if (!confirmed || code != 0)
-                    Emit(new BackupProgress("Albums", 0, 0, 0, Message: "A folder album could not be updated; it will be retried."));
+                {
+                    // 2026-10-15: A missing album confirmation must remain a
+                    // visible failure even when every media upload succeeded.
+                    failed++;
+                    Emit(new BackupProgress("Albums", 0, 0, failed, Message: "A folder album could not be updated; it will be retried."));
+                }
             }
         }
+        return failed;
     }
 
     private static async Task<List<Candidate>> ScanAsync(IReadOnlyList<string> roots, CancellationToken ct)
@@ -217,8 +224,12 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
             ct.ThrowIfCancellationRequested();
             string root;
             try { root = CanonicalPath(input); }
-            catch (Exception error) when (error is ArgumentException or PathTooLongException) { continue; }
-            if (!Directory.Exists(root) || IsReparse(root)) continue;
+            catch (Exception error) when (error is ArgumentException or PathTooLongException or NotSupportedException or IOException or System.Security.SecurityException)
+            { throw ScanUnavailable(); }
+            // 2026-10-15: Directory.Exists also returns false for access errors;
+            // an empty scan must not report success for a selected folder.
+            if (!Directory.Exists(root)) throw ScanUnavailable();
+            if (IsReparse(root)) throw ScanUnavailable();
             var rootKey = Digest(Encoding.UTF8.GetBytes(OperatingSystem.IsWindows() ? root.ToUpperInvariant() : root));
             var rootName = Path.GetFileName(root);
             if (string.IsNullOrEmpty(rootName)) rootName = "Photos Backup";
@@ -229,24 +240,28 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                 ct.ThrowIfCancellationRequested();
                 IEnumerable<string> entries;
                 try { entries = Directory.EnumerateFileSystemEntries(folder).ToArray(); }
-                catch (Exception error) when (error is IOException or UnauthorizedAccessException) { continue; }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+                { throw ScanUnavailable(); }
                 foreach (var entry in entries)
                 {
                     ct.ThrowIfCancellationRequested();
                     FileAttributes attributes;
                     try { attributes = File.GetAttributes(entry); }
-                    catch (Exception error) when (error is IOException or UnauthorizedAccessException) { continue; }
+                    catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+                    { throw ScanUnavailable(); }
                     if ((attributes & FileAttributes.ReparsePoint) != 0) continue;
                     if ((attributes & FileAttributes.Directory) != 0) { folders.Push(entry); continue; }
                     if (!MediaExtensions.Contains(Path.GetExtension(entry))) continue;
                     string path;
                     try { path = CanonicalPath(entry); }
-                    catch (Exception error) when (error is ArgumentException or PathTooLongException) { continue; }
+                    catch (Exception error) when (error is ArgumentException or PathTooLongException or NotSupportedException or IOException or System.Security.SecurityException)
+                    { throw ScanUnavailable(); }
                     if (!found.TryGetValue(path, out var candidate))
                     {
                         string fingerprint;
                         try { fingerprint = await FingerprintAsync(path, ct).ConfigureAwait(false); }
-                        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { continue; }
+                        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+                        { throw ScanUnavailable(); }
                         candidate = new Candidate(Digest(Encoding.UTF8.GetBytes(OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path)), path, fingerprint);
                         found[path] = candidate;
                     }
@@ -274,8 +289,12 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
     private static bool IsReparse(string path)
     {
         try { return (File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0; }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return true; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+        { throw ScanUnavailable(); }
     }
+
+    private static InvalidOperationException ScanUnavailable() =>
+        new("A selected folder or media file could not be read. Check that it exists and you have access, then retry.");
 
     private static void Validate(BackupOptions options, string authData)
     {
@@ -293,7 +312,9 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
         try
         {
             var state = JsonSerializer.Deserialize<PersistedState>(File.ReadAllText(path));
-            if (state is null || state.AccountKey != accountKey || state.Files is null || state.Albums is null)
+            if (state is null || state.AccountKey != accountKey || state.Files is null || state.Albums is null
+                || state.Files.Values.Any(file => file is null || file.Fingerprint is null || file.MediaKey is null)
+                || state.Albums.Values.Any(album => album is null || album.Members is null))
                 throw new InvalidDataException();
             return state;
         }
