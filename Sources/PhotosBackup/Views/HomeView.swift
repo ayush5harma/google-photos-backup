@@ -2,155 +2,320 @@ import PhotosBackupCore
 import PhotosUI
 import SwiftUI
 
+/// Overview: where the backup stands, in one look.
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Binding var section: AppSection
 
-    private static let albumRowsShown = 4
+    private static let albumRowsShown = 5
 
     var body: some View {
-        let summary = model.summary
-        let engine = model.engine
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                header
-                SetupBanners(section: $section)
-                statusCard(summary, engine: engine)
-                HStack(spacing: 14) {
-                    Button { model.startBackupNow() } label: {
-                        tile(symbol: "arrow.up.circle.fill", title: "Back Up Now", detail: "\(summary.backedUp) of \(summary.total) backed up")
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(engine.isActive || !model.hasAuthData)
-                    PickPhotosButton {
-                        tile(symbol: "photo.badge.plus", title: "Pick Photos", detail: "Manual backup")
-                    }
-                }
+            VStack(alignment: .leading, spacing: Metrics.sectionSpacing) {
+                // The hero carries the sign-in button for a missing account.
+                SetupBanners(section: $section, hiding: model.hasAuthData ? [] : ["sign-in"])
+                OverviewHero()
+                stats
                 selectedAlbums
+                RecentActivity(section: $section)
             }
-            .padding(24)
-            .frame(maxWidth: 760)
-            .frame(maxWidth: .infinity)
+            .readablePage()
         }
-        .navigationTitle("Home")
+        .navigationTitle("Overview")
+        .navigationSubtitle(model.windowSubtitle)
     }
 
-    private var header: some View {
-        HStack(alignment: .firstTextBaseline) {
-            Text("Photos Backup").font(.largeTitle.bold())
-            Spacer()
-            AccountBadge()
+    private var stats: some View {
+        let summary = model.summary
+        let failed = model.engine.failedCount
+        return HStack(spacing: 12) {
+            StatTile(value: summary.backedUp.formatted(), label: "Backed up", symbol: "checkmark.icloud", tint: .green)
+            StatTile(value: summary.pending.formatted(), label: "To back up", symbol: "arrow.up.circle", tint: .accentColor)
+            StatTile(value: summary.selectedAlbums.formatted(), label: summary.selectedAlbums == 1 ? "Album" : "Albums",
+                     symbol: "rectangle.stack", tint: .orange)
+            StatTile(value: failed.formatted(), label: "Failed", symbol: "exclamationmark.triangle", tint: failed > 0 ? .red : .secondary)
         }
-    }
-
-    private func statusCard(_ summary: BackupSummary, engine: BackupEngine) -> some View {
-        Card {
-            HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(statusTitle(summary, engine: engine)).font(.title2.bold())
-                    Text(statusDetail(summary, engine: engine)).foregroundStyle(.secondary)
-                }
-                Spacer()
-                ProgressRing(fraction: summary.total == 0 ? 0 : Double(summary.backedUp) / Double(summary.total), lineWidth: 6) {
-                    Image(systemName: summary.pending == 0 && summary.total > 0 ? "checkmark" : "arrow.up")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundStyle(.tint)
-                        .symbolEffect(.pulse, isActive: engine.isActive)
-                }
-                .frame(width: 72, height: 72)
-            }
-            Divider().padding(.vertical, 14)
-            HStack {
-                stat("\(summary.backedUp)", "Backed up")
-                Divider().frame(height: 36)
-                stat("\(summary.selectedAlbums)", "Albums")
-                Divider().frame(height: 36)
-                stat("\(summary.pending)", "In queue")
-            }
-            HStack(spacing: 12) {
-                if engine.phase == .paused || engine.phase == .pausing {
-                    Button { engine.resume() } label: { Label("Resume", systemImage: "play.circle") }
-                        .buttonStyle(TintedButtonStyle(color: .accentColor))
-                } else {
-                    Button { engine.pauseAfterCurrent() } label: { Label("Pause", systemImage: "pause.circle") }
-                        .buttonStyle(TintedButtonStyle(color: .accentColor))
-                        .disabled(engine.phase != .running)
-                }
-                Button(role: .destructive) { model.stopBackup() } label: { Label("Stop", systemImage: "stop.circle") }
-                    .buttonStyle(TintedButtonStyle(color: .red))
-                    .disabled((engine.phase == .idle && !model.isMessagesScanning) || engine.phase == .stopping)
-            }
-            .padding(.top, 16)
-        }
-    }
-
-    private func statusTitle(_ summary: BackupSummary, engine: BackupEngine) -> String {
-        switch engine.phase {
-        case .running: "Backing up..."
-        case .pausing: "Pausing after this batch..."
-        case .paused: "Paused"
-        case .stopping: "Stopping..."
-        case .waiting: engine.waitReason?.title ?? "Waiting..."
-        case .idle: summary.total == 0 ? "Nothing selected" : summary.pending == 0 ? "Backed up" : "Ready to back up"
-        }
-    }
-
-    private func statusDetail(_ summary: BackupSummary, engine: BackupEngine) -> String {
-        if engine.isActive, engine.remaining > 0 { return "\(engine.remaining) items remaining" }
-        if summary.pending > 0 { return "\(summary.pending) items remaining" }
-        if let last = engine.lastRun { return "Last checked \(last.formatted(.relative(presentation: .named)))" }
-        return summary.total == 0 ? "Choose albums to back up" : "Everything selected is in Google Photos"
-    }
-
-    private func stat(_ value: String, _ label: String) -> some View {
-        VStack(spacing: 2) {
-            Text(value).font(.title2.weight(.semibold)).monospacedDigit()
-            Text(label).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private func tile(symbol: String, title: String, detail: String) -> some View {
-        Card {
-            Image(systemName: symbol).font(.title).foregroundStyle(.tint).padding(.bottom, 12)
-            Text(title).font(.title3.weight(.semibold))
-            Text(detail).foregroundStyle(.secondary)
-        }
-        .contentShape(Rectangle())
     }
 
     private var selectedAlbums: some View {
         @Bindable var model = model
         let albums = model.selectedAlbums
-        return Card {
-            HStack {
-                Text("Selected Albums").font(.title3.weight(.semibold))
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Selected albums").font(.headline)
                 Spacer()
-                Toggle(isOn: $model.settings.automatic) {
-                    Label("Automatic", systemImage: "arrow.triangle.2.circlepath")
+                Toggle("Back up automatically", isOn: $model.settings.automatic)
+                    .toggleStyle(.switch)
+                    .controlSize(.mini)
+                    .help("Back up selected albums whenever Photos changes, and every 30 minutes")
+            }
+            .padding(.horizontal, 2)
+            Card(padding: 0) {
+                if albums.isEmpty {
+                    HStack {
+                        Text(model.albumsLoaded ? "No albums selected yet." : "Albums appear once Photos access is allowed.")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        if model.albumsLoaded { Button("Choose Albums") { section = .albums } }
+                    }
+                    .padding(14)
                 }
-                .toggleStyle(.button)
-                .tint(.green)
-                .help("Back up selected albums whenever Photos changes, and every 30 minutes")
-            }
-            .padding(.bottom, 8)
-            if albums.isEmpty {
-                Text(model.albumsLoaded ? "No albums selected yet." : "Albums appear once Photos access is allowed.")
-                    .foregroundStyle(.secondary)
-                    .padding(.vertical, 8)
-            }
-            ForEach(Array(albums.prefix(Self.albumRowsShown).enumerated()), id: \.element.id) { index, album in
-                if index > 0 { Divider().padding(.leading, 56) }
-                AlbumRow(album: album, progress: model.progress(of: album)) {
+                ForEach(Array(albums.prefix(Self.albumRowsShown).enumerated()), id: \.element.id) { index, album in
+                    if index > 0 { Divider().padding(.leading, 58) }
                     let progress = model.progress(of: album)
-                    AlbumStatusMark(backedUp: progress.backedUp, total: progress.total)
+                    AlbumRow(album: album, progress: progress, showsBar: true) {
+                        AlbumStatusMark(backedUp: progress.backedUp, total: progress.total)
+                    }
+                    .padding(.horizontal, 14)
+                }
+                if albums.count > Self.albumRowsShown {
+                    Divider()
+                    Button("Show all \(albums.count.formatted()) selected albums") { section = .albums }
+                        .buttonStyle(.link)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
                 }
             }
-            if albums.count > Self.albumRowsShown {
-                Button("+ \(albums.count - Self.albumRowsShown) more albums") { section = .albums }
-                    .buttonStyle(.link)
+        }
+    }
+}
+
+/// The large ring and calm status copy at the top of the Overview.
+private struct OverviewHero: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let status = model.status
+        let engine = model.engine
+        let summary = model.summary
+        let coverage = summary.total == 0 ? 0 : Double(summary.backedUp) / Double(summary.total)
+        HStack(alignment: .center, spacing: 24) {
+            ProgressRing(fraction: model.hasAuthData ? coverage : 0, lineWidth: 10) {
+                VStack(spacing: 0) {
+                    if status.kind == .upToDate {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 38, weight: .bold))
+                            .foregroundStyle(.tint)
+                            .transition(.scale.combined(with: .opacity))
+                    } else if model.hasAuthData, summary.total > 0 {
+                        Text(model.coverageText)
+                            .font(.system(size: 28, weight: .semibold, design: .rounded))
+                            .monospacedDigit()
+                            .contentTransition(.numericText())
+                        Text("backed up").font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Image(systemName: model.hasAuthData ? "photo.on.rectangle.angled" : "person.crop.circle.badge.plus")
+                            .font(.system(size: 30, weight: .regular))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .frame(width: 124, height: 124)
+            .tint(tint(status))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(model.heroTitle)
+                    .font(.title.weight(.semibold))
+                Text(detail(status, summary: summary))
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if engine.isActive {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ProgressView(value: engine.runTotal > 0 ? engine.runFraction : nil)
+                            .progressViewStyle(.linear)
+                        if let item = model.currentItem {
+                            Text(item.filename)
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
+                    }
+                    .padding(.top, 6)
+                }
+                actions
                     .padding(.top, 8)
             }
+            Spacer(minLength: 0)
+        }
+        .padding(20)
+        .panelBackground()
+    }
+
+    @ViewBuilder
+    private var actions: some View {
+        let engine = model.engine
+        HStack(spacing: 8) {
+            switch engine.phase {
+            case .paused, .pausing:
+                Button { engine.resume() } label: { Label("Resume", systemImage: "play.fill") }
+                    .buttonStyle(.borderedProminent)
+            case .running, .waiting, .stopping:
+                Button { engine.pauseAfterCurrent() } label: { Label("Pause", systemImage: "pause.fill") }
+                    .disabled(engine.phase != .running)
+                Button(role: .destructive) { model.stopBackup() } label: { Label("Stop", systemImage: "stop.fill") }
+                    .disabled(engine.phase == .stopping)
+            case .idle:
+                if model.hasAuthData {
+                    Button { model.startBackupNow() } label: { Label("Back Up Now", systemImage: "arrow.up") }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!model.canReadPhotos && !model.settings.messagesMedia)
+                } else {
+                    Button { model.beginSignIn() } label: { Label("Sign In with Google…", systemImage: "person.crop.circle") }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            PickPhotosButton(plain: false) {
+                Label("Choose Photos…", systemImage: "photo.badge.plus")
+            }
+            .help("Back up a hand-picked selection now")
+        }
+        .controlSize(.large)
+    }
+
+    private func tint(_ status: MenuBarStatus) -> Color {
+        switch status.kind {
+        case .upToDate: .green
+        case .paused, .waiting: .orange
+        case .attention: model.hasAuthData ? .orange : .secondary
+        case .backingUp, .ready: .accentColor
+        }
+    }
+
+    private func detail(_ status: MenuBarStatus, summary: BackupSummary) -> String {
+        let engine = model.engine
+        switch status.kind {
+        case .upToDate:
+            return "\(summary.backedUp.formatted()) photos and videos are in Google Photos."
+        case .backingUp:
+            if engine.isActive {
+                return engine.remaining > 0 ? "\(engine.remaining.formatted()) items left in this backup." : "Looking for new photos and videos…"
+            }
+            return "Your conversations are being saved to the archive."
+        case .ready:
+            return summary.total == 0 ? "Turn on albums in Albums, or start with All Photos." : "\(summary.pending.formatted()) of \(summary.total.formatted()) items aren't in Google Photos yet."
+        case .paused:
+            return summary.pending > 0 ? "\(summary.pending.formatted()) items are waiting. Resume to continue." : "Resume to continue."
+        case .waiting:
+            let reason = engine.waitReason
+            return [reason?.title, reason?.resumeHint ?? "Uploads continue by themselves."].compactMap { $0 }.joined(separator: ". ")
+        case .attention:
+            if !model.hasAuthData { return "Connect your Google account to back up \(summary.total.formatted()) items." }
+            if model.isStorageFull || model.account.isFailed {
+                return "\(summary.backedUp.formatted()) of \(summary.total.formatted()) items are in Google Photos; the rest wait until this is fixed."
+            }
+            return "Everything else is in Google Photos. Retry them from Activity."
+        }
+    }
+}
+
+/// The last few runs (or, before any run is recorded, the last uploads),
+/// linking to Activity for the rest.
+private struct RecentActivity: View {
+    @Environment(AppModel.self) private var model
+    @Binding var section: AppSection
+
+    var body: some View {
+        let runs = Array(model.diagnostics.runs.suffix(3).reversed())
+        let items = Array(model.engine.activity.prefix(4))
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(title: "Recent activity", action: ("Show All", { section = .activity }))
+            Card(padding: 0) {
+                if runs.isEmpty, items.isEmpty {
+                    Text("Backups you run appear here.")
+                        .foregroundStyle(.secondary)
+                        .padding(14)
+                } else if !runs.isEmpty {
+                    ForEach(Array(runs.enumerated()), id: \.element.id) { index, run in
+                        if index > 0 { Divider().padding(.leading, 46) }
+                        RunRow(run: run).padding(.horizontal, 14)
+                    }
+                } else {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        if index > 0 { Divider().padding(.leading, 46) }
+                        ItemRow(item: item).padding(.horizontal, 14)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct RunRow: View {
+    let run: RunRecord
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AlbumIcon(symbol: symbol, size: 22, tint: tint)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(run.kind.title) · \(run.trigger.title)").lineLimit(1)
+                Text(summary).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer()
+            Text((run.finishedAt ?? run.startedAt).relativeDescription)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.vertical, 8)
+        .accessibilityElement(children: .combine)
+    }
+
+    private var summary: String {
+        var parts: [String] = []
+        if run.uploaded > 0 { parts.append("\(run.uploaded.formatted()) backed up") }
+        if run.existing > 0 { parts.append("\(run.existing.formatted()) already there") }
+        if run.failed > 0 { parts.append("\(run.failed.formatted()) failed") }
+        if case let .failed(reason) = run.outcome { parts.append(reason) }
+        if run.outcome == .stopped { parts.append("stopped") }
+        return parts.isEmpty ? "Nothing new" : parts.joined(separator: ", ")
+    }
+
+    private var symbol: String {
+        switch run.outcome {
+        case .failed: "xmark"
+        case .stopped, .paused: "pause.fill"
+        default: run.failed > 0 ? "exclamationmark" : "checkmark"
+        }
+    }
+
+    private var tint: Color {
+        switch run.outcome {
+        case .failed: .red
+        case .stopped, .paused: .secondary
+        default: run.failed > 0 ? .orange : .green
+        }
+    }
+}
+
+private struct ItemRow: View {
+    let item: ActivityItem
+
+    var body: some View {
+        HStack(spacing: 12) {
+            AlbumIcon(symbol: symbol, size: 22, tint: tint)
+            Text(item.filename).lineLimit(1).truncationMode(.middle)
+            Spacer()
+            Text(item.status.label).font(.callout).foregroundStyle(.secondary).lineLimit(1)
+        }
+        .padding(.vertical, 8)
+    }
+
+    private var symbol: String {
+        switch item.status {
+        case .uploaded, .existing: "checkmark"
+        case .failed: "xmark"
+        case .stopped: "stop.fill"
+        default: "arrow.up"
+        }
+    }
+
+    private var tint: Color {
+        switch item.status {
+        case .uploaded, .existing: .green
+        case .failed: .red
+        case .stopped: .secondary
+        default: .accentColor
         }
     }
 }
@@ -159,51 +324,55 @@ struct AlbumRow<Trailing: View>: View {
     let album: LibraryAlbum
     let progress: AlbumProgress
     var selected = true
+    var showsBar = false
     @ViewBuilder var trailing: Trailing
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             AlbumIcon(symbol: album.symbol)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(album.title).font(.body.weight(.medium))
-                Text(selected ? "\(progress.backedUp) of \(progress.total) backed up" : "\(progress.total) items")
+            VStack(alignment: .leading, spacing: 3) {
+                Text(album.title).lineLimit(1).truncationMode(.tail)
+                Text(selected ? "\(progress.backedUp.formatted()) of \(progress.total.formatted()) backed up" : "\(progress.total.formatted()) items")
+                    .font(.callout)
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
+                if showsBar, selected, !progress.isComplete {
+                    ProgressView(value: Double(progress.backedUp), total: Double(max(progress.total, 1)))
+                        .progressViewStyle(.linear)
+                        .controlSize(.small)
+                        .frame(maxWidth: 220)
+                        .accessibilityHidden(true)
+                }
             }
-            Spacer()
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 8)
             trailing
         }
         .padding(.vertical, 8)
     }
 }
 
+/// The account at a glance; kept for views that show it inline.
 struct AccountBadge: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let (symbol, color, help): (String, Color, String) = switch model.account {
-        case let .connected(email): ("person.crop.circle.fill", .accentColor, email ?? "Connected")
-        case .checking: ("person.crop.circle.badge.clock", .secondary, "Checking the account...")
-        case let .failed(message): ("person.crop.circle.badge.exclamationmark", .orange, message)
-        case .missing: ("person.crop.circle.badge.plus", .secondary, "No Google account yet")
-        }
-        Image(systemName: symbol)
-            .font(.system(size: 30))
-            .foregroundStyle(color)
-            .help(help)
+        AccountAvatar(size: 28)
+            .help(model.accountEmail ?? "No Google account yet")
     }
 }
 
 /// Opens the system photo picker and backs up whatever is chosen.
 struct PickPhotosButton<Label: View>: View {
     @Environment(AppModel.self) private var model
+    /// Plain draws only the label (a card); otherwise a regular button.
+    var plain = true
     @ViewBuilder var label: Label
     @State private var selection: [PhotosPickerItem] = []
 
     var body: some View {
-        PhotosPicker(selection: $selection, matching: .any(of: [.images, .videos]), photoLibrary: .shared()) { label }
-            .buttonStyle(.plain)
-            .disabled(!model.hasAuthData || !model.library.isAuthorized)
+        styled(PhotosPicker(selection: $selection, matching: .any(of: [.images, .videos]), photoLibrary: .shared()) { label })
+            .disabled(!model.hasAuthData || !model.canReadPhotos)
             .onChange(of: selection) { _, items in
                 // itemIdentifier is the PHAsset local identifier because the
                 // picker was given the shared library.
@@ -212,43 +381,46 @@ struct PickPhotosButton<Label: View>: View {
                 if !ids.isEmpty { model.engine.backUp(picked: ids) }
             }
     }
+
+    @ViewBuilder
+    private func styled(_ picker: some View) -> some View {
+        if plain { picker.buttonStyle(.plain) } else { picker.buttonStyle(.bordered) }
+    }
 }
 
-/// What still stands between the user and a working backup.
+/// What still stands between the person and a working backup, and the
+/// last error a run left.
 struct SetupBanners: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.openSettings) private var openSettings
     @Binding var section: AppSection
+    /// Attention ids a view already shows in its own way.
+    var hiding: Set<String> = []
 
     var body: some View {
-        if !model.library.isAuthorized {
-            if model.photosStatus == .notDetermined {
-                Banner(symbol: "photo.on.rectangle", text: "Photos Backup needs access to your Photos library.", color: .accentColor,
-                       action: ("Allow Access", { Task { await model.requestPhotosAccess() } }))
-            } else {
-                Banner(symbol: "lock", text: "Photos access is off. Turn on Photos Backup in System Settings > Privacy & Security > Photos.",
-                       color: .orange, action: ("Open Settings", openPhotosPrivacy))
+        let attention = model.attention.filter { $0.id != "waiting" && !hiding.contains($0.id) }
+        if !attention.isEmpty || errorText != nil {
+            VStack(spacing: 8) {
+                ForEach(attention) { AttentionRow(item: $0) }
+                if let error = errorText {
+                    Banner(symbol: "exclamationmark.triangle.fill", text: error, color: .orange,
+                           action: error.contains("Sign in") ? ("Account Settings", { AppRouter.shared.openSettings(.account) }) : nil)
+                }
             }
-        }
-        switch model.account {
-        case .missing:
-            Banner(symbol: "person.crop.circle.badge.plus", text: "Sign in with Google to choose where your photos go.", color: .accentColor,
-                   action: ("Sign In", { model.beginSignIn() }))
-        case let .failed(message):
-            Banner(symbol: "person.crop.circle.badge.exclamationmark", text: message, color: .orange,
-                   action: ("Settings", { openSettings() }))
-        case .connected, .checking:
-            EmptyView()
-        }
-        if let error = model.engine.lastError ?? model.stateError {
-            Banner(symbol: "exclamationmark.triangle", text: error, color: .orange,
-                   action: error.contains("Sign in") ? ("Settings", { openSettings() }) : nil)
         }
     }
 
-    private func openPhotosPrivacy() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Photos") {
-            NSWorkspace.shared.open(url)
-        }
+    /// The run's last error, unless an attention row already says it.
+    private var errorText: String? {
+        if model.isStorageFull { return model.stateError }
+        return model.engine.lastError ?? model.stateError
+    }
+}
+
+extension AppModel {
+    /// The window's subtitle: "Up to date · Last backup 5 minutes ago".
+    var windowSubtitle: String {
+        let headline = status.headline
+        guard !engine.isActive, let last = lastBackup else { return headline }
+        return "\(headline) · Last backup \(last.relativeDescription)"
     }
 }
