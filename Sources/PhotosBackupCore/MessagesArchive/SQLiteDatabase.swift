@@ -6,11 +6,25 @@ import SQLite3
 /// column of paths but not for blobs (attributedBody) or 100k-row reads.
 final class SQLiteDatabase {
     enum Failure: Error, Equatable {
-        case open(Int32)
+        /// The SQLite result code and the system errno behind it (EPERM is
+        /// how a missing Full Disk Access shows up).
+        case open(Int32, errno: Int32)
         case prepare(String)
         case step(String)
-        case backup(String)
+        case backup(String, errno: Int32)
+
+        var systemErrno: Int32 {
+            switch self {
+            case let .open(_, errno), let .backup(_, errno): errno
+            default: 0
+            }
+        }
     }
+
+    /// Messages holds its write lock for milliseconds at a time; a reader
+    /// waits this long before calling the database busy.
+    static let busyTimeoutMilliseconds: Int32 = 2_000
+    static let busyRetries = 50
 
     private var handle: OpaquePointer?
 
@@ -20,16 +34,19 @@ final class SQLiteDatabase {
         let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX
         let status = sqlite3_open_v2(url.path, &handle, flags, nil)
         guard status == SQLITE_OK else {
+            let code = sqlite3_system_errno(handle)
             sqlite3_close(handle)
-            throw Failure.open(status)
+            throw Failure.open(status, errno: code)
         }
+        sqlite3_busy_timeout(handle, Self.busyTimeoutMilliseconds)
     }
 
     init(creating url: URL) throws {
         let status = sqlite3_open_v2(url.path, &handle, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, nil)
         guard status == SQLITE_OK else {
+            let code = sqlite3_system_errno(handle)
             sqlite3_close(handle)
-            throw Failure.open(status)
+            throw Failure.open(status, errno: code)
         }
     }
 
@@ -75,15 +92,38 @@ final class SQLiteDatabase {
         }
     }
 
-    /// A consistent single-file copy of this database (WAL folded in), via
-    /// the online backup API.
-    func backup(to destination: SQLiteDatabase) throws {
+    /// A consistent single-file copy of this database, WAL frames folded in,
+    /// via the online backup API. `pagesPerStep` -1 copies in one read
+    /// transaction: right for a live database another process writes to,
+    /// where a stepped copy restarts after every write. A stepped copy of a
+    /// database nobody writes can stop between steps when `isCancelled`.
+    func backup(to destination: SQLiteDatabase, pagesPerStep: Int32 = -1, isCancelled: () -> Bool = { false }) throws {
         guard let backup = sqlite3_backup_init(destination.handle, "main", handle, "main") else {
-            throw Failure.backup(destination.lastError)
+            throw Failure.backup(destination.lastError, errno: sqlite3_system_errno(destination.handle))
         }
-        let status = sqlite3_backup_step(backup, -1)
+        var status = SQLITE_OK
+        var busy = 0
+        while true {
+            if isCancelled() {
+                sqlite3_backup_finish(backup)
+                throw CancellationError()
+            }
+            status = sqlite3_backup_step(backup, pagesPerStep)
+            if status == SQLITE_DONE { break }
+            if status == SQLITE_BUSY || status == SQLITE_LOCKED {
+                busy += 1
+                guard busy <= Self.busyRetries else { break }
+                usleep(100_000)
+                continue
+            }
+            guard status == SQLITE_OK else { break }
+        }
+        let code = sqlite3_system_errno(handle)
         sqlite3_backup_finish(backup)
-        guard status == SQLITE_DONE else { throw Failure.backup(destination.lastError) }
+        guard status == SQLITE_DONE else { throw Failure.backup(lastError, errno: code) }
+        // The copied header keeps the source's WAL mode; a lone file reads
+        // more simply (and opens read-only) as a rollback-journal database.
+        try destination.query("PRAGMA journal_mode=DELETE") { _ in }
     }
 
     private static let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)

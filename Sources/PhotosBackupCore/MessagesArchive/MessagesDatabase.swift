@@ -6,8 +6,12 @@ public enum MessagesArchiveError: Error, Equatable, Sendable {
     case databaseMissing
     case snapshotFailed
     case unreadableDatabase
-    /// The archive folder could not be created or written.
-    case folderUnavailable(String)
+    /// The archive folder could not be created or written. A fixed phrase
+    /// and the error number only: the system's description names folders,
+    /// and conversation folders are named after phone numbers and emails.
+    case folderUnavailable(code: Int)
+    /// Another run (this app, or a second copy of it) is writing this folder.
+    case alreadyRunning
 
     public var description: String {
         switch self {
@@ -15,13 +19,30 @@ public enum MessagesArchiveError: Error, Equatable, Sendable {
         case .databaseMissing: "Messages has no conversations on this Mac"
         case .snapshotFailed: "could not copy the Messages database"
         case .unreadableDatabase: "could not read the Messages database"
-        case let .folderUnavailable(reason): "could not write the archive folder (\(reason))"
+        case let .folderUnavailable(code): "could not write to the archive folder (error \(code))"
+        case .alreadyRunning: "another archive is already writing to this folder"
         }
     }
 
+    static func folderUnavailable(_ error: Error) -> MessagesArchiveError {
+        .folderUnavailable(code: errorCode(error))
+    }
+
+    /// The POSIX errno when there is one, else the Cocoa code.
+    static func errorCode(_ error: Error) -> Int {
+        if let failure = error as? SQLiteDatabase.Failure, failure.systemErrno != 0 { return Int(failure.systemErrno) }
+        if let posix = error as? POSIXError { return Int(posix.code.rawValue) }
+        let error = error as NSError
+        if error.domain == NSPOSIXErrorDomain { return error.code }
+        if let underlying = error.userInfo[NSUnderlyingErrorKey] as? NSError, underlying.domain == NSPOSIXErrorDomain { return underlying.code }
+        return error.code
+    }
+
     /// TCC answers EPERM (or EACCES) for a protected file, wrapped by
-    /// FileManager in a Cocoa no-permission error.
+    /// FileManager in a Cocoa no-permission error, or by SQLite as a failed
+    /// open with that errno.
     static func isPermissionDenied(_ error: Error) -> Bool {
+        if let failure = error as? SQLiteDatabase.Failure { return [EPERM, EACCES].contains(failure.systemErrno) }
         let error = error as NSError
         if error.domain == NSCocoaErrorDomain, [NSFileReadNoPermissionError, NSFileWriteNoPermissionError].contains(error.code) { return true }
         if error.domain == NSPOSIXErrorDomain, [Int(EPERM), Int(EACCES)].contains(error.code) { return true }
@@ -30,10 +51,14 @@ public enum MessagesArchiveError: Error, Equatable, Sendable {
     }
 }
 
-/// A private copy of chat.db and its WAL sidecars. The live database is
-/// never opened: Messages writes to it all the time, and a reader holding
-/// it could stall or see a torn page.
+/// A private, consistent copy of chat.db. The live database is opened
+/// read-only only long enough for SQLite's online backup to copy it in one
+/// read transaction: copying chat.db, -wal and -shm as three files could
+/// pair an old database with a newer WAL if Messages checkpointed between
+/// the copies. In WAL mode the read never blocks Messages' writes.
 struct MessagesSnapshot {
+    static let directoryPrefix = "photos-backup-archive-"
+
     let directory: URL
     let database: URL
 
@@ -47,16 +72,16 @@ struct MessagesSnapshot {
             catch {}
             throw MessagesArchiveError.databaseMissing
         }
-        directory = temporaryDirectory.appendingPathComponent("photos-backup-archive-\(UUID().uuidString)", isDirectory: true)
+        directory = temporaryDirectory.appendingPathComponent("\(Self.directoryPrefix)\(UUID().uuidString)", isDirectory: true)
         database = directory.appendingPathComponent("chat.db")
         do { try files.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
         catch { throw MessagesArchiveError.snapshotFailed }
         do {
-            try files.copyItem(at: source, to: database)
-            for suffix in ["-wal", "-shm"] {
-                let sidecar = URL(fileURLWithPath: source.path + suffix)
-                if files.fileExists(atPath: sidecar.path) { try files.copyItem(at: sidecar, to: URL(fileURLWithPath: database.path + suffix)) }
+            let live = try SQLiteDatabase(readOnly: source)
+            guard files.createFile(atPath: database.path, contents: nil, attributes: [.posixPermissions: 0o600]) else {
+                throw MessagesArchiveError.snapshotFailed
             }
+            try live.backup(to: SQLiteDatabase(creating: database))
         } catch {
             try? files.removeItem(at: directory)
             throw MessagesArchiveError.isPermissionDenied(error) ? MessagesArchiveError.needsFullDiskAccess : MessagesArchiveError.snapshotFailed
@@ -64,6 +89,19 @@ struct MessagesSnapshot {
     }
 
     func remove() { try? FileManager.default.removeItem(at: directory) }
+
+    /// Snapshot folders a run left behind when the app was quit mid-copy.
+    /// Only old ones: another app (a debug copy) may be mid-run right now.
+    static func sweep(in temporaryDirectory: URL, olderThan age: TimeInterval = 6 * 60 * 60, now: Date = Date()) {
+        let files = FileManager.default
+        let names = (try? files.contentsOfDirectory(atPath: temporaryDirectory.path)) ?? []
+        for name in names where name.hasPrefix(directoryPrefix) {
+            let url = temporaryDirectory.appendingPathComponent(name)
+            guard let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentModificationDateKey]), values.isDirectory == true,
+                  let modified = values.contentModificationDate, now.timeIntervalSince(modified) > age else { continue }
+            try? files.removeItem(at: url)
+        }
+    }
 }
 
 struct ChatRow: Equatable, Sendable {
@@ -241,9 +279,13 @@ final class MessagesDatabase {
         return rows
     }
 
-    /// A consistent single-file copy (WAL folded in) for the dated copies.
-    func backup(to destination: URL) throws {
+    /// A single-file copy for the dated copies. The snapshot is private, so
+    /// the copy goes in steps and stops between them when cancelled.
+    func backup(to destination: URL, isCancelled: () -> Bool) throws {
         let copy = try SQLiteDatabase(creating: destination)
-        try sqlite.backup(to: copy)
+        try sqlite.backup(to: copy, pagesPerStep: Self.pagesPerStep, isCancelled: isCancelled)
     }
+
+    /// 4,096 pages of 4 KB: 16 MB between cancellation checks.
+    static let pagesPerStep: Int32 = 4_096
 }

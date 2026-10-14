@@ -56,7 +56,7 @@ struct MessagesView: View {
                 ContentUnavailableView {
                     Label("Keep Every Conversation", systemImage: "archivebox")
                 } description: {
-                    Text("Messages Archive keeps a private, readable copy of your conversations on this Mac: texts, reactions, replies and attachments, in a folder you choose. Nothing is uploaded.")
+                    Text("Messages Archive keeps a private, readable copy of your conversations on this Mac: texts, reactions, replies and attachments, in a folder you choose. Photos Backup never uploads it.")
                 } actions: {
                     Button("Turn On Messages Archive") { model.archive.turnOn() }
                         .buttonStyle(.borderedProminent)
@@ -130,6 +130,7 @@ struct MessagesView: View {
         VStack(spacing: 14) {
             ArchiveHeader()
             ArchiveStats(overview: archive.overview)
+            ArchiveNotes()
             if model.settings.archiveContactNames, archive.contactsAccess == .notDetermined, archive.overview != nil {
                 contactsBanner
             }
@@ -266,6 +267,39 @@ private struct ArchiveHeader: View {
                 .labelStyle(StatusLabelStyle(color: .orange))
         case .idle, .off:
             Text("Not archived yet").foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Where the archive is stored when that is more than this Mac, and what
+/// the last run could not do. Calm, and only when there is something to say.
+private struct ArchiveNotes: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let archive = model.archive
+        let overview = archive.overview
+        let notes = [
+            archive.syncNote.map { ("icloud", $0, false) },
+            overview?.snapshotProblem.map { ("exclamationmark.triangle", $0.prefix(1).uppercased() + $0.dropFirst() + ".", true) },
+            (overview?.unreadableConversations ?? 0) > 0
+                ? ("exclamationmark.triangle", "\(overview?.unreadableConversations ?? 0) archived conversations could not be read; they are kept as they were.", true)
+                : nil,
+        ].compactMap { $0 }
+        if !notes.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(notes, id: \.1) { symbol, text, isProblem in
+                    Label(text, systemImage: symbol)
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(isProblem ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+                        .lineLimit(2)
+                }
+            }
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .archivePanel()
         }
     }
 }

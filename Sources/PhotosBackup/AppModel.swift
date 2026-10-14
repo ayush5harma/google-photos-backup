@@ -256,10 +256,11 @@ final class AppModel {
         try? FileManager.default.removeItem(at: paths.staging)
         hasAuthData = Keychain.load() != nil
         if hasAuthData { account = .connected(email: nil) }
-        // 0.1.0 saved settings only once one was changed, so a missing blob
-        // does not mean a fresh install: someone signed in or with a backup
-        // history is set up, and the guide would hold their backups.
-        if !settings.onboardingCompleted, hasAuthData || !state.uploaded.isEmpty || !state.selectedAlbumIDs.isEmpty {
+        // 2026-10-15: Version 0.1.0 saved settings only after a change. An
+        // existing account or backup state without that blob is an upgrade,
+        // so the welcome guide must not stop its automatic runs.
+        if AppEnvironment.defaults.data(forKey: "settings") == nil,
+           hasAuthData || !state.uploaded.isEmpty || !state.selectedAlbumIDs.isEmpty {
             settings.onboardingCompleted = true
         }
     }

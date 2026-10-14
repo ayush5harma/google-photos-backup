@@ -73,7 +73,9 @@ public enum AppleTime {
 
     public static func date(_ raw: Int64?) -> Date? {
         guard let raw, raw != 0 else { return nil }
-        let seconds = abs(raw) >= nanosecondThreshold ? Double(raw) / 1_000_000_000 : Double(raw)
+        // magnitude, not abs: abs(Int64.min) traps, and one damaged date
+        // must not take the app down.
+        let seconds = raw.magnitude >= UInt64(nanosecondThreshold) ? Double(raw) / 1_000_000_000 : Double(raw)
         return Date(timeIntervalSinceReferenceDate: seconds)
     }
 }

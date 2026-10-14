@@ -111,7 +111,11 @@ enum E2EHooks {
         }
         guard let data = try? JSONSerialization.data(withJSONObject: object),
               let settings = try? JSONDecoder().decode(BackupSettings.self, from: data) else { return }
+        let archiveWasOn = model.settings.messagesArchive
         model.settings = settings
+        // Turning the archive off must stop a run in progress, as the switch
+        // does; turning it on stays explicit here (debug/archive starts it).
+        if archiveWasOn, !settings.messagesArchive { model.archive.turnOff() }
     }
 
     @MainActor

@@ -29,6 +29,10 @@ public struct ArchivedMessage: Codable, Equatable, Identifiable, Sendable {
     public var app: String?
     /// The send effect in words ("Slam", "Confetti").
     public var effect: String?
+    /// The text as first archived, kept when the message was edited later.
+    public var previousText: String?
+    /// The text archived before the sender unsent the message.
+    public var unsentText: String?
 
     public init(id: String, rowID: Int64, date: Date?, isFromMe: Bool, sender: String?, senderName: String, service: String?,
                 text: String, subject: String? = nil, attachments: [ArchivedAttachment] = [], reactions: [ArchivedReaction] = [],
@@ -54,6 +58,83 @@ public struct ArchivedMessage: Codable, Equatable, Identifiable, Sendable {
     }
 
     public var isEvent: Bool { event != nil }
+}
+
+/// Every field but the identity reads with a default, so a messages.json
+/// written before a field existed still loads: an archive that cannot read
+/// its own transcript would otherwise lose the messages it keeps.
+extension ArchivedMessage {
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        rowID = try values.value(.rowID, default: 0)
+        date = try values.decodeIfPresent(Date.self, forKey: .date)
+        isFromMe = try values.value(.isFromMe, default: false)
+        sender = try values.decodeIfPresent(String.self, forKey: .sender)
+        senderName = try values.value(.senderName, default: isFromMe ? "You" : (sender ?? "Unknown"))
+        service = try values.decodeIfPresent(String.self, forKey: .service)
+        text = try values.value(.text, default: "")
+        subject = try values.decodeIfPresent(String.self, forKey: .subject)
+        attachments = try values.value(.attachments, default: [])
+        reactions = try values.value(.reactions, default: [])
+        replyTo = try values.decodeIfPresent(String.self, forKey: .replyTo)
+        edited = try values.value(.edited, default: false)
+        unsent = try values.value(.unsent, default: false)
+        event = try values.decodeIfPresent(String.self, forKey: .event)
+        app = try values.decodeIfPresent(String.self, forKey: .app)
+        effect = try values.decodeIfPresent(String.self, forKey: .effect)
+        previousText = try values.decodeIfPresent(String.self, forKey: .previousText)
+        unsentText = try values.decodeIfPresent(String.self, forKey: .unsentText)
+    }
+}
+
+extension ArchivedAttachment {
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(String.self, forKey: .id)
+        name = try values.value(.name, default: "Attachment")
+        mimeType = try values.decodeIfPresent(String.self, forKey: .mimeType)
+        uti = try values.decodeIfPresent(String.self, forKey: .uti)
+        bytes = try values.value(.bytes, default: 0)
+        isSticker = try values.value(.isSticker, default: false)
+        file = try values.decodeIfPresent(String.self, forKey: .file)
+        status = try values.value(.status, default: file == nil ? .missing : .archived)
+    }
+}
+
+extension ArchivedAttachment.Status {
+    /// A status a later version added reads as its nearest meaning here.
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = Self(rawValue: raw) ?? .missing
+    }
+}
+
+extension ArchivedReaction {
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try values.value(.kind, default: "emoji")
+        emoji = try values.value(.emoji, default: Tapback.emoji(for: kind, custom: nil))
+        sender = try values.decodeIfPresent(String.self, forKey: .sender)
+        isFromMe = try values.value(.isFromMe, default: false)
+        senderName = try values.value(.senderName, default: isFromMe ? "You" : (sender ?? "Someone"))
+        date = try values.decodeIfPresent(Date.self, forKey: .date)
+    }
+}
+
+extension ConversationTranscript {
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        version = try values.value(.version, default: 1)
+        conversation = try values.decode(ArchivedConversation.self, forKey: .conversation)
+        messages = try values.value(.messages, default: [])
+    }
+}
+
+extension KeyedDecodingContainer {
+    func value<T: Decodable>(_ key: Key, default fallback: @autoclosure () -> T) throws -> T {
+        try decodeIfPresent(T.self, forKey: key) ?? fallback()
+    }
 }
 
 public struct ArchivedAttachment: Codable, Equatable, Identifiable, Sendable {
@@ -91,6 +172,16 @@ public struct ArchivedAttachment: Codable, Equatable, Identifiable, Sendable {
     }
 
     public enum Kind: Sendable { case image, video, audio, other }
+
+    static let pageExtensions: Set<String> = ["html", "htm", "xhtml", "shtml", "svg", "svgz", "xml", "xsl", "webarchive", "mht", "mhtml"]
+
+    /// A file a browser would open as a document that can run script.
+    public var opensAsPage: Bool {
+        let type = (mimeType ?? "").lowercased()
+        if type.contains("html") || type.contains("svg") || type.contains("xml") { return true }
+        let extensions = [name, file ?? ""].map { ($0 as NSString).pathExtension.lowercased() }
+        return extensions.contains { Self.pageExtensions.contains($0) }
+    }
 
     public var kind: Kind {
         let type = (mimeType ?? "").lowercased()

@@ -142,6 +142,10 @@ extension ArchiveHTML {
     .flag + .flag::before, .msg:hover .meta time + .flag::before { content: " \\00B7  "; font-weight: 400; }
     .meta:not(:has(.flag)) { margin: 0; }
     .msg:hover .meta:not(:has(.flag)) { margin: 3px 10px 0; }
+    .history { font-size: 12px; color: var(--secondary); margin: 2px 10px 0; max-width: 100%; }
+    .history summary { cursor: pointer; }
+    .history p { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .event .history { text-align: center; }
     @media (max-width: 560px) { .msg { max-width: 86%; } }
     @media print { .topbar { position: static; } .meta time { display: inline; } }
     """

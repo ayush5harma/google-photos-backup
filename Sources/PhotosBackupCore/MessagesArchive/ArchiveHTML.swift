@@ -106,7 +106,7 @@ struct ArchiveHTML {
             html += "<li><a href=\"\(href)\">\(avatar(conversation))<div class=\"info\"><div class=\"line\"><strong>\(Self.escape(conversation.title))</strong>\(date)</div>"
             html += "<div class=\"sub\"><span>\(Self.escape(people))</span><span class=\"count\">\(count(conversation.messageCount, "message"))</span></div></div></a></li>\n"
         }
-        html += "</ul>\n<footer>Kept on this Mac by Photos Backup. Nothing here leaves it.</footer>\n</body>\n</html>\n"
+        html += "</ul>\n<footer>Written by Photos Backup from Messages on this Mac. Photos Backup never uploads it.</footer>\n</body>\n</html>\n"
         return html
     }
 
@@ -156,7 +156,10 @@ struct ArchiveHTML {
             return "<div class=\"event\" id=\"\(anchor)\"><span>\(Self.escape(event))</span>\(time)</div>\n"
         }
         if message.unsent {
-            return "<div class=\"event unsent\" id=\"\(anchor)\"><span>\(Self.escape(message.senderName)) unsent a message.</span>\(time)</div>\n"
+            let archived = message.unsentText.map {
+                "<details class=\"history\"><summary>Archived before it was unsent</summary><p>\(linkified($0))</p></details>"
+            } ?? ""
+            return "<div class=\"event unsent\" id=\"\(anchor)\"><span>\(Self.escape(message.senderName)) unsent a message.</span>\(time)\(archived)</div>\n"
         }
         let continues = previous.map { previous in
             !previous.isEvent && !previous.unsent && previous.isFromMe == message.isFromMe && previous.sender == message.sender
@@ -200,6 +203,9 @@ struct ArchiveHTML {
         if message.edited { meta += "<span class=\"flag\">Edited</span>" }
         if let effect = message.effect { meta += "<span class=\"flag\">Sent with \(Self.escape(effect))</span>" }
         html += "<div class=\"meta\">\(meta)</div>"
+        if let previous = message.previousText {
+            html += "<details class=\"history\"><summary>Original</summary><p>\(linkified(previous))</p></details>"
+        }
         return html + "</div>\n"
     }
 
@@ -223,16 +229,23 @@ struct ArchiveHTML {
             return "<span class=\"chip off\"><span class=\"name\">\(name)</span><span class=\"why\">\(reason)</span></span>"
         }
         let source = Self.escape(Self.percentEncoded(file))
+        // An HTML or SVG file anyone sent would open as a page of its own,
+        // outside this page's no-script policy: it gets no link.
+        let linkable = !attachment.opensAsPage
         switch attachment.kind {
         case .image:
             let style = attachment.isSticker ? "media sticker" : "media"
-            return "<a class=\"\(style)\" href=\"\(source)\"><img src=\"\(source)\" alt=\"\(name)\" loading=\"lazy\"></a>"
+            let image = "<img src=\"\(source)\" alt=\"\(name)\" loading=\"lazy\">"
+            return linkable ? "<a class=\"\(style)\" href=\"\(source)\">\(image)</a>" : "<span class=\"\(style)\">\(image)</span>"
         case .video:
             return "<video class=\"media\" controls preload=\"metadata\" src=\"\(source)\" title=\"\(name)\"></video>"
         case .audio:
             return "<div class=\"bubble audio\"><audio controls preload=\"none\" src=\"\(source)\" title=\"\(name)\"></audio></div>"
         case .other:
             let size = attachment.bytes > 0 ? "<span class=\"why\">\(Self.escape(ByteCountFormatter.string(fromByteCount: attachment.bytes, countStyle: .file)))</span>" : ""
+            guard linkable else {
+                return "<span class=\"chip\"><span class=\"name\">\(name)</span><span class=\"why\">In the conversation\u{2019}s Attachments folder</span></span>"
+            }
             return "<a class=\"chip\" href=\"\(source)\"><span class=\"name\">\(name)</span>\(size)</a>"
         }
     }

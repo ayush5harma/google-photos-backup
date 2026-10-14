@@ -16,8 +16,10 @@ enum ArchiveFiles {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true, attributes: [.posixPermissions: directoryMode])
     }
 
+    static let partialSuffix = ".partial"
+
     static func write(_ data: Data, to url: URL) throws {
-        let temporary = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString).partial")
+        let temporary = url.deletingLastPathComponent().appendingPathComponent(".\(url.lastPathComponent).\(UUID().uuidString)\(partialSuffix)")
         guard FileManager.default.createFile(atPath: temporary.path, contents: data, attributes: [.posixPermissions: fileMode]) else {
             throw CocoaError(.fileWriteUnknown, userInfo: [NSFilePathErrorKey: url.path])
         }
@@ -35,6 +37,15 @@ enum ArchiveFiles {
         if let existing = try? Data(contentsOf: url), existing == data { return false }
         try write(data, to: url)
         return true
+    }
+
+    /// Half-written files (".name.<uuid>.partial") a killed run left behind.
+    /// Called only while holding the folder's run lock.
+    static func removePartials(in folder: URL) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        for name in names where name.hasPrefix(".") && name.hasSuffix(partialSuffix) {
+            try? FileManager.default.removeItem(at: folder.appendingPathComponent(name))
+        }
     }
 
     static func setPrivate(_ url: URL) throws {
@@ -89,4 +100,34 @@ enum ArchiveFiles {
         let stem = (cleaned as NSString).deletingPathExtension
         return String(stem.prefix(70)) + (ext.isEmpty || ext.count > 8 ? "" : "." + ext)
     }
+}
+
+/// One archive run per folder at a time, across the app and any second copy
+/// of it: an flock on a file in the temporary folder named after the archive
+/// folder. Kept out of the archive itself, which may be in a synced folder
+/// where locks do not hold. A file system without flock runs unlocked.
+final class ArchiveRunLock {
+    private var descriptor: Int32
+
+    init(folder: URL, in temporaryDirectory: URL) throws {
+        let key = ArchiveFiles.hash(folder.standardizedFileURL.resolvingSymlinksInPath().path).prefix(16)
+        let path = temporaryDirectory.appendingPathComponent("photos-backup-archive-lock-\(key)").path
+        descriptor = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
+        guard descriptor >= 0 else { return }
+        if flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+            let code = errno
+            close(descriptor)
+            descriptor = -1
+            if code == EWOULDBLOCK { throw MessagesArchiveError.alreadyRunning }
+        }
+    }
+
+    func release() {
+        guard descriptor >= 0 else { return }
+        flock(descriptor, LOCK_UN)
+        close(descriptor)
+        descriptor = -1
+    }
+
+    deinit { release() }
 }

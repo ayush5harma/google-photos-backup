@@ -27,7 +27,10 @@ struct MessagesSettingsTab: View {
             }
 
             Section {
-                Toggle("Keep an archive of my messages", isOn: $model.settings.messagesArchive)
+                // Through the controller: off cancels a run in progress, on
+                // starts the first one.
+                Toggle("Keep an archive of my messages", isOn: Binding(get: { model.settings.messagesArchive },
+                                                                       set: { $0 ? archive.turnOn() : archive.turnOff() }))
                 Group {
                     LabeledContent("Folder") {
                         HStack(spacing: 8) {
@@ -46,8 +49,16 @@ struct MessagesSettingsTab: View {
                                display: { $0 == 0 ? "None" : $0.formatted() })
                 }
                 .disabled(!model.settings.messagesArchive)
+                if model.settings.messagesArchive, let note = archive.syncNote {
+                    Label(note, systemImage: "icloud")
+                        .foregroundStyle(.secondary)
+                }
                 LabeledContent("Last archived") {
                     archiveStatus
+                }
+                if let problem = archive.overview?.snapshotProblem {
+                    Label(problem.prefix(1).uppercased() + problem.dropFirst() + ".", systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
                 }
                 HStack {
                     if archive.isRunning {
@@ -64,7 +75,7 @@ struct MessagesSettingsTab: View {
             } header: {
                 Text("Messages archive")
             } footer: {
-                FormNote("A readable copy of every conversation, with reactions, replies and attachments, kept up to date in a folder on this Mac. Nothing in it leaves your Mac. Database copies are dated snapshots of Messages' own database, for a full restore.")
+                FormNote("A readable copy of every conversation, with reactions, replies and attachments, kept up to date in a folder you choose. Photos Backup never uploads it. Database copies are dated snapshots of Messages' own database, for a full restore.")
             }
         }
         .settingsForm(height: 700)

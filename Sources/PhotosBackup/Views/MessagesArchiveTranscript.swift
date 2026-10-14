@@ -125,7 +125,17 @@ struct BubbleRow: View {
         if let event = message.event {
             note(event)
         } else if message.unsent {
-            note("\(message.senderName) unsent a message.")
+            VStack(spacing: 2) {
+                note("\(message.senderName) unsent a message.")
+                if let archived = message.unsentText {
+                    DisclosureGroup("Archived before it was unsent") {
+                        Text(archived).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: 320)
+                }
+            }
         } else {
             HStack(alignment: .bottom, spacing: 0) {
                 if message.isFromMe { Spacer(minLength: 56) }
@@ -141,6 +151,16 @@ struct BubbleRow: View {
                     let flags = [message.edited ? "Edited" : nil, message.effect.map { "Sent with \($0)" }].compactMap { $0 }
                     if !flags.isEmpty {
                         Text(flags.joined(separator: " \u{B7} ")).font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 10)
+                            .help(message.previousText.map { "Originally: \($0)" } ?? "")
+                    }
+                    if let previous = message.previousText {
+                        DisclosureGroup("Original") {
+                            Text(previous).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: 280)
+                        .padding(.horizontal, 10)
                     }
                 }
                 if !message.isFromMe { Spacer(minLength: 56) }
