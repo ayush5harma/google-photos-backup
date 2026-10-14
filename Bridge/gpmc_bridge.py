@@ -137,7 +137,8 @@ class FailureLog(logging.Handler):
         match = _FAILURE_LINE.match(record.getMessage())
         if match:
             with self._lock:
-                self.reasons[match["path"]] = match["reason"]
+                # 2026-10-15: gpmc logs native Windows separators but returns POSIX result keys.
+                self.reasons[Path(match["path"]).absolute().as_posix()] = match["reason"]
 
 
 def _vendored_site_packages() -> None:

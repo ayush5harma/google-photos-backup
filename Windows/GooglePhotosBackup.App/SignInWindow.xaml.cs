@@ -54,7 +54,7 @@ public sealed partial class SignInWindow : Window
         try
         {
             // 2026-10-15: A unique WebView2 profile keeps Google cookies out of the app's normal browser state.
-            var environment = await CoreWebView2Environment.CreateAsync(userDataFolder: _profile);
+            var environment = await CoreWebView2Environment.CreateWithOptionsAsync(null, _profile, null);
             await Browser.EnsureCoreWebView2Async(environment);
             Browser.Source = new Uri(GoogleSignIn.EmbeddedSetupUrl);
             _cookieTimer.Start();
