@@ -27,7 +27,7 @@ struct MessagesSettingsTab: View {
             }
 
             Section {
-                // Through the controller: off cancels a run in progress, on
+                // 2026-10-15: Through the controller: off cancels a run in progress, on
                 // starts the first one.
                 Toggle("Keep an archive of my messages", isOn: Binding(get: { model.settings.messagesArchive },
                                                                        set: { $0 ? archive.turnOn() : archive.turnOff() }))

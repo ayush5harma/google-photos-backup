@@ -6,7 +6,7 @@ import Foundation
 /// ~/Documents in place. The archive is private message text, so the app
 /// says plainly when it is stored in a cloud as well.
 public enum ArchiveLocation {
-    /// The default archive folder: in the home folder, visible in Finder and
+    /// 2026-10-15: Keep the default in the home folder, visible in Finder and
     /// outside Documents, which iCloud Desktop & Documents (or a symlink, as
     /// on the developer's Mac into Google Drive) would sync with every
     /// message in it. A DEBUG sandbox run keeps it inside the sandbox.
@@ -15,12 +15,12 @@ public enum ArchiveLocation {
         return home.appendingPathComponent(MessagesArchiver.defaultFolderName, isDirectory: true)
     }
 
-    /// The default before 2026-10-15.
+    /// 2026-10-15: Retain the earlier default when it contains an archive.
     public static func previousDefaultFolder(home: URL) -> URL {
         home.appendingPathComponent("Documents/\(MessagesArchiver.defaultFolderName)", isDirectory: true)
     }
 
-    /// The folder to pin in settings so an archive already at the previous
+    /// 2026-10-15: Pin the folder in settings so an archive at the previous
     /// default keeps being used instead of moving silently; nil when there is
     /// nothing to pin.
     public static func folderToKeep(setting: String?, home: URL, sandbox: URL?) -> URL? {
@@ -29,7 +29,6 @@ public enum ArchiveLocation {
         return FileManager.default.fileExists(atPath: old.appendingPathComponent(ArchiveManifest.fileName).path) ? old : nil
     }
 
-    /// The timeline's words for what started an archive run.
     public static func describe(_ trigger: RunTrigger) -> String {
         switch trigger {
         case .manual, .retry: "Archive Now"

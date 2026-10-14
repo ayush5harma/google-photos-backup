@@ -271,7 +271,7 @@ private struct ArchiveHeader: View {
     }
 }
 
-/// Where the archive is stored when that is more than this Mac, and what
+/// 2026-10-15: Where the archive is stored when that is more than this Mac, and what
 /// the last run could not do. Calm, and only when there is something to say.
 private struct ArchiveNotes: View {
     @Environment(AppModel.self) private var model
