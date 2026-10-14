@@ -31,7 +31,12 @@ def verify(app, architecture):
             arches = output("lipo", "-archs", str(path)).split()
             assert architecture in arches, f"Wrong architecture: {path}: {arches}"
             commands = output("otool", "-arch", architecture, "-l", str(path))
-            versions = re.findall(r"^\s*(?:minos|version)\s+(\d+(?:\.\d+)+)\s*$", commands, re.MULTILINE)
+            versions = []
+            for block in re.split(r"Load command \d+", commands):
+                if "cmd LC_BUILD_VERSION" in block:
+                    versions += re.findall(r"^\s*minos\s+(\d+(?:\.\d+)+)\s*$", block, re.MULTILINE)
+                elif "cmd LC_VERSION_MIN_MACOSX" in block:
+                    versions += re.findall(r"^\s*version\s+(\d+(?:\.\d+)+)\s*$", block, re.MULTILINE)
             assert versions, f"No deployment target: {path}"
             assert all(tuple(map(int, v.split('.'))) <= (14, 0, 0) for v in versions), f"Requires newer macOS: {path}: {versions}"
             binaries.append(path)
