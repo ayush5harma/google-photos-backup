@@ -78,10 +78,16 @@ final class AppRouter {
 
     func openMain(section: AppSection? = nil) {
         if let section { AppEnvironment.defaults.set(section.rawValue, forKey: "section") }
-        if let window = mainWindow {
+        // A closed SwiftUI window can linger in NSApp.windows; only a shown or
+        // minimised one is brought forward, anything else goes through
+        // SwiftUI so the scene is rebuilt properly.
+        if let window = mainWindow, window.isVisible || window.isMiniaturized {
+            window.deminiaturize(nil)
             window.makeKeyAndOrderFront(nil)
+        } else if let openWindowAction {
+            openWindowAction(id: "main")
         } else {
-            openWindowAction?(id: "main")
+            mainWindow?.makeKeyAndOrderFront(nil)
         }
         // A menu-bar-only app is never frontmost by itself.
         NSApp.activate()

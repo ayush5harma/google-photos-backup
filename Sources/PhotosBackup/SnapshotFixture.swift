@@ -155,6 +155,8 @@ enum SnapshotFixture {
     }
 
     static func apply(_ scenario: Scenario, to model: AppModel) {
+        // A stray key press while a fixture window is key can flip a switch.
+        model.settings.automatic = true
         let account: AccountStatus = scenario == .signedOut ? .missing : .connected(email: accountEmail)
         model.applyFixture(albums: albums, account: account, runtime: "gpmc 0.9.0 on Python 3.13.15",
                            messages: .ready(found: 0, skipped: 12, partial: false))
