@@ -116,6 +116,7 @@ final class BackupEngine {
     @ObservationIgnored private var retryRequested = false
     @ObservationIgnored private var sleepActivity: NSObjectProtocol?
     @ObservationIgnored private var lastLoggedFailure: String?
+    @ObservationIgnored private let redactor = Redactor()
 
     private static let activityLimit = 2000
     /// A failure's first line, this long at most, is the row's label; the
@@ -434,7 +435,8 @@ final class BackupEngine {
         } else if phase == .paused {
             record.outcome = .paused
         } else if halted {
-            record.outcome = .failed(lastError ?? "The run ended early.")
+            // history.json is not the report: redact before it is stored.
+            record.outcome = .failed(redactor.redact(lastError ?? "The run ended early."))
         } else {
             record.outcome = .completed
         }
@@ -628,6 +630,7 @@ final class BackupEngine {
             var answered = Set<String>()
             var failed: [(id: String, message: String, retryable: Bool?)] = []
             var fatal: (FatalKind, String)?
+            var albumLimited = false
             let request = BridgeRequest.upload(auth, items: pending.compactMap { byID[$0]?.bridgeItem }, quality: settings.quality,
                                                threads: settings.threads, album: target)
             let exit: Int32
@@ -646,9 +649,17 @@ final class BackupEngine {
                     case let .album(googleID, _):
                         if let album { self.model.state.recordAlbum(album.id, googleAlbumID: googleID, added: confirmed) }
                     case let .albumFailed(message):
-                        if let album {
+                        guard let album else { break }
+                        if FailureClassifier.classify(message: message, bridgeRetryable: nil) == .rateLimited {
+                            // Google refused before doing anything: hold, and
+                            // the next pass adds these items with an album
+                            // step that waits for the hold (with its cap).
+                            albumLimited = true
+                        } else {
+                            // The title stays out: it lands in the timeline
+                            // and the shareable report.
                             self.failedAlbums.insert(album.id)
-                            self.lastError = "Backed up, but not added to the album \u{201C}\(album.title)\u{201D}: \(message)"
+                            self.lastError = "Backed up, but not added to a Google Photos album: \(message)"
                         }
                     case let .fatal(kind, message):
                         fatal = (kind, message)
@@ -667,7 +678,7 @@ final class BackupEngine {
             if !confirmed.isEmpty { progressed = true }
 
             var next: [String] = []
-            var limited = false
+            var limited = albumLimited
             for failure in failed {
                 let kind = FailureClassifier.classify(message: failure.message, bridgeRetryable: failure.retryable)
                 limited = limited || kind == .rateLimited
@@ -841,7 +852,7 @@ final class BackupEngine {
                 return .halt
             default:
                 failedAlbums.insert(albumID)
-                lastError = "Could not add photos to the album \u{201C}\(albumTitle)\u{201D}: \(message)"
+                lastError = "Could not add photos to a Google Photos album: \(message)"
                 model.log(.photos, lastError ?? message, problem: true)
                 return added ? .progressed : .nothing
             }
