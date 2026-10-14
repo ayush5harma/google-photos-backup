@@ -8,8 +8,9 @@ readable archive of your Messages on this Mac. A menu bar panel keeps backups
 visible and running after the window is closed.
 
 The uploading is done by [gpmc](https://github.com/xob0t/gpmc) (xob0t, MIT),
-a client for Google Photos' reverse-engineered mobile API. gpmc commits each
-upload as a Pixel XL, the service determines storage accounting, which may change.
+a client for Google Photos' reverse-engineered mobile API. The default upload
+mode uses a Pixel XL profile; Google determines storage accounting, which may
+change. The app also offers Storage saver and quota-counted original quality.
 
 <p align="center">
   <img src="menu-bar-panel-light.png" width="32%" alt="The menu bar panel: everything backed up, Photos and Messages archive status, Back Up Now">
@@ -20,9 +21,9 @@ upload as a Pixel XL, the service determines storage accounting, which may chang
 ## Read this first
 
 - **The API is unofficial.** gpmc talks to an API Google never published. Google
-  can change it or stop the free Pixel XL quota at any time. If that happens,
-  uploads fail or start using your storage. Photos on the Mac is never changed
-  either way: the app only reads it.
+  can change it or its Pixel XL storage behavior at any time. Uploads may fail
+  or count against your storage. Photos on the Mac is never changed either way:
+  the app only reads it.
 - **`auth_data` is a password.** It contains a long-lived Google master token
   (`Token=aas_et/...`). The app stores it in your login keychain and gives it
   to the uploader over a pipe, never in argv or the environment, where other
@@ -141,8 +142,15 @@ or [the official app on a rooted phone or emulator, via HTTP Toolkit](https://gi
 
 ## Build and run
 
-Needs macOS 14 or later on Apple silicon, Xcode (Swift 6 toolchain), and
-[uv](https://docs.astral.sh/uv/).
+For most users, download the macOS arm64 or x86_64 ZIP from the
+[latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest).
+The prebuilt app requires macOS 14 or later and needs no developer tools.
+Unzip it, move **Photos Backup.app** to Applications, and open it. Version 0.2.0
+is signed ad hoc and is not notarized. If macOS blocks it, use **System Settings
+> Privacy & Security > Open Anyway** after checking that you trust the download.
+
+Building from source requires macOS 14 or later, a Swift 6 toolchain (Xcode or
+Command Line Tools), and [uv](https://docs.astral.sh/uv/).
 
 ```sh
 scripts/build-app.sh             # -> build/Photos Backup.app
@@ -188,7 +196,7 @@ outside its range is clamped when settings load.
 
 | Setting (UI) | Key | Default | Range |
 |---|---|---|---|
-| Upload quality | `quality` | Original, free (`original`) | `original`, `saver` (Storage saver), `quota` (Original, counts against storage) |
+| Upload quality | `quality` | Pixel XL original quality (`original`) | `original`, `saver` (Storage saver), `quota` (Original, counts against storage). Google controls actual storage accounting. |
 | Parallel uploads | `threads` | 2 | 1 to 8 |
 | Items per batch | `batchSize` | 20 | 5 to 100, in steps of 5 |
 | Recreate my albums in Google Photos | `mirrorAlbums` | on | |
@@ -208,7 +216,7 @@ storage is guaranteed. The tab also shows the conditions right now, such as
 |---|---|---|---|
 | Back up photos and videos from Messages | `messagesMedia` | off | |
 | Keep an archive of my messages | `messagesArchive` | off | |
-| Folder | `archiveFolder` | `~/Documents/Messages Archive` (stored as none) | any folder |
+| Folder | `archiveFolder` | `~/Messages Archive` (stored as none) | An existing archive at the former `~/Documents/Messages Archive` default stays there. Choose a new folder in Settings to move future output. |
 | Archive automatically every day | `archiveAutomatically` | on | |
 | Include attachments | `archiveAttachments` | on | |
 | Show contact names | `archiveContactNames` | on | Names appear only after you allow Contacts access. |
@@ -270,8 +278,16 @@ Messages itself is never changed.
   contact never moves it.
 - Messages deleted from Messages stay in the archive. If the database goes
   backwards (a restored Mac), every conversation is rewritten.
+- On a later run, the current edited text replaces the displayed text, and an
+  unsend marks the message as unsent. The archive can also retain text it saw
+  before either change; it cannot recover earlier versions or unsent text it
+  never read.
 - Folders the archive creates are 0700 and every file is 0600; files are written
   whole and only when their bytes changed.
+- The default folder is outside Documents to avoid common cloud sync setups.
+  A folder you choose may sync to iCloud Drive or another provider; in that
+  case the archive is stored with that provider too. Settings shows a sync note
+  when the app detects one.
 - Attachments are copied only when they are on this Mac. Attachments that
   Messages keeps in iCloud only are counted as not on this Mac.
 - Message text is read from the attributed body when the plain text column is
@@ -353,8 +369,9 @@ shortcuts.
   until Messages has downloaded them to this Mac.
 - Google caps an album at 20,000 items. gpmc splits a larger new album into
   "Name 1", "Name 2" and so on, but the app only remembers the first.
-- Not notarized and Apple silicon only. An Intel build should work but has
-  not been tried.
+- Release builds are signed ad hoc and are not notarized. Version 0.2.0 has
+  separate Apple silicon and Intel macOS ZIPs. Windows WinUI 3 is in
+  development and has no release yet.
 - If the response to creating a Google album is lost (a timeout, a crash, or
   a quit that outlasts the 15-second stop), the album exists but the app never
   learned its id, and the next run creates another. gpmc cannot list albums,
@@ -366,14 +383,17 @@ shortcuts.
   next step is a long-lived uploader that reuses its token.
 - Messages deleted from the Mac stay in the archive, and there is no restore
   tool: the dated database copies are for a manual restore.
+- The in-app conversation preview reads a conversation's whole `messages.json`
+  before showing its last 200 messages. Very large conversations may use
+  substantial memory; the browser page remains available for the full archive.
 - A real sign-in and a real upload are not covered by automated tests; the
   end-to-end run uses a fake Google.
 
 ## Development
 
 ```sh
-swift test                                                # 166 tests (Swift Testing)
-python3 -B -m unittest discover -s Bridge/tests           # 38 bridge tests, against a fake gpmc
+swift test                                                # Swift Testing
+python3 -B -m unittest discover -s Bridge/tests           # bridge tests against a fake gpmc
 SNAPSHOT_FIXTURE=1 scripts/snapshots.sh /tmp/shots        # fixture screenshots
 scripts/e2e.py --app "build/Photos Backup.app"            # end-to-end run
 ```

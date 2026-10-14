@@ -17,9 +17,10 @@ What it does:
      byte leaves the Mac: the fake answers for Google.
 
 Two launch modes. "open" launches through LaunchServices, so the app is its
-own privacy client (Photos allowed, no Full Disk Access). "exec" starts the
+own privacy client (its current Photos and Full Disk Access grants). "exec" starts the
 binary from this shell, so it inherits the terminal's Full Disk Access; the
-Messages scenarios use it. The Messages archive it writes holds private
+Messages scenarios use it. "denied" additionally blocks reads of Library/Messages
+with sandbox-exec, independently of existing privacy grants. The Messages archive it writes holds private
 message text: it lands in <work>/archive and is deleted at the end.
 
 Output: <work>/report.md (pass/fail per check, timings) and exit status 0 only
@@ -38,6 +39,7 @@ import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlencode
 
 REPO = Path(__file__).resolve().parents[1]
 BUNDLE_ID = "io.github.ayush5harma.PhotosBackup"
@@ -117,7 +119,14 @@ class Harness:
         else:
             env = {**os.environ, **self.environment()}
             log_file = open(self.work / "exec.log", "ab")
-            self.process = subprocess.Popen([str(self.app / "Contents/MacOS/PhotosBackup")], env=env,
+            command = [str(self.app / "Contents/MacOS/PhotosBackup")]
+            if mode == "denied":
+                # 2026-10-15: LaunchServices inherited an existing FDA grant;
+                # enforce the denial rather than assuming the owner lacks it.
+                messages = str(Path.home() / "Library/Messages")
+                profile = f"(version 1)(allow default)(deny file-read* (subpath {json.dumps(messages)}))"
+                command = ["/usr/bin/sandbox-exec", "-p", profile, *command]
+            self.process = subprocess.Popen(command, env=env,
                                             stdout=log_file, stderr=subprocess.STDOUT)
         self.wait("the app answers", lambda s: s.get("pid") is not None, timeout=60, poll=1.5)
 
@@ -126,7 +135,7 @@ class Harness:
         # sandboxed copy reads. A link through LaunchServices starts the app
         # when no copy is running, without the sandbox (it happened once,
         # 2026-10-14): public links are sent that way only to a running copy.
-        if path.startswith("debug/") or self.mode == "exec":
+        if path.startswith("debug/") or self.mode in ("exec", "denied"):
             inbox = self.sandbox / "inbox"
             inbox.mkdir(exist_ok=True)
             self.sent += 1
@@ -173,7 +182,7 @@ class Harness:
                            f"wait={state.get('waitReason')} error={state.get('lastError')}")
 
     def settings(self, **values: Any) -> None:
-        query = "&".join(f"{key}={json.dumps(value)}" for key, value in values.items())
+        query = urlencode({key: json.dumps(value) for key, value in values.items()})
         self.link(f"debug/settings?{query}", attempts=5)
         time.sleep(0.8)
 
@@ -471,13 +480,17 @@ def s_shell(h: Harness) -> None:
 
 
 def s_messages_without_access(h: Harness) -> None:
-    h.launch("open")
+    h.launch("denied")
+    h.settings(automatic=False)
+    if not h.state()["hasAuthData"]:
+        h.link(f"debug/connect?auth={FAKE_AUTH.replace('&', '%26').replace('=', '%3D')}")
+        h.wait("the fake account to connect", lambda s: s["hasAuthData"], timeout=60)
     h.settings(messagesArchive=True, archiveFolder=str(h.archive), archiveContactNames=False, messagesMedia=True)
     h.link("archive")
     s = h.wait("the archive to report missing access", lambda s: s["archiveStatus"] in ("needsFullDiskAccess",) or s["archiveStatus"].startswith("failed"), timeout=60, poll=1)
     h.check("the archive asks for Full Disk Access when it lacks it", s["archiveStatus"] == "needsFullDiskAccess", s["archiveStatus"])
     h.link("backup/messages-media")
-    s = h.wait("Messages media to report", lambda s: "scanning" not in s["messagesStatus"], timeout=60, poll=1)
+    s = h.wait("Messages media to report", lambda s: "Full Disk Access" in s["messagesStatus"], timeout=60, poll=1)
     h.check("Messages media says what it needs", "Full Disk Access" in s["messagesStatus"], s["messagesStatus"])
     h.settings(messagesArchive=False, messagesMedia=False)
 
@@ -570,6 +583,10 @@ def main() -> int:
             # overview) and the copy has the real bundle id: neither stays.
             for path in (harness.archive, harness.sandbox, harness.runtime):
                 shutil.rmtree(path, ignore_errors=True)
+            # 2026-10-15: The state snapshot also contains library names and
+            # archive summaries; keep only the deliberately redacted report.
+            harness.state_file.unlink(missing_ok=True)
+            (harness.work / "exec.log").unlink(missing_ok=True)
             subprocess.run([LSREGISTER, "-u", str(harness.app)], capture_output=True)
             shutil.rmtree(harness.app, ignore_errors=True)
             subprocess.run(["defaults", "delete", BUNDLE_ID + ".sandbox"], capture_output=True)

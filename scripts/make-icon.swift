@@ -1,13 +1,17 @@
-// Draws the app icon in the macOS 26 manner: a softly lit blue tile, two
-// photo cards stacked on it, and an upload arrow in a frosted disc. Run by
-// build-app.sh as `swift make-icon.swift <out.png>`; drawn in code so the
-// repository carries no binary artwork.
+// 2026-10-15: Photo cards and an infinity seal identify the unlimited-photo
+// workflow without borrowing Google's logo. Explicit bitmap sizing keeps the
+// release icon identical on Retina and headless CI renderers.
 import AppKit
 
 let size = 1024.0
 let out = CommandLine.arguments.dropFirst().first ?? "AppIcon.png"
-let image = NSImage(size: NSSize(width: size, height: size))
-image.lockFocus()
+guard let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int(size), pixelsHigh: Int(size),
+    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+    colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0),
+    let context = NSGraphicsContext(bitmapImageRep: bitmap) else { exit(1) }
+NSGraphicsContext.saveGraphicsState()
+NSGraphicsContext.current = context
+context.imageInterpolation = .high
 
 // macOS icons leave a margin around the tile (824 of 1024 points).
 let tile = NSRect(x: 100, y: 100, width: 824, height: 824)
@@ -26,19 +30,13 @@ NSGraphicsContext.restoreGraphicsState()
 
 NSGraphicsContext.saveGraphicsState()
 tilePath.addClip()
-NSGradient(colors: [NSColor(red: 0.36, green: 0.66, blue: 1.0, alpha: 1),
-                    NSColor(red: 0.13, green: 0.45, blue: 0.98, alpha: 1),
-                    NSColor(red: 0.05, green: 0.28, blue: 0.84, alpha: 1)],
+NSGradient(colors: [NSColor(red: 0.16, green: 0.72, blue: 0.88, alpha: 1),
+                    NSColor(red: 0.12, green: 0.40, blue: 0.82, alpha: 1),
+                    NSColor(red: 0.10, green: 0.19, blue: 0.53, alpha: 1)],
            atLocations: [0, 0.5, 1], colorSpace: .sRGB)!.draw(in: tile, angle: -90)
 // Light from above: a broad glow across the top of the tile.
 NSGradient(starting: NSColor.white.withAlphaComponent(0.16), ending: NSColor.white.withAlphaComponent(0))!
     .draw(fromCenter: NSPoint(x: tile.midX, y: tile.maxY + 80), radius: 0, toCenter: NSPoint(x: tile.midX, y: tile.maxY + 80), radius: 620, options: [])
-NSGraphicsContext.restoreGraphicsState()
-// The glass edge: a thin bright rim, stronger at the top.
-NSGraphicsContext.saveGraphicsState()
-tilePath.lineWidth = 6
-tilePath.addClip()
-NSGradient(starting: NSColor.white.withAlphaComponent(0.55), ending: NSColor.white.withAlphaComponent(0.08))!.draw(in: tile, angle: -90)
 NSGraphicsContext.restoreGraphicsState()
 let inner = NSBezierPath(roundedRect: tile.insetBy(dx: 3, dy: 3), xRadius: 182, yRadius: 182)
 inner.lineWidth = 6
@@ -96,10 +94,10 @@ func card(center: NSPoint, width: Double, height: Double, angle: Double, alpha: 
     NSGraphicsContext.restoreGraphicsState()
 }
 
-card(center: NSPoint(x: 492, y: 552), width: 500, height: 400, angle: 9, alpha: 0.55)
+card(center: NSPoint(x: 492, y: 552), width: 500, height: 400, angle: 11, alpha: 0.72)
 card(center: NSPoint(x: 512, y: 500), width: 520, height: 420, angle: -4, alpha: 1)
 
-// The upload badge: a frosted white disc with a blue arrow, lower right.
+// 2026-10-15: A broad infinity mark remains legible at Dock and 32-pixel sizes.
 let badge = NSRect(x: 618, y: 196, width: 236, height: 236)
 NSGraphicsContext.saveGraphicsState()
 let badgeShadow = NSShadow()
@@ -110,16 +108,16 @@ badgeShadow.set()
 NSColor.white.setFill()
 NSBezierPath(ovalIn: badge).fill()
 NSGraphicsContext.restoreGraphicsState()
-let config = NSImage.SymbolConfiguration(pointSize: 140, weight: .bold)
+let config = NSImage.SymbolConfiguration(pointSize: 140, weight: .semibold)
     .applying(NSImage.SymbolConfiguration(paletteColors: [NSColor(red: 0.10, green: 0.42, blue: 0.97, alpha: 1)]))
-if let arrow = NSImage(systemSymbolName: "arrow.up", accessibilityDescription: nil)?.withSymbolConfiguration(config) {
-    let fit = min(120 / arrow.size.width, 130 / arrow.size.height)
+if let arrow = NSImage(systemSymbolName: "infinity", accessibilityDescription: nil)?.withSymbolConfiguration(config) {
+    let fit = min(160 / arrow.size.width, 105 / arrow.size.height)
     let drawn = NSSize(width: arrow.size.width * fit, height: arrow.size.height * fit)
     arrow.draw(in: NSRect(x: badge.midX - drawn.width / 2, y: badge.midY - drawn.height / 2, width: drawn.width, height: drawn.height))
 }
 
-image.unlockFocus()
-guard let tiff = image.tiffRepresentation, let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else {
+NSGraphicsContext.restoreGraphicsState()
+guard let png = bitmap.representation(using: .png, properties: [:]) else {
     FileHandle.standardError.write(Data("could not render the icon\n".utf8))
     exit(1)
 }
