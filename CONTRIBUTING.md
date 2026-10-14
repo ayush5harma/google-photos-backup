@@ -7,7 +7,7 @@ Report vulnerabilities through [SECURITY.md](SECURITY.md).
 
 ## Development
 
-Use macOS 14+ and a Swift 6 toolchain. Building a complete app also requires
+Use macOS 14+ and Xcode 26 or later. Building a complete app also requires
 [uv](https://docs.astral.sh/uv/); the Python dependencies are pinned in
 `Bridge/requirements.txt`.
 

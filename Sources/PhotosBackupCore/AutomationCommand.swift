@@ -43,9 +43,10 @@ public enum AutomationCommand: Equatable, Sendable {
     /// followed exactly or not at all, never guessed at.
     public init?(url: URL) {
         guard url.scheme?.lowercased() == Self.scheme else { return nil }
-        // photosbackup://backup/photos puts "backup" in the host,
-        // photosbackup:backup/photos and photosbackup:///backup in the path.
-        let words = ([url.host ?? ""] + url.path.split(separator: "/").map(String.init))
+        // 2026-10-15: macOS 15 URL.path drops an opaque scheme path;
+        // URLComponents retains it so typed Shortcuts links work on both SDKs.
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+        let words = ([components.host ?? ""] + components.path.split(separator: "/").map(String.init))
             .map { $0.lowercased() }
             .filter { !$0.isEmpty }
         guard let verb = words.first else { return nil }

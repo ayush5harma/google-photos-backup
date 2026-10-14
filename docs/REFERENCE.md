@@ -149,7 +149,7 @@ Unzip it, move **Photos Backup.app** to Applications, and open it. Version 0.2.0
 is signed ad hoc and is not notarized. If macOS blocks it, use **System Settings
 > Privacy & Security > Open Anyway** after checking that you trust the download.
 
-Building from source requires macOS 14 or later, a Swift 6 toolchain (Xcode or
+Building from source requires macOS 14 or later, Xcode 26 or later (Xcode or
 Command Line Tools), and [uv](https://docs.astral.sh/uv/).
 
 ```sh

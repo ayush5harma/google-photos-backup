@@ -1,7 +1,7 @@
 # Security reports
 
 Report suspected vulnerabilities privately through
-[GitHub private vulnerability reporting](https://github.com/ayush5harma/photos-backup-mac/security/advisories/new).
+[GitHub private vulnerability reporting](https://github.com/ayush5harma/google-photos-backup/security/advisories/new).
 Do not post tokens, account credentials, private page content, photographs,
 Messages attachments, Messages archives, or unredacted logs in public issues.
 
