@@ -49,6 +49,18 @@ private let allOff = ConditionFlags(pauseOnExpensiveNetwork: false, pauseInLowDa
         #expect(ConditionsEvaluator.blocking(network: hotspot, power: drained, flags: flags) == .onBattery)
     }
 
+    @Test func onlyARunAPersonStartedGivesUpOnAMissingNetwork() {
+        let since = Date(timeIntervalSince1970: 1_000)
+        func givesUp(_ reason: WaitReason, person: Bool, after seconds: TimeInterval) -> Bool {
+            ConditionsEvaluator.givesUpWaiting(for: reason, startedByPerson: person, since: since, now: since.addingTimeInterval(seconds))
+        }
+        #expect(!givesUp(.offline, person: true, after: 119))
+        #expect(givesUp(.offline, person: true, after: 120))
+        #expect(!givesUp(.offline, person: false, after: 86_400))
+        #expect(!givesUp(.onBattery, person: true, after: 86_400))
+        #expect(!givesUp(.rateLimited(until: since), person: true, after: 86_400))
+    }
+
     @Test func summaryNamesTheLinkAndThePower() {
         #expect(ConditionsEvaluator.summary(network: NetworkConditions(), power: PowerConditions()) == "Wi-Fi, on power")
         #expect(ConditionsEvaluator.summary(network: NetworkConditions(online: false), power: PowerConditions(onBattery: true))
