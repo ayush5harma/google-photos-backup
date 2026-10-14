@@ -19,6 +19,10 @@ Scenario keys (all optional):
                                  these file names always fail with that text
   "flaky": {"IMG_4.JPG": {"times": 2, "error": "503" | "reset" | "timeout"}}
                                  these fail the first N attempts, then upload
+  "fail_first": N                the first N new files fail with "fail_message"
+                                 (default a 400), whatever their names
+  "flaky_first": {"times": N, "error": "503"}   the first N new files fail
+                                 retryably, whatever their names
   "album_error": "500 Server Error: ..."   album calls raise this
   "delay": 0.2                   seconds each file takes (to test Stop)
 
@@ -209,6 +213,13 @@ class Client:
             flaky = scenario.get("flaky", {}).get(filename)
             if flaky and _count(data, filename) <= flaky.get("times", 1):
                 raise _error(str(flaky.get("error", "503")), COMMIT_URL)
+            # By position rather than name, for runs over a real library whose
+            # file names the harness never sees.
+            if _count(data, "fail_first") <= scenario.get("fail_first", 0):
+                raise RuntimeError(scenario.get("fail_message", "400 Client Error: Bad Request for url: " + COMMIT_URL))
+            flaky_first = scenario.get("flaky_first", {})
+            if _count(data, "flaky_first") <= flaky_first.get("times", 0):
+                raise _error(str(flaky_first.get("error", "503")), COMMIT_URL)
 
         report("uploading", len(content) // 2)
         report("finalizing", len(content))

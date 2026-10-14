@@ -197,10 +197,14 @@ final class AppModel {
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var messagesScanGeneration = 0
 
-    private(set) var albums: [LibraryAlbum] = []
+    private(set) var albums: [LibraryAlbum] = [] { didSet { summaryCache = nil } }
     private(set) var albumsLoaded = false
     private(set) var photosStatus: PHAuthorizationStatus
-    var state: BackupState
+    var state: BackupState { didSet { summaryCache = nil } }
+    /// The summary walks every selected asset; the menu bar label and the
+    /// panel read it many times per progress tick, so it is kept until the
+    /// albums or the state change.
+    @ObservationIgnored private var summaryCache: BackupSummary?
     var stateError: String?
     var settings: BackupSettings { didSet { settings.save() } }
     private(set) var account: AccountStatus = .missing
@@ -244,7 +248,15 @@ final class AppModel {
 
     var authData: String? { Keychain.load() }
 
-    var summary: BackupSummary { BackupPlanner.summary(albums: albums.map(\.snapshot), state: state) }
+    var summary: BackupSummary {
+        // Read both first so a view that only ever hits the cache still
+        // observes the changes that invalidate it.
+        let albums = albums, state = state
+        if let summaryCache { return summaryCache }
+        let summary = BackupPlanner.summary(albums: albums.map(\.snapshot), state: state)
+        summaryCache = summary
+        return summary
+    }
 
     var visibleMessagesStatus: MessagesStatus { settings.messagesMedia ? messagesStatus : .off }
     var isMessagesScanning: Bool { messagesStatus == .scanning }
@@ -326,6 +338,10 @@ final class AppModel {
         #if DEBUG
         if Snapshots.isRequested { return }
         #endif
+        // Granting Photos access selects All Photos and signing in would
+        // start it; nothing runs by itself until the welcome guide (where
+        // the albums are chosen) is finished or skipped.
+        guard settings.onboardingCompleted else { return }
         if settings.messagesArchive, settings.archiveAutomatically { archive.runIfDue(trigger: trigger) }
         guard settings.automatic, hasAuthData, engine.phase == .idle else { return }
         // Automatic runs wait for the conditions; Back Up Now does not.

@@ -27,7 +27,7 @@ final class ConditionsMonitor {
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             let conditions = Self.conditions(of: path)
-            DispatchQueue.main.async { self?.update(network: conditions) }
+            DispatchQueue.main.async { self?.received(network: conditions) }
         }
         monitor.start(queue: DispatchQueue(label: "PhotosBackup.conditions", qos: .utility))
         pathMonitor = monitor
@@ -63,7 +63,46 @@ final class ConditionsMonitor {
                                       lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled))
     }
 
+    #if DEBUG
+    /// scripts/e2e.sh only (photosbackup://debug/conditions): pins the network
+    /// or power to a value until "real" hands it back to the monitors.
+    @ObservationIgnored private var pinnedNetwork: NetworkConditions?
+    @ObservationIgnored private var pinnedPower: PowerConditions?
+    @ObservationIgnored private var realNetwork = NetworkConditions()
+
+    func simulate(network: String?, power: String?) {
+        switch network {
+        case "online": pinnedNetwork = NetworkConditions()
+        case "offline": pinnedNetwork = NetworkConditions(online: false)
+        case "expensive": pinnedNetwork = NetworkConditions(expensive: true, interface: .other)
+        case "constrained": pinnedNetwork = NetworkConditions(constrained: true)
+        case "real": pinnedNetwork = nil
+        default: break
+        }
+        switch power {
+        case "ac": pinnedPower = PowerConditions()
+        case "battery": pinnedPower = PowerConditions(onBattery: true)
+        case "lowpower": pinnedPower = PowerConditions(onBattery: true, lowPowerMode: true)
+        case "real": pinnedPower = nil
+        default: break
+        }
+        update(network: pinnedNetwork ?? realNetwork)
+        if pinnedPower != nil { update(power: pinnedPower) } else { readPower() }
+    }
+    #endif
+
+    private func received(network: NetworkConditions) {
+        #if DEBUG
+        realNetwork = network
+        #endif
+        update(network: network)
+    }
+
     private func update(network: NetworkConditions? = nil, power: PowerConditions? = nil) {
+        #if DEBUG
+        let network = pinnedNetwork ?? network
+        let power = pinnedPower ?? power
+        #endif
         let newNetwork = network ?? self.network
         let newPower = power ?? self.power
         let newSummary = ConditionsEvaluator.summary(network: newNetwork, power: newPower)
