@@ -1,6 +1,6 @@
 # Contributing
 
-Start with a focused issue for substantial changes. Include your macOS version,
+Start with a focused issue for substantial changes. Include your operating system version,
 app commit, reproduction steps using sample media, and expected behavior. Never
 attach credentials, personal photos, Messages databases, or unredacted logs.
 Report vulnerabilities through [SECURITY.md](SECURITY.md).
@@ -21,6 +21,8 @@ scripts/build-app.sh --identity -
 The last command builds an ad-hoc-signed app under `build/`; it does not install
 it. Do not run an installer or a real backup merely to verify a documentation
 change. The automated tests use fixture data, not a real Google account.
+
+For the native Windows preview, see [Windows development](Windows/README.md#build-on-windows). Its core tests run on either platform; compiling and smoke-testing WinUI requires Windows.
 
 ## Test layers
 

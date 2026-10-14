@@ -26,6 +26,8 @@ public sealed partial class MainWindow : Window
     private bool _paused;
     private bool _loadingSettings;
     private bool _hasRunAttempt;
+    private int _runGeneration;
+    private Action<BackupProgress>? _progressSubscription;
 
     public MainWindow(bool smokeTest = false)
     {
@@ -65,7 +67,7 @@ public sealed partial class MainWindow : Window
         QualityBox.SelectedIndex = _preferences.Quality switch { "saver" => 1, "quota" => 2, _ => 0 };
         MirrorFoldersToggle.IsOn = _preferences.MirrorFolders;
         _loadingSettings = false;
-        Closed += (_, _) => _runCancellation?.Cancel();
+        Closed += (_, _) => { _runGeneration++; _runCancellation?.Cancel(); _signInWindow?.Close(); };
         RefreshControls();
     }
 
@@ -124,6 +126,7 @@ public sealed partial class MainWindow : Window
         }
         var started = DateTimeOffset.Now;
         _hasRunAttempt = true;
+        var generation = ++_runGeneration;
         _runCancellation = new CancellationTokenSource();
         _paused = false;
         BackupSummary? summary = null;
@@ -131,7 +134,8 @@ public sealed partial class MainWindow : Window
         {
             var bridge = CreateBridge();
             _coordinator = new BackupCoordinator(bridge, _store.StateDirectory);
-            _coordinator.ProgressChanged += ProgressChanged;
+            _progressSubscription = progress => ProgressChanged(progress, generation);
+            _coordinator.ProgressChanged += _progressSubscription;
             RefreshControls();
             StatusText.Text = "Preparing backup";
             var options = new BackupOptions([.. _folders], _preferences.Quality,
@@ -145,14 +149,17 @@ public sealed partial class MainWindow : Window
             StatusText.Text = "Backup canceled";
             ProgressText.Text = "Confirmed uploads remain in Google Photos.";
         }
-        catch (Exception error)
+        catch (Exception)
         {
             StatusText.Text = "Backup could not finish";
-            ShowNotice(error.Message, InfoBarSeverity.Error);
+            ShowNotice("Backup could not finish. Check folder access, the Google account, and the bundled uploader.", InfoBarSeverity.Error);
         }
         finally
         {
-            if (_coordinator is not null) _coordinator.ProgressChanged -= ProgressChanged;
+            _runGeneration++;
+            if (_coordinator is not null && _progressSubscription is not null)
+                _coordinator.ProgressChanged -= _progressSubscription;
+            _progressSubscription = null;
             _coordinator = null;
             _runCancellation.Dispose();
             _runCancellation = null;
@@ -160,17 +167,19 @@ public sealed partial class MainWindow : Window
             {
                 _history.Insert(0, new RunRecord(started, summary.Uploaded, summary.Existing, summary.Failed, summary.Canceled));
                 try { _store.SaveHistory(_history); }
-                catch (IOException) { ShowNotice("The backup completed, but its history could not be saved.", InfoBarSeverity.Warning); }
+                catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+                { ShowNotice("The backup completed, but its history could not be saved.", InfoBarSeverity.Warning); }
                 RefreshHistory();
             }
             RefreshControls();
         }
     }
 
-    private void ProgressChanged(BackupProgress progress)
+    private void ProgressChanged(BackupProgress progress, int generation)
     {
         DispatcherQueue.TryEnqueue(() =>
         {
+            if (generation != _runGeneration) return;
             StatusText.Text = progress.Phase;
             RunProgress.Value = progress.Total > 0 ? 100.0 * progress.Completed / progress.Total : 0;
             ProgressText.Text = progress.Total > 0
@@ -207,17 +216,24 @@ public sealed partial class MainWindow : Window
     private async void SignIn_Click(object sender, RoutedEventArgs args)
     {
         if (_runCancellation is not null || _connecting || _signInWindow is not null) return;
-        var window = new SignInWindow(async token =>
+        try
         {
-            using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
-            { Timeout = TimeSpan.FromSeconds(45) };
-            var credential = await GoogleSignIn.ExchangeAsync(token, http, CancellationToken.None);
-            await CheckAndSaveCredentialAsync(credential);
-        });
-        _signInWindow = window;
-        window.Closed += (_, _) => { _signInWindow = null; RefreshControls(); };
-        window.Activate();
-        RefreshControls();
+            var window = new SignInWindow(async token =>
+            {
+                using var http = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+                { Timeout = TimeSpan.FromSeconds(45) };
+                var credential = await GoogleSignIn.ExchangeAsync(token, http, CancellationToken.None);
+                await CheckAndSaveCredentialAsync(credential);
+            });
+            _signInWindow = window;
+            window.Closed += (_, _) => { _signInWindow = null; RefreshControls(); };
+            window.Activate();
+            RefreshControls();
+        }
+        catch (Exception)
+        {
+            ShowNotice("Google's sign-in window could not open. Use the advanced credential option in Settings.", InfoBarSeverity.Error);
+        }
     }
 
     private async void ConnectCredential_Click(object sender, RoutedEventArgs args)
@@ -231,7 +247,7 @@ public sealed partial class MainWindow : Window
             return;
         }
         try { await CheckAndSaveCredentialAsync(candidate); }
-        catch (Exception error) { ShowNotice(error.Message, InfoBarSeverity.Error); }
+        catch (Exception) { ShowNotice("The credential could not be checked. Verify it and your connection, then try again.", InfoBarSeverity.Error); }
     }
 
     private async Task CheckAndSaveCredentialAsync(string candidate)
@@ -268,7 +284,7 @@ public sealed partial class MainWindow : Window
             ShowNotice("Google Photos disconnected on this PC.", InfoBarSeverity.Informational);
             RefreshControls();
         }
-        catch (IOException)
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             ShowNotice("The account could not be disconnected. Try again.", InfoBarSeverity.Error);
         }
@@ -293,7 +309,8 @@ public sealed partial class MainWindow : Window
         if (_store is null) return;
         _preferences.Folders = [.. _folders];
         try { _store.SavePreferences(_preferences); }
-        catch (IOException) { ShowNotice("Settings could not be saved. Check disk space and try again.", InfoBarSeverity.Error); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+        { ShowNotice("Settings could not be saved. Check disk space and try again.", InfoBarSeverity.Error); }
     }
 
     private void RefreshHistory()
@@ -365,5 +382,19 @@ public sealed partial class MainWindow : Window
         encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied,
             (uint)bitmap.PixelWidth, (uint)bitmap.PixelHeight, 96, 96, pixels);
         await encoder.FlushAsync();
+    }
+
+    public Task WhenLoadedAsync()
+    {
+        if (Navigation.IsLoaded) return Task.CompletedTask;
+        var ready = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        RoutedEventHandler? handler = null;
+        handler = (_, _) =>
+        {
+            Navigation.Loaded -= handler;
+            ready.TrySetResult();
+        };
+        Navigation.Loaded += handler;
+        return ready.Task;
     }
 }

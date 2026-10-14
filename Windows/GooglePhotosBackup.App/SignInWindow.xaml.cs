@@ -22,14 +22,27 @@ public sealed partial class SignInWindow : Window
         InitializeComponent();
         AppWindow.Resize(new SizeInt32(840, 780));
         _cookieTimer.Tick += CheckCookie;
-        Closed += (_, _) =>
+        Closed += async (_, _) =>
         {
             _cookieTimer.Stop();
-            try { Browser.CoreWebView2?.CookieManager.DeleteAllCookies(); }
+            try
+            {
+                if (Browser.CoreWebView2 is { } core)
+                {
+                    core.CookieManager.DeleteAllCookies();
+                    await core.Profile.ClearBrowsingDataAsync();
+                }
+            }
             catch (Exception) { }
-            try { Directory.Delete(_profile, recursive: true); }
-            catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
+            try { Browser.Close(); }
+            catch (Exception) { }
+            // 2026-10-15: WebView2 releases profile files after its control closes, so retry cleanup briefly.
+            for (var attempt = 0; attempt < 5 && Directory.Exists(_profile); attempt++)
+            {
+                try { Directory.Delete(_profile, recursive: true); }
+                catch (IOException) { await Task.Delay(200); }
+                catch (UnauthorizedAccessException) { await Task.Delay(200); }
+            }
         };
         Browser.Loaded += (_, _) => _ = StartBrowserAsync();
     }
@@ -68,11 +81,11 @@ public sealed partial class SignInWindow : Window
                 Browser.CoreWebView2?.CookieManager.DeleteAllCookies();
                 Close();
             }
-            catch (Exception error)
+            catch (Exception)
             {
                 try { Browser.CoreWebView2?.CookieManager.DeleteAllCookies(); }
                 catch (Exception) { }
-                ShowError(error.Message + " Close this window and sign in again, or use the advanced credential option.");
+                ShowError("Google Photos did not accept this sign-in. Close this window and try again, or use the advanced credential option.");
             }
         }
         catch (Exception)

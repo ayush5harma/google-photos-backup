@@ -25,7 +25,8 @@ public partial class App : Application
                 var window = new MainWindow(smokeTest: true);
                 _window = window;
                 window.Activate();
-                await Task.Delay(350);
+                await window.WhenLoadedAsync();
+                await Task.Delay(100);
                 var tempRoot = Path.Combine(Path.GetTempPath(), "GooglePhotosBackupSmoke-" + Guid.NewGuid().ToString("N"));
                 bool encryptedCredentialRoundTrip;
                 try
