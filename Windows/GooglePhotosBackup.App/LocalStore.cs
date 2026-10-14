@@ -10,6 +10,7 @@ internal sealed class AppPreferences
     public string Quality { get; set; } = "original";
     public bool MirrorFolders { get; set; } = true;
     public int Threads { get; set; } = 2;
+    public string? ICloudAccount { get; set; }
 }
 
 internal sealed record RunRecord(DateTimeOffset Started, int Uploaded, int Existing, int Failed, bool Canceled);

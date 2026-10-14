@@ -30,6 +30,30 @@ Unzip the download, move **Photos Backup.app** to Applications, and open it. The
 
 Automatic backups are on by default after the welcome guide. They run when the library changes, at launch, after wake, and periodically. You can pause, stop, or retry failed items. The app reads Apple Photos and uploads copies; it never deletes media from your Mac or Google Photos. Edited photos can be uploaded again, so Google Photos may contain both versions.
 
+## iCloud Photos backup (source builds)
+
+The iCloud source is available in current source builds on macOS and Windows; it is not included in the older macOS v0.2.0 release. You do not need to be signed in to iCloud in macOS System Settings or have iCloud for Windows installed.
+
+1. Connect your destination Google account in the app.
+2. Open **iCloud Photos**, enter your Apple Account, and follow the sign-in prompts. Enter your password in the app and complete Apple's verification code prompt when requested.
+3. Once connected, start the iCloud backup. Keep the app open while it downloads originals and uploads them to Google Photos. Use the source's pause/resume controls to continue an interrupted transfer. iCloud backups are started manually; the existing automatic Photos Library schedule does not run this source.
+4. If the session expires, return to **iCloud Photos** and sign in again. A previous desktop iCloud or `icloudpd` sign-in does not guarantee that this app has a usable session.
+
+The sign-in flow supports Apple two-factor authentication. Legacy two-step verification accounts are not supported; the app explains this instead of repeatedly asking for a code.
+
+Direct iCloud access depends on Apple's web access being available. Accounts with Advanced Data Protection may not support this provider. The app does not change your account's protection settings. If web access is unavailable, use the macOS Photos Library source or download originals using Apple's tools and back up a local folder on Windows.
+
+Apple session material is stored in macOS Keychain or encrypted with Windows DPAPI. Passwords and verification codes are passed to the bundled helper through a pipe and are not saved by the form. The helper uses a private temporary cookie directory while running; a forced termination can leave it until the next helper launch cleans it up.
+
+This integration currently copies media and retains the iCloud originals. Automatic iCloud deletion is unavailable until the destination can be independently verified. Upload completion alone is not a safe basis for reclaiming iCloud storage. [Issue #7](https://github.com/ayush5harma/google-photos-backup/issues/7) tracks that remaining work.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/icloud-setup-dark.png">
+  <img src="docs/icloud-setup-light.png" alt="iCloud Photos setup with Apple Account sign-in and backup-only guidance, using synthetic data">
+</picture>
+
+The shared provider follows the transfer and resumability approach in [icloud-to-google-photos](https://github.com/ayush5harma/icloud-to-google-photos), using [iCloud Photos Downloader](https://github.com/icloud-photos-downloader/icloud_photos_downloader) for iCloud access and this app's existing Google uploader.
+
 ## A look at the app
 
 [![The menu bar panel](docs/menu-bar-panel-light.png)](docs/menu-bar-panel-light.png)

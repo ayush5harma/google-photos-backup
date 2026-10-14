@@ -4,7 +4,7 @@ import SwiftUI
 enum AppSection: String, CaseIterable, Identifiable {
     // Settings moved to the Settings window (Command-,); a stored "settings"
     // selection falls back to home.
-    case home, albums, messages, activity
+    case home, albums, icloud, messages, activity
 
     var id: String { rawValue }
 
@@ -12,6 +12,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .home: "Overview"
         case .albums: "Albums"
+        case .icloud: "iCloud Photos"
         case .messages: "Messages"
         case .activity: "Activity"
         }
@@ -21,6 +22,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .home: "square.grid.2x2"
         case .albums: "rectangle.stack"
+        case .icloud: "icloud"
         case .messages: "message"
         case .activity: "clock.arrow.circlepath"
         }
@@ -193,6 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard isBusy, !quitting else { return .terminateNow }
         quitting = true
         model.engine.stop()
+        model.iCloud.stopForQuit()
         if isSystemQuit {
             let deadline = Date().addingTimeInterval(Self.stopWait)
             while isBusy, Date() < deadline { RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.1)) }
@@ -210,7 +213,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var quitting = false
 
     /// A run is recording what Google confirmed, or the archive is writing.
-    private var isBusy: Bool { model.engine.isActive || model.archive.isRunning }
+    private var isBusy: Bool { model.engine.isActive || model.archive.isRunning || model.iCloud.isRunning }
 
     /// The quit Apple event carries a reason only when the system sent it
     /// (log out, restart, shut down); Command-Q and the Quit button have none.
@@ -223,6 +226,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         BridgeProcess.terminateAll()
+        model.iCloud.stopForQuit()
         // Items are recorded as they stream in but saved per batch; a quit
         // that outlasted the stop wait must not drop them.
         model.saveState()
@@ -277,6 +281,7 @@ struct RootView: View {
             switch section {
             case .home: HomeView(section: $section)
             case .albums: AlbumsView(section: $section)
+            case .icloud: ICloudSourceView()
             case .messages: MessagesView(section: $section)
             case .activity: ActivityView(section: $section)
             }

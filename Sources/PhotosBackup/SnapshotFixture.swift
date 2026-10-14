@@ -56,6 +56,7 @@ enum SnapshotFixture {
         settings.messagesMedia = true
         settings.messagesArchive = true
         model.settings = settings
+        model.iCloud.applyFixture(phase: .signedOut)
         recordRuns(model)
         let only = ProcessInfo.processInfo.environment["PHOTOS_BACKUP_SNAPSHOT_ONLY"].flatMap { $0.isEmpty ? nil : Set($0.split(separator: ",").map(String.init)) }
         func wanted(_ group: String) -> Bool { only?.contains(group) ?? true }
@@ -64,6 +65,16 @@ enum SnapshotFixture {
             NSApp.appearance = NSAppearance(named: appearance)
             if wanted("sections") {
                 apply(.backingUp, to: model)
+                // 2026-10-15: Sidebar captures draw inactive controls gray; a form-only render keeps the setup guidance legible without foreground activation.
+                model.iCloud.applyFixture(phase: .signedOut)
+                await render(ICloudSourceView().environment(model).environment(\.controlActiveState, .active),
+                             size: CGSize(width: 800, height: 760), appearance: appearance,
+                             to: output.appendingPathComponent("icloud-setup-\(name).png"), activateWindow: false)
+                model.iCloud.applyFixture(phase: .needs2FA, account: accountEmail)
+                await render(ICloudSourceView().environment(model).environment(\.controlActiveState, .active),
+                             size: CGSize(width: 800, height: 760), appearance: appearance,
+                             to: output.appendingPathComponent("icloud-verification-\(name).png"), activateWindow: false)
+                model.iCloud.applyFixture(phase: .signedOut)
                 for section in AppSection.allCases {
                     await captureMain(section: section, to: output.appendingPathComponent("section-\(section.rawValue)-\(name).png"))
                 }
@@ -311,7 +322,8 @@ enum SnapshotFixture {
     }
 
     /// Anything else, in an offscreen window of its own.
-    private static func render(_ view: some View, size: CGSize?, appearance: NSAppearance.Name, to url: URL) async {
+    private static func render(_ view: some View, size: CGSize?, appearance: NSAppearance.Name, to url: URL,
+                               activateWindow: Bool = true) async {
         // The window background is drawn by the frame view, which a
         // content view capture leaves out.
         let hosting = NSHostingView(rootView: view.background(Color(nsColor: .windowBackgroundColor)))
@@ -324,8 +336,12 @@ enum SnapshotFixture {
         window.appearance = NSAppearance(named: appearance)
         window.backgroundColor = .windowBackgroundColor
         window.contentView = hosting
-        NSApp.activate()
-        window.makeKeyAndOrderFront(nil)
+        if activateWindow {
+            NSApp.activate()
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            window.orderBack(nil)
+        }
         await settle(0.6)
         if size == nil { window.setContentSize(hosting.fittingSize) }
         await settle(0.2)

@@ -33,7 +33,7 @@ $Python = Join-Path $PythonRoot 'python.exe'
 if (-not (Test-Path $Python)) { throw 'Managed runtime has no root python.exe.' }
 & uv pip install --python $Python --target (Join-Path $BridgeRoot 'site-packages') -r (Join-Path $Root 'Bridge/requirements.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Pinned bridge dependency installation failed.' }
-Copy-Item (Join-Path $Root 'Bridge/gpmc_bridge.py') $BridgeRoot
+Copy-Item (Join-Path $Root 'Bridge/*.py') $BridgeRoot
 & (Join-Path $PSScriptRoot 'verify-windows.ps1') -Bundle $Bundle -ReportDirectory (Join-Path $Verification 'original')
 
 $Archive = Join-Path $Out 'Google-Photos-Backup-Windows-x64.zip'

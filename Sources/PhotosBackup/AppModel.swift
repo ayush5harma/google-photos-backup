@@ -225,6 +225,7 @@ final class AppModel {
     private(set) var runtimeDescription = "Checking..."
     private(set) var messagesStatus: MessagesStatus = .off
     @ObservationIgnored lazy var engine = BackupEngine(model: self)
+    @ObservationIgnored lazy var iCloud = ICloudSource(model: self)
     /// The readable Messages archive (conversations, attachments, chat.db copies).
     @ObservationIgnored lazy var archive = MessagesArchiveController(model: self)
     /// Network and power, for the "pause on..." settings.
