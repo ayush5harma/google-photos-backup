@@ -45,4 +45,6 @@ Images narrower than that, such as the menu bar panel, are used as rendered.
 
 ## Windows preview
 
-`windows-overview.png` is rendered by the native WinUI app on the Windows CI runner with `--smoke-test <report.json> --screenshot <image.png>`. It uses synthetic folders and an example account, never signs in or uploads, and substitutes an opaque theme background for Mica during capture. The normal app retains Mica. The image was inspected from successful run [38627992465](https://github.com/ayush5harma/google-photos-backup/actions/runs/38627992465).
+`windows-overview.png` and `windows-overview-dark.png` are rendered by the native WinUI app on the Windows CI runner with `--smoke-test <report.json> --screenshot <image.png>`. It uses synthetic folders and an example account, never signs in or uploads, and substitutes an opaque theme background for Mica during capture. The normal app retains Mica. The image was inspected from successful run [38631859751](https://github.com/ayush5harma/google-photos-backup/actions/runs/38631859751).
+
+The Photos-inspired glass icon has matching light and dark assets. See [icon source and appearance behavior](ICON.md).

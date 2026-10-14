@@ -41,7 +41,10 @@ Automatic backups are on by default after the welcome guide. They run when the l
 
 </details>
 
-[![Windows WinUI 3 preview](docs/windows-overview.png)](Windows/README.md)
+<a href="Windows/README.md"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/windows-overview-dark.png">
+  <img src="docs/windows-overview.png" alt="Windows WinUI 3 preview">
+</picture></a>
 
 The Windows image shows the native preview with an opaque capture background.
 
