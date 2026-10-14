@@ -5,12 +5,6 @@ on:
   push:
     branches: [feat/macos-releases]
     tags: ['v*']
-  pull_request:
-    paths:
-      - '.github/workflows/release.yml'
-      - 'scripts/build-app.sh'
-      - 'scripts/package-release.sh'
-      - 'scripts/verify-app.py'
 
 permissions:
   contents: read
@@ -31,6 +25,7 @@ jobs:
     timeout-minutes: 40
     env:
       MACOSX_DEPLOYMENT_TARGET: '14.0'
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       PYTHON_VERSION: '3.13'
     steps:
       - uses: actions/checkout@v4
