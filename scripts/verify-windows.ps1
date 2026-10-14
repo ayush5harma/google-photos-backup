@@ -106,6 +106,12 @@ try {
             if ($UIReport.status -ne 'ok') { throw 'Synthetic WinUI initialization was not successful.' }
             if ($UIReport.encryptedCredentialRoundTrip -ne $true) { throw 'Synthetic DPAPI credential round-trip failed.' }
             if (-not (Test-Path $Screenshot) -or (Get-Item $Screenshot).Length -eq 0) { throw 'Synthetic WinUI screenshot was not produced.' }
+            $DarkScreenshot = Join-Path $ReportDirectory 'ui-smoke-dark.png'
+            if (-not (Test-Path $DarkScreenshot) -or (Get-Item $DarkScreenshot).Length -eq 0) { throw 'Dark WinUI screenshot was not produced.' }
+            if ($UIReport.lightIconSource -notlike '*/Assets/app-icon.png' -or $UIReport.darkIconSource -notlike '*/Assets/app-icon-dark.png') {
+                throw 'WinUI did not select both appearance assets.'
+            }
+            $Report.appearanceIcons = 'passed: decoded light and dark assets after changing the window theme'
             $Report.encryptedCredentialRoundTrip = $true
             $Report.uiSmoke = 'passed: constructed MainWindow and exited without authentication or network access'
         } finally { $Process.Dispose() }

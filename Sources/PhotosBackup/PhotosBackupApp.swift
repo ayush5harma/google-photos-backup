@@ -123,6 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = AppModel()
     /// SwiftUI wraps the delegate, so NSApp.delegate is not this object.
     private(set) static weak var current: AppDelegate?
+    private var appearanceObservation: NSKeyValueObservation?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         Self.current = self
@@ -136,6 +137,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        appearanceObservation = NSApp.observe(\.effectiveAppearance, options: [.initial, .new]) { [weak self] _, _ in
+            DispatchQueue.main.async { self?.updateDockIcon() }
+        }
         // A bridge that dies before reading its request must not take the
         // app down with SIGPIPE on the write.
         signal(SIGPIPE, SIG_IGN)
@@ -150,6 +154,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             await Snapshots.runIfRequested(model)
             #endif
         }
+    }
+
+    private func updateDockIcon() {
+        let variant = NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? "dark" : "light"
+        let icon = Bundle.main.url(forResource: "AppIcon-\(variant)", withExtension: "png")
+            .flatMap { NSImage(contentsOf: $0) }
+            ?? Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
+                .flatMap { NSImage(contentsOf: $0) }
+        if let icon { NSApp.applicationIconImage = icon }
     }
 
     /// Dock icon or Finder double-click with no window open.

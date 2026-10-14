@@ -1,6 +1,9 @@
 # Google Photos Backup for macOS and Windows
 
-<p align="center"><img src="docs/app-icon.png" width="128" height="128" alt="Photos Backup app icon"></p>
+<p align="center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/app-icon-dark.png">
+  <img src="docs/app-icon.png" width="128" height="128" alt="Photos-inspired glass petals with an infinity mark">
+</picture></p>
 
 Native desktop backup to Google Photos, with an unlimited original-quality upload mode through gpmc. The released macOS app backs up your Apple Photos library; the Windows WinUI 3 preview backs up folders of photos and videos.
 
@@ -16,7 +19,7 @@ Download the **macOS Apple silicon (arm64)** or **macOS Intel (x86_64)** ZIP fro
 
 Unzip the download, move **Photos Backup.app** to Applications, and open it. The app is currently signed ad hoc and is **not notarized by Apple**. If macOS blocks its first launch, find the blocked app in **System Settings > Privacy & Security**, choose **Open Anyway**, and confirm the prompt only if you trust this download. Keep macOS security protections on. The app name remains **Photos Backup.app** so existing installs retain their identity.
 
-**Windows:** A native WinUI 3 x64 preview is available in [PR #5](https://github.com/ayush5harma/google-photos-backup/pull/5). See [Windows setup and source builds](Windows/README.md). It is under testing and has no stable release yet.
+**Windows:** A native WinUI 3 x64 preview is included in this repository. See [Windows setup and source builds](Windows/README.md). It is under testing and has no stable release yet.
 
 ## Set up on macOS
 
@@ -38,7 +41,10 @@ Automatic backups are on by default after the welcome guide. They run when the l
 
 </details>
 
-[![Windows WinUI 3 preview](docs/windows-overview.png)](Windows/README.md)
+<a href="Windows/README.md"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/windows-overview-dark.png">
+  <img src="docs/windows-overview.png" alt="Windows WinUI 3 preview">
+</picture></a>
 
 The Windows image shows the native preview with an opaque capture background.
 

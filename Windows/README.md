@@ -2,7 +2,7 @@
 
 A native WinUI 3 desktop preview for backing up photo and video folders to Google Photos. It uses Windows App SDK 2.5.1, .NET 10, and the same pinned gpmc uploader as the macOS app.
 
-This is a development preview, not a stable Windows release. Track implementation and verification in [PR #5](https://github.com/ayush5harma/google-photos-backup/pull/5). The released [macOS app](../README.md#download) is available for Intel and Apple silicon.
+This is a development preview, not a stable Windows release. See implementation and verification in [PR #5](https://github.com/ayush5harma/google-photos-backup/pull/5). The released [macOS app](../README.md#download) is available for Intel and Apple silicon.
 
 ## Get a preview build
 
@@ -12,9 +12,12 @@ The preview targets Windows 10 version 1809 or later on x64; Windows 11 is recom
 
 ## A look at the preview
 
-![Native WinUI 3 backup overview](../docs/windows-overview.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="../docs/windows-overview-dark.png">
+  <img src="../docs/windows-overview.png" alt="Native WinUI 3 backup overview">
+</picture>
 
-This is the actual WinUI window rendered with synthetic data in [verified Windows CI run 38627992465](https://github.com/ayush5harma/google-photos-backup/actions/runs/38627992465). The fixture uses an opaque theme background so Mica transparency is readable in a PNG; the normal app retains its system backdrop.
+This is the actual WinUI window rendered with synthetic data in [verified Windows CI run 38637885601](https://github.com/ayush5harma/google-photos-backup/actions/runs/38637885601). The fixture uses an opaque theme background so Mica transparency is readable in a PNG; the normal app retains its system backdrop.
 
 ## Set up and back up
 
@@ -41,7 +44,6 @@ Use a native Windows x64 host with PowerShell 7, .NET 10 SDK, the Windows SDK an
 ```powershell
 git clone https://github.com/ayush5harma/google-photos-backup.git
 cd google-photos-backup
-git switch feat/windows-winui
 ./scripts/build-windows.ps1
 ```
 

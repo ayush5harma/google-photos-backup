@@ -23,7 +23,9 @@
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.0" />
     <ProjectReference Include="..\GooglePhotosBackup.Core\GooglePhotosBackup.Core.csproj" />
     <Content Include="..\..\docs\app-icon.png" Link="Assets\app-icon.png" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="..\..\docs\app-icon-dark.png" Link="Assets\app-icon-dark.png" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\app-icon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\app-icon-dark.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <!-- 2026-10-15: WindowsAppSDK issue #6720 measured that unpackaged .NET 10 publish omits the generated app PRI, breaking XAML resources at launch. -->
   <Target Name="AddProjectPriToResolvedFileToPublish"
