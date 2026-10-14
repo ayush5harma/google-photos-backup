@@ -243,7 +243,7 @@ struct Banner: View {
     }
 }
 
-/// The app's mark: the icon's blue tile and photo stack, drawn small.
+/// The app's mark: the icon's blue tile and stacked photos, drawn small.
 struct AppMark: View {
     var size: CGFloat = 32
 
@@ -254,7 +254,7 @@ struct AppMark: View {
                                      startPoint: .top, endPoint: .bottom))
             RoundedRectangle(cornerRadius: size * 0.235, style: .continuous)
                 .strokeBorder(.white.opacity(0.18), lineWidth: max(0.5, size / 64))
-            Image(systemName: "photo.stack.fill")
+            Image(systemName: "photo.on.rectangle.angled")
                 .font(.system(size: size * 0.5, weight: .medium))
                 .foregroundStyle(.white)
                 .shadow(color: .black.opacity(0.15), radius: size / 40, y: size / 80)
