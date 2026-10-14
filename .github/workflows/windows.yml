@@ -1,0 +1,76 @@
+name: Windows x64
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 35
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      DOTNET_NOLOGO: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.13'
+      - name: Parse PowerShell scripts
+        run: |
+          foreach ($script in @('scripts/build-windows.ps1', 'scripts/verify-windows.ps1')) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $script), [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count -gt 0) { throw ($errors | Out-String) }
+          }
+      - name: Restore pinned native app dependencies
+        run: |
+          dotnet restore Windows/GooglePhotosBackup.App/GooglePhotosBackup.App.csproj -r win-x64 -p:Platform=x64
+          if ($LASTEXITCODE -ne 0) { throw 'NuGet restore failed.' }
+          dotnet list Windows/GooglePhotosBackup.App/GooglePhotosBackup.App.csproj package
+          if ($LASTEXITCODE -ne 0) { throw 'NuGet package evidence failed.' }
+      - name: Core fixture tests
+        run: |
+          dotnet test Windows/GooglePhotosBackup.Core.Tests/GooglePhotosBackup.Core.Tests.csproj -c Release --logger 'trx;LogFileName=core-tests.trx' --results-directory build/windows/test-results
+          if ($LASTEXITCODE -ne 0) { throw 'Core fixture tests failed.' }
+      - name: Python bridge fixture tests
+        run: |
+          uv run --no-project --python 3.13 python -B -m unittest discover -s Bridge/tests
+          if ($LASTEXITCODE -ne 0) { throw 'Bridge fixture tests failed.' }
+      - name: Build and verify relocated native application
+        run: ./scripts/build-windows.ps1
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Google-Photos-Backup-Windows-x64
+          path: |
+            build/windows/*.zip
+            build/windows/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload verification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-x64-verification
+          path: |
+            build/windows/verification/
+            build/windows/test-results/
+          if-no-files-found: warn
+          retention-days: 14

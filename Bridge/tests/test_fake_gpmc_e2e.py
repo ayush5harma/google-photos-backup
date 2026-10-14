@@ -1,7 +1,7 @@
 """The real bridge, in its own process, against Tests/E2E/fake_gpmc.
 
 Each request is a separate `python3 -I -B gpmc_bridge.py`, as the app runs it,
-with the runtime laid out by Tests/E2E/make_fake_runtime.sh. The fake keeps
+with an isolated copy of the fake runtime on every platform. The fake keeps
 what Google "holds" in a ledger file, so these runs also prove that state
 carries from one bridge process to the next.
 """
@@ -9,6 +9,7 @@ carries from one bridge process to the next.
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -23,8 +24,13 @@ class FakeGpmcEndToEndTests(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()
         self.root = Path(self.scratch.name)
-        subprocess.run(["/bin/bash", str(REPO / "Tests/E2E/make_fake_runtime.sh"), str(self.root / "runtime")],
-                       check=True, capture_output=True, text=True)
+        # 2026-10-15: Native Windows runners have no /bin/bash; copying the
+        # same fixture in Python tests the real protocol on both platforms.
+        runtime = self.root / "runtime"
+        runtime.mkdir()
+        shutil.copy2(REPO / "Bridge/gpmc_bridge.py", runtime / "gpmc_bridge.py")
+        shutil.copytree(REPO / "Tests/E2E/fake_gpmc", runtime / "site-packages",
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         self.bridge = self.root / "runtime/gpmc_bridge.py"
         self.scenario = self.root / "scenario.json"
         self.ledger = self.root / "ledger.json"
@@ -47,11 +53,15 @@ class FakeGpmcEndToEndTests(unittest.TestCase):
         return items
 
     def popen(self, request):
-        env = {"HOME": str(self.root), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8", "FAKE_GPMC_SCENARIO": str(self.scenario)}
+        env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP") if key in os.environ}
+        env.update(HOME=str(self.root), USERPROFILE=str(self.root), LANG="en_US.UTF-8",
+                   FAKE_GPMC_SCENARIO=str(self.scenario))
+        flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         process = subprocess.Popen([sys.executable, "-I", "-B", str(self.bridge)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=subprocess.PIPE, text=True, env=env, cwd=self.root)
+                                   stderr=subprocess.PIPE, text=True, env=env, cwd=self.root, creationflags=flags)
         process.stdin.write(json.dumps(request))
         process.stdin.close()
+        process.stdin = None
         return process
 
     def send(self, request):
@@ -133,7 +143,7 @@ class FakeGpmcEndToEndTests(unittest.TestCase):
         for line in process.stdout:
             events.append(json.loads(line))
             if events[-1]["type"] == "item":
-                process.send_signal(signal.SIGTERM)
+                process.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGTERM)
                 break
         events += [json.loads(line) for line in process.stdout]
         process.wait(timeout=30)

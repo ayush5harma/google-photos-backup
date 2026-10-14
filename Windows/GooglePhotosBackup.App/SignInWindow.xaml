@@ -1,0 +1,19 @@
+<Window
+    x:Class="GooglePhotosBackup.App.SignInWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Sign in with Google">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+    <Grid RowDefinitions="Auto,Auto,*" Padding="20" RowSpacing="12">
+        <StackPanel Spacing="4">
+            <TextBlock Text="Connect Google Photos" Style="{ThemeResource TitleTextBlockStyle}" />
+            <TextBlock Text="Sign in on Google's page. This browser session is used only for this connection."
+                       TextWrapping="Wrap" Opacity="0.75" />
+        </StackPanel>
+        <InfoBar x:Name="SignInNotice" Grid.Row="1" IsOpen="False" IsClosable="True" Severity="Error" />
+        <WebView2 x:Name="Browser" Grid.Row="2" MinHeight="520"
+                  AutomationProperties.Name="Google sign-in page" />
+    </Grid>
+</Window>

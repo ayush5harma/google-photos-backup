@@ -493,6 +493,10 @@ def main() -> int:
             return EXIT_REQUEST
         stop = StopSignal()
         signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.request())
+        # 2026-10-15: Windows console clients send CTRL_BREAK_EVENT; unlike
+        # terminate(), it lets the bridge report its confirmed work first.
+        if hasattr(signal, "SIGBREAK"):
+            signal.signal(signal.SIGBREAK, lambda _signum, _frame: stop.request())
         code = run(request, emit, stop=stop)
     if code == EXIT_STOPPED:
         # Abandoned uploads are still running in worker threads, and normal
