@@ -1,6 +1,6 @@
 # Contributing
 
-Start with a focused issue for substantial changes. Include your macOS version,
+Start with a focused issue for substantial changes. Include your operating system version,
 app commit, reproduction steps using sample media, and expected behavior. Never
 attach credentials, personal photos, Messages databases, or unredacted logs.
 Report vulnerabilities through [SECURITY.md](SECURITY.md).
@@ -22,12 +22,14 @@ The last command builds an ad-hoc-signed app under `build/`; it does not install
 it. Do not run an installer or a real backup merely to verify a documentation
 change. The automated tests use fixture data, not a real Google account.
 
+For the native Windows preview, see [Windows development](Windows/README.md#build-on-windows). Its core tests run on either platform; compiling and smoke-testing WinUI requires Windows.
+
 ## Test layers
 
 | Layer | Command | What it covers |
 | --- | --- | --- |
 | Swift tests | `swift test` (187 tests) | Core rules: retry, rate limit, conditions, edit detection, history, timeline, report, links, status line, the Messages archive writer and decoding, the planner, the bridge protocol |
-| Bridge tests | `python3 -B -m unittest discover -s Bridge/tests` (38) | The line protocol against a fake gpmc client, and real bridge runs against `Tests/E2E/fake_gpmc` |
+| Bridge tests | `python3 -B -m unittest discover -s Bridge/tests` (39) | The line protocol against a fake gpmc client, and real bridge runs against `Tests/E2E/fake_gpmc` |
 | Fixture screenshots | `SNAPSHOT_FIXTURE=1 scripts/snapshots.sh <out> [groups]` | Renders every screen from made-up data; groups are `sections`, `settings`, `onboarding`, `menubar` and `links` |
 | End-to-end | `scripts/e2e.py --app <bundle>` | The real app and the real bridge against a fake Google |
 

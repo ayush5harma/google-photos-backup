@@ -137,7 +137,8 @@ class FailureLog(logging.Handler):
         match = _FAILURE_LINE.match(record.getMessage())
         if match:
             with self._lock:
-                self.reasons[match["path"]] = match["reason"]
+                # 2026-10-15: gpmc logs native Windows separators but returns POSIX result keys.
+                self.reasons[Path(match["path"]).absolute().as_posix()] = match["reason"]
 
 
 def _vendored_site_packages() -> None:
@@ -493,6 +494,10 @@ def main() -> int:
             return EXIT_REQUEST
         stop = StopSignal()
         signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.request())
+        # 2026-10-15: Windows console clients send CTRL_BREAK_EVENT; unlike
+        # terminate(), it lets the bridge report its confirmed work first.
+        if hasattr(signal, "SIGBREAK"):
+            signal.signal(signal.SIGBREAK, lambda _signum, _frame: stop.request())
         code = run(request, emit, stop=stop)
     if code == EXIT_STOPPED:
         # Abandoned uploads are still running in worker threads, and normal

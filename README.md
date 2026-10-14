@@ -1,8 +1,10 @@
-# Google Photos Backup for Mac
+# Google Photos Backup for macOS and Windows
 
 <p align="center"><img src="docs/app-icon.png" width="128" height="128" alt="Photos Backup app icon"></p>
 
-Back up your Apple Photos library to Google Photos from a native macOS app. Choose albums or your whole library, then follow progress from the menu bar. Photos Backup can also upload photos and videos from Messages and keep a readable, local archive of your conversations.
+Native desktop backup to Google Photos, with an unlimited original-quality upload mode through gpmc. The released macOS app backs up your Apple Photos library; the Windows WinUI 3 preview backs up folders of photos and videos.
+
+On macOS, choose albums or your whole library, then follow progress from the menu bar. Photos Backup can also upload photos and videos from Messages and keep a readable, local archive of your conversations.
 
 Uploads use [gpmc](https://github.com/xob0t/gpmc), an unofficial Google Photos client. Its **Pixel XL original-quality mode** is intended to use Google's unlimited original-quality storage behavior. Google controls whether uploads work and how they count against storage, and can change either behavior. Check your Google Photos account's storage after your first backup. Photos Backup is an independent project, unaffiliated with Apple or Google.
 
@@ -14,7 +16,7 @@ Download the **macOS Apple silicon (arm64)** or **macOS Intel (x86_64)** ZIP fro
 
 Unzip the download, move **Photos Backup.app** to Applications, and open it. The app is currently signed ad hoc and is **not notarized by Apple**. If macOS blocks its first launch, find the blocked app in **System Settings > Privacy & Security**, choose **Open Anyway**, and confirm the prompt only if you trust this download. Keep macOS security protections on. The app name remains **Photos Backup.app** so existing installs retain their identity.
 
-**Windows:** A WinUI 3 app is in development. There is no Windows release yet.
+**Windows:** A native WinUI 3 x64 preview is available in [PR #5](https://github.com/ayush5harma/google-photos-backup/pull/5). See [Windows setup and source builds](Windows/README.md). It is under testing and has no stable release yet.
 
 ## Set up on macOS
 
@@ -36,6 +38,10 @@ Automatic backups are on by default after the welcome guide. They run when the l
 
 </details>
 
+[![Windows WinUI 3 preview](docs/windows-overview.png)](Windows/README.md)
+
+The Windows image shows the native preview with an opaque capture background.
+
 These screenshots use [made-up fixture data](docs/SCREENSHOTS.md), not a real library, account, or conversation.
 
 ## What gets backed up
@@ -47,6 +53,9 @@ These screenshots use [made-up fixture data](docs/SCREENSHOTS.md), not a real li
 Both Messages features are off by default and need **Full Disk Access** for Photos Backup under **System Settings > Privacy & Security > Full Disk Access**. Contacts access is optional and only helps show names in the local archive.
 
 ## Privacy
+
+On Windows, selected files and mirrored folder names go to Google Photos. Settings, run history, and resume state stay in `%LOCALAPPDATA%\GooglePhotosBackup`; the credential is encrypted using Windows DPAPI for your Windows account. See the [Windows guide](Windows/README.md) for preview limitations.
+
 
 Selected media, capture dates, and album names go to your connected Google Photos account. Backup state and logs stay under the app's Application Support folder; temporary upload copies are removed after each batch. Your Google credential stays in the login Keychain and is passed to the uploader through a pipe. A Messages archive stays in its chosen folder, with owner-only file permissions. If you choose a cloud-synced folder, that provider can receive the archive. The app does not modify your Photos library or Messages database.
 

@@ -1,0 +1,123 @@
+<Window
+    x:Class="GooglePhotosBackup.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Google Photos Backup">
+    <Window.SystemBackdrop>
+        <MicaBackdrop />
+    </Window.SystemBackdrop>
+    <NavigationView x:Name="Navigation" PaneDisplayMode="Left" IsBackButtonVisible="Collapsed"
+                    IsSettingsVisible="False" SelectionChanged="Navigation_SelectionChanged"
+                    Header="Overview" Background="Transparent">
+        <NavigationView.MenuItems>
+            <NavigationViewItem Content="Overview" Tag="overview" />
+            <NavigationViewItem Content="Folders" Tag="folders" />
+            <NavigationViewItem Content="Activity" Tag="activity" />
+            <NavigationViewItem Content="Settings" Tag="settings" />
+        </NavigationView.MenuItems>
+        <Grid Padding="32,20,32,28" MaxWidth="1000" HorizontalAlignment="Stretch">
+            <ScrollViewer x:Name="OverviewPage" VerticalScrollBarVisibility="Auto">
+                <StackPanel Spacing="24">
+                    <StackPanel Orientation="Horizontal" Spacing="18" VerticalAlignment="Center">
+                        <Image Source="Assets/app-icon.png" Width="72" Height="72"
+                               AutomationProperties.Name="Google Photos Backup app icon" />
+                        <StackPanel VerticalAlignment="Center" Spacing="4">
+                            <TextBlock Text="Your photos, backed up" Style="{ThemeResource TitleTextBlockStyle}" />
+                            <TextBlock Text="Keep selected folders in Google Photos from this PC."
+                                       TextWrapping="Wrap" Opacity="0.75" />
+                        </StackPanel>
+                    </StackPanel>
+                    <InfoBar x:Name="NoticeBar" IsOpen="False" IsClosable="True" Severity="Informational" />
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="ACCOUNT" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        <TextBlock x:Name="AccountText" Text="Not connected" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                        <Button x:Name="OverviewSignInButton" Content="Connect Google Photos"
+                                Click="SignIn_Click" AutomationProperties.Name="Connect Google Photos account" />
+                    </StackPanel>
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="BACKUP" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        <TextBlock x:Name="StatusText" Text="Choose a folder to get started."
+                                   TextWrapping="Wrap" Style="{ThemeResource SubtitleTextBlockStyle}" />
+                        <ProgressBar x:Name="RunProgress" Minimum="0" Maximum="100" Value="0" Height="8"
+                                     AutomationProperties.Name="Backup progress" />
+                        <TextBlock x:Name="ProgressText" Text="No backup running" Opacity="0.75"
+                                   TextWrapping="Wrap" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="StartButton" Content="Back Up Now" Click="Start_Click"
+                                    Style="{StaticResource AccentButtonStyle}" AutomationProperties.Name="Start backup" />
+                            <Button x:Name="PauseButton" Content="Pause" Click="Pause_Click"
+                                    IsEnabled="False" AutomationProperties.Name="Pause backup" />
+                            <Button x:Name="ResumeButton" Content="Resume" Click="Resume_Click"
+                                    IsEnabled="False" AutomationProperties.Name="Resume backup" />
+                            <Button x:Name="CancelButton" Content="Cancel" Click="Cancel_Click"
+                                    IsEnabled="False" AutomationProperties.Name="Cancel backup" />
+                        </StackPanel>
+                    </StackPanel>
+                    <StackPanel Spacing="5">
+                        <TextBlock Text="NEXT BACKUP" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        <TextBlock x:Name="SelectionSummary" Text="No folders selected" TextWrapping="Wrap" />
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+
+            <ScrollViewer x:Name="FoldersPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <StackPanel Spacing="18">
+                    <TextBlock Text="Choose folders" Style="{ThemeResource TitleTextBlockStyle}" />
+                    <TextBlock Text="Add photo and video folders from this PC. Each folder can become an album with the same name in Google Photos. Files stay on your PC."
+                               TextWrapping="Wrap" Opacity="0.75" />
+                    <ListView x:Name="FoldersList" Height="340" SelectionMode="Single"
+                              AutomationProperties.Name="Selected backup folders" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="AddFolderButton" Content="Add folder" Click="AddFolder_Click"
+                                Style="{StaticResource AccentButtonStyle}" />
+                        <Button x:Name="RemoveFolderButton" Content="Remove selected" Click="RemoveFolder_Click" />
+                    </StackPanel>
+                    <TextBlock Text="Changes to the folder list are saved automatically. Folder choices cannot change while a backup is running."
+                               TextWrapping="Wrap" Opacity="0.65" />
+                </StackPanel>
+            </ScrollViewer>
+
+            <ScrollViewer x:Name="ActivityPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <StackPanel Spacing="18">
+                    <TextBlock Text="Activity" Style="{ThemeResource TitleTextBlockStyle}" />
+                    <TextBlock Text="Completed and canceled runs on this PC." Opacity="0.75" />
+                    <ListView x:Name="ActivityList" Height="440" SelectionMode="None"
+                              AutomationProperties.Name="Backup history" />
+                </StackPanel>
+            </ScrollViewer>
+
+            <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <StackPanel Spacing="22">
+                    <TextBlock Text="Settings" Style="{ThemeResource TitleTextBlockStyle}" />
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="GOOGLE ACCOUNT" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        <TextBlock x:Name="SettingsAccountText" Text="Not connected" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="SettingsSignInButton" Content="Sign in with Google" Click="SignIn_Click" />
+                            <Button x:Name="DisconnectButton" Content="Disconnect" Click="Disconnect_Click" />
+                        </StackPanel>
+                        <TextBlock Text="If the embedded sign-in cannot complete, paste a gpmc auth_data credential below. It will be checked with Google before being saved for this Windows user."
+                                   TextWrapping="Wrap" Opacity="0.75" />
+                        <PasswordBox x:Name="CredentialBox" Header="Advanced: gpmc auth_data"
+                                     PlaceholderText="Paste credential" AutomationProperties.Name="Paste gpmc auth_data credential" />
+                        <Button x:Name="ConnectCredentialButton" Content="Connect with credential"
+                                Click="ConnectCredential_Click" />
+                    </StackPanel>
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="UPLOAD" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        <ComboBox x:Name="QualityBox" Header="Upload quality" Width="360"
+                                  SelectionChanged="Quality_SelectionChanged">
+                            <ComboBoxItem Content="Original quality (Pixel XL profile)" Tag="original" />
+                            <ComboBoxItem Content="Storage saver (Pixel 2 profile)" Tag="saver" />
+                            <ComboBoxItem Content="Original quality (uses storage)" Tag="quota" />
+                        </ComboBox>
+                        <TextBlock Text="Google controls upload availability and storage accounting. Pixel XL mode does not guarantee unlimited storage."
+                                   TextWrapping="Wrap" Opacity="0.75" />
+                        <ToggleSwitch x:Name="MirrorFoldersToggle" Header="Create Google Photos albums for folders"
+                                      Toggled="MirrorFolders_Toggled" />
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </NavigationView>
+</Window>

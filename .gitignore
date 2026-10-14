@@ -5,3 +5,9 @@ build/
 __pycache__/
 *.pyc
 .DS_Store
+Windows/**/bin/
+Windows/**/obj/
+Windows/**/TestResults/
+dist/
+*.user
+*.suo
