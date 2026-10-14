@@ -243,24 +243,37 @@ struct Banner: View {
     }
 }
 
-// 2026-10-15: The welcome guide and menu panel share the shipped Dock icon,
-// so fixture screenshots cannot advertise a different brand from the app.
 struct AppMark: View {
+    @Environment(\.colorScheme) private var colorScheme
     var size: CGFloat = 32
-    private static let artwork: NSImage? = {
+    private static let lightArtwork = loadArtwork(variant: "light")
+    private static let darkArtwork = loadArtwork(variant: "dark")
+
+    private static func loadArtwork(variant: String) -> NSImage? {
         #if DEBUG
         if let path = ProcessInfo.processInfo.environment["PHOTOS_BACKUP_FIXTURE_ICON"],
            AppEnvironment.isSandboxed {
-            return NSImage(contentsOfFile: path)
+            let url = URL(fileURLWithPath: path)
+            if variant == "dark" {
+                let sibling = url.deletingLastPathComponent()
+                    .appendingPathComponent(url.deletingPathExtension().lastPathComponent + "-dark")
+                    .appendingPathExtension(url.pathExtension)
+                if let artwork = NSImage(contentsOf: sibling) { return artwork }
+            }
+            return NSImage(contentsOf: url)
         }
         #endif
+        if let url = Bundle.main.url(forResource: "AppIcon-\(variant)", withExtension: "png"),
+           let artwork = NSImage(contentsOf: url) {
+            return artwork
+        }
         return Bundle.main.url(forResource: "AppIcon", withExtension: "icns")
             .flatMap { NSImage(contentsOf: $0) }
-    }()
+    }
 
     var body: some View {
         Group {
-            if let artwork = Self.artwork {
+            if let artwork = colorScheme == .dark ? Self.darkArtwork : Self.lightArtwork {
                 Image(nsImage: artwork).resizable().interpolation(.high).scaledToFit()
             } else {
                 Image(systemName: "photo.on.rectangle.angled")

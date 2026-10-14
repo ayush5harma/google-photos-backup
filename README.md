@@ -1,6 +1,9 @@
 # Google Photos Backup for macOS and Windows
 
-<p align="center"><img src="docs/app-icon.png" width="128" height="128" alt="Photos Backup app icon"></p>
+<p align="center"><picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/app-icon-dark.png">
+  <img src="docs/app-icon.png" width="128" height="128" alt="Photos-inspired glass petals with an infinity mark">
+</picture></p>
 
 Native desktop backup to Google Photos, with an unlimited original-quality upload mode through gpmc. The released macOS app backs up your Apple Photos library; the Windows WinUI 3 preview backs up folders of photos and videos.
 

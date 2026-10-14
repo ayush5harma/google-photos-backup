@@ -34,8 +34,9 @@ public sealed partial class MainWindow : Window
     {
         InitializeComponent();
         AppWindow.Resize(new SizeInt32(1080, 760));
-        var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "app-icon.ico");
-        if (File.Exists(iconPath)) AppWindow.SetIcon(iconPath);
+        Navigation.ActualThemeChanged += (_, _) => UpdateWindowIcon();
+        Navigation.Loaded += (_, _) => UpdateWindowIcon();
+        UpdateWindowIcon();
         FoldersList.ItemsSource = _folders;
         ActivityList.ItemsSource = _activity;
         Navigation.SelectedItem = Navigation.MenuItems[0];
@@ -75,6 +76,14 @@ public sealed partial class MainWindow : Window
         _loadingSettings = false;
         Closed += (_, _) => { _runGeneration++; _runCancellation?.Cancel(); _signInWindow?.Close(); };
         RefreshControls();
+    }
+
+    private void UpdateWindowIcon()
+    {
+        var iconName = Navigation.ActualTheme == ElementTheme.Dark ? "app-icon-dark.ico" : "app-icon.ico";
+        var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", iconName);
+        if (!File.Exists(iconPath)) iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "app-icon.ico");
+        if (File.Exists(iconPath)) AppWindow.SetIcon(iconPath);
     }
 
     private void Navigation_SelectionChanged(NavigationView sender, NavigationViewSelectionChangedEventArgs args)
@@ -388,6 +397,37 @@ public sealed partial class MainWindow : Window
         encoder.SetPixelData(BitmapPixelFormat.Bgra8, BitmapAlphaMode.Premultiplied,
             (uint)bitmap.PixelWidth, (uint)bitmap.PixelHeight, 96, 96, pixels);
         await encoder.FlushAsync();
+    }
+
+    public async Task<(string LightIconSource, string DarkIconSource)> SaveThemeScreenshotsAsync(string lightPath)
+    {
+        var fullPath = Path.GetFullPath(lightPath);
+        var darkPath = Path.Combine(Path.GetDirectoryName(fullPath)!,
+            Path.GetFileNameWithoutExtension(fullPath) + "-dark" + Path.GetExtension(fullPath));
+        var light = await CaptureThemeAsync(ElementTheme.Light, "app-icon.png", fullPath);
+        var dark = await CaptureThemeAsync(ElementTheme.Dark, "app-icon-dark.png", darkPath);
+        return (light, dark);
+    }
+
+    private async Task<string> CaptureThemeAsync(ElementTheme theme, string expectedAsset, string path)
+    {
+        Navigation.RequestedTheme = theme;
+        Navigation.Background = new SolidColorBrush(theme == ElementTheme.Dark
+            ? Microsoft.UI.Colors.Black : Microsoft.UI.Colors.White);
+        var expectedSource = "/Assets/" + expectedAsset;
+        for (var attempt = 0; attempt < 60; attempt++)
+        {
+            if (Navigation.ActualTheme == theme
+                && AppMarkImageView.Source is BitmapImage image
+                && image.UriSource?.AbsoluteUri.EndsWith(expectedSource, StringComparison.OrdinalIgnoreCase) == true
+                && image.PixelWidth > 0)
+            {
+                await SaveScreenshotAsync(path);
+                return image.UriSource.AbsoluteUri;
+            }
+            await Task.Delay(50);
+        }
+        throw new InvalidOperationException($"The {theme} theme did not load {expectedAsset}.");
     }
 
     public Task WhenLoadedAsync()

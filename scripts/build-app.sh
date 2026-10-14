@@ -85,7 +85,9 @@ echo '{"command":"version"}' | "$PY" -I -B "$RESOURCES/bridge/gpmc_bridge.py" | 
 say "Drawing the icon"
 ICONSET="$(mktemp -d)/AppIcon.iconset"
 mkdir -p "$ICONSET"
-swift "$ROOT/scripts/make-icon.swift" "$ICONSET/icon_512x512@2x.png"
+swift "$ROOT/scripts/make-icon.swift" "$RESOURCES/AppIcon-light.png" light
+swift "$ROOT/scripts/make-icon.swift" "$RESOURCES/AppIcon-dark.png" dark
+cp "$RESOURCES/AppIcon-light.png" "$ICONSET/icon_512x512@2x.png"
 for size in 16 32 128 256 512; do
   sips -z $size $size "$ICONSET/icon_512x512@2x.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
   double=$((size * 2))

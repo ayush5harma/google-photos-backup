@@ -46,15 +46,20 @@ public partial class App : Application
                 }
                 if (!encryptedCredentialRoundTrip) throw new InvalidOperationException("DPAPI fixture roundtrip failed.");
                 var screenshotIndex = Array.IndexOf(arguments, "--screenshot");
+                string? lightIconSource = null;
+                string? darkIconSource = null;
                 if (screenshotIndex >= 0 && screenshotIndex + 1 < arguments.Length)
                 {
-                    stage = "capture-screenshot";
-                    await window.SaveScreenshotAsync(arguments[screenshotIndex + 1]);
+                    stage = "capture-theme-screenshots";
+                    (lightIconSource, darkIconSource) = await window.SaveThemeScreenshotsAsync(arguments[screenshotIndex + 1]);
                 }
                 if (reportPath is not null)
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
-                    File.WriteAllText(reportPath, JsonSerializer.Serialize(new { status = "ok", encryptedCredentialRoundTrip }));
+                    File.WriteAllText(reportPath, JsonSerializer.Serialize(new
+                    {
+                        status = "ok", encryptedCredentialRoundTrip, lightIconSource, darkIconSource
+                    }));
                 }
                 Environment.Exit(0);
             }
