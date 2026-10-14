@@ -33,6 +33,9 @@ private let redactor = Redactor(homeDirectory: "/Users/ann")
         #expect(redactor.redact("Connected john.smith+photos@gmail.com") == "Connected j***@gmail.com")
         #expect(redactor.redact("a@b.co and Zed@example.org.") == "a***@b.co and Z***@example.org.")
         #expect(Redactor.maskEmail("jane@example.com") == "j***@example.com")
+        // Percent-encoded, as in auth_data: nothing of the local part survives.
+        #expect(redactor.redact("Email=john%2Bwork%40example.com&x=1") == "Email=j***@example.com&x=1")
+        #expect(redactor.redact("john.doe%2Bphotos%2Etag@gmail.com") == "j***@gmail.com")
     }
 
     @Test func phoneNumbersAreMaskedButOtherNumbersAreNot() {

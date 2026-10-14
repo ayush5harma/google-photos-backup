@@ -44,7 +44,9 @@ public struct Redactor: Sendable {
         (#"(?i)([?&](?:upload_id|key|sig)=)[^&\s"']+"#, "$1<redacted>"),
     ]
 
-    private static let emailPattern = #"([A-Za-z0-9][A-Za-z0-9._+-]*?)(?:@|%40)([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})"#
+    /// The local part may be percent-encoded (`john%2Bwork%40example.com` in
+    /// auth_data); the lazy match stops at the first `@` or `%40`.
+    private static let emailPattern = #"([A-Za-z0-9](?:[A-Za-z0-9._+-]|%[0-9A-Fa-f]{2})*?)(?:@|%40)([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})"#
 
     /// International numbers with a leading +, and North American ones in
     /// their usual punctuation. Bare digit runs (byte counts, timestamps,
