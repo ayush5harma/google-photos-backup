@@ -70,6 +70,7 @@ try {
         $Screenshot = Join-Path $ReportDirectory 'ui-smoke.png'
         $Start.ArgumentList.Add('--screenshot')
         $Start.ArgumentList.Add($Screenshot)
+        $LaunchTime = Get-Date
         $Process = [System.Diagnostics.Process]::Start($Start)
         try {
             if (-not $Process.WaitForExit(45000)) {
@@ -77,7 +78,22 @@ try {
                 $Process.WaitForExit()
                 throw 'Synthetic WinUI launch did not exit within 45 seconds; GUI initialization is not verified.'
             }
-            if ($Process.ExitCode -ne 0) { throw "Synthetic WinUI launch failed with exit code $($Process.ExitCode)." }
+            if ($Process.ExitCode -ne 0) {
+                if (Test-Path $SmokeReport) {
+                    $Failure = Get-Content -Raw $SmokeReport | ConvertFrom-Json
+                    Write-Host ("Synthetic UI failure: " + ($Failure | ConvertTo-Json -Compress))
+                } else {
+                    # 2026-10-15: Native loader failures precede the fixture's managed report.
+                    $Events = @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $LaunchTime } -ErrorAction SilentlyContinue |
+                        Where-Object { $_.ProviderName -in @('.NET Runtime', 'Application Error') -and $_.Message -match 'GooglePhotosBackup' } |
+                        Select-Object -First 5 TimeCreated, ProviderName, Id, Message)
+                    if ($Events.Count -gt 0) {
+                        $Events | ConvertTo-Json -Depth 3 | Set-Content -Encoding utf8 (Join-Path $ReportDirectory 'ui-native-errors.json')
+                        Write-Host ($Events | ConvertTo-Json -Depth 3)
+                    }
+                }
+                throw "Synthetic WinUI launch failed with exit code $($Process.ExitCode)."
+            }
             if (-not (Test-Path $SmokeReport)) { throw 'Synthetic WinUI launch did not produce its initialization report.' }
             $UIReport = Get-Content -Raw $SmokeReport | ConvertFrom-Json
             if ($UIReport.status -ne 'ok') { throw 'Synthetic WinUI initialization was not successful.' }
