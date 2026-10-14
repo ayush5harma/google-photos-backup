@@ -600,6 +600,20 @@ final class AppModel {
         runtimeDescription = description
     }
 
+    #if DEBUG
+    /// Snapshot fixtures only: a library, an account and a runtime to draw,
+    /// without PhotoKit, the keychain or the bridge.
+    func applyFixture(albums: [LibraryAlbum], account: AccountStatus, runtime: String, messages: MessagesStatus = .off) {
+        self.albums = albums
+        albumsLoaded = true
+        photosStatus = .authorized
+        self.account = account
+        hasAuthData = account != .missing
+        runtimeDescription = runtime
+        messagesStatus = messages
+    }
+    #endif
+
     // MARK: - Hooks for the engine and the archive
 
     /// Every run ends here: it joins the history and may notify.
