@@ -58,12 +58,13 @@ public struct DiagnosticSnapshot: Sendable {
     public init() {}
 }
 
-/// Fixed openings of event messages the report's rules look for; the
-/// engine writes its events with them.
+/// Fixed openings of event messages the report's rules look for. They are
+/// the openings of the app's own descriptions of the matching fatal kinds
+/// (AppModel.describe), which the engine logs as they are.
 public enum EventPhrase {
     public static let rateLimited = "Google asked the app to slow down"
     public static let accountRefused = "Google refused the account"
-    public static let storageFull = "The Google account is out of storage"
+    public static let storageFull = "Your Google account is out of storage"
 }
 
 /// The plain-text report a person can paste into an issue: "What stands
