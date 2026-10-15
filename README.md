@@ -5,7 +5,7 @@
   <img src="docs/app-icon.png" width="112" height="112" alt="Aperture and infinity app icon">
 </picture></p>
 
-Back up photos and videos to Google Photos with native apps for **macOS, Windows and Android**. Choose what to upload, follow progress, and keep your originals.
+Back up photos and videos to Google Photos with native apps for **macOS, Windows and Android**. Choose what to upload, follow progress, and keep your originals. Includes a **currently working unlimited original-quality upload mode** through the unofficial gpmc Pixel XL profile; see the [validation and limits](#does-it-use-google-storage) below.
 
 [Website](https://ayush5harma.github.io/google-photos-backup/) · [Download](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Setup](docs/SETUP.md) · [Credits](ACKNOWLEDGEMENTS.md) · [Contribute](CONTRIBUTING.md)
 
@@ -30,7 +30,7 @@ The macOS release is ad-hoc signed and not notarized; if blocked, use **System S
 
 ## Does it use Google storage?
 
-Uploads use [xob0t's gpmc](https://github.com/xob0t/gpmc), an **unofficial** Google Photos client. Its Original / Pixel XL profile requests original-quality uploads using that device profile. This is not a guaranteed unlimited-storage entitlement.
+Uploads use [xob0t's gpmc](https://github.com/xob0t/gpmc), an **unofficial** Google Photos client. Its unlimited Original / Pixel XL mode currently works in our live tests: Google attributes no account-storage use to those uploads. This is not a guaranteed entitlement for every file, account, or future upload.
 
 In our 16 October 2026 test, Google Photos marked a photo and video uploaded from **each platform** as **Original quality** and **not taking up account storage**. All six downloaded originals matched their source SHA-256 hashes. The Mac album and Windows folder appeared with the same names and exactly the expected files. [Read the validation report](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/live-validation.md).
 
