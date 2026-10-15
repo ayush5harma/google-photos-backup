@@ -62,6 +62,15 @@ Screenshots use synthetic data; they are not live-upload evidence.
 
 See [detailed setup](docs/SETUP.md), the [technical reference](docs/REFERENCE.md), [Windows guide](Windows/README.md), and [Android guide](Android/README.md). Developers can start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
+<details><summary>Connected iPhone import — v0.5.0 preview</summary>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/macos-connected-device-dark.png">
+  <img src="docs/macos-connected-device-light.png" alt="Connected iPhone import preview with synthetic photo and video files">
+</picture>
+
+</details>
+
 ## Credits
 
 Made possible by [gpmc](https://github.com/xob0t/gpmc) and [gotohp](https://github.com/xob0t/gotohp) by **xob0t**, [iCloud Photos Downloader](https://github.com/icloud-photos-downloader/icloud_photos_downloader), and the projects listed in [Acknowledgements](ACKNOWLEDGEMENTS.md). Photos Backup is [MIT licensed](LICENSE); upstream projects retain their own licenses.
