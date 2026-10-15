@@ -83,7 +83,7 @@ public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirector
         return status.Value;
     }
 
-    public async Task<ICloudBackupResult> BackupAsync(string account, string googleCredential, CancellationToken cancellationToken)
+    public async Task<ICloudBackupResult> BackupAsync(string account, string googleCredential, CancellationToken cancellationToken, bool reclaimAfterBackup = false)
     {
         if (string.IsNullOrWhiteSpace(account)) throw new ArgumentException("Connect iCloud first.", nameof(account));
         if (GoogleSignIn.Email(googleCredential) is null) throw new ArgumentException("Connect Google Photos first.", nameof(googleCredential));
@@ -92,6 +92,12 @@ public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirector
             ["command"] = "backup", ["account"] = account.Trim(), ["state_dir"] = stateDirectory,
             ["staging_dir"] = stagingDirectory, ["auth_data"] = googleCredential
         };
+        if (reclaimAfterBackup)
+        {
+            request["reclaim_after_backup"] = true;
+            request["confirm_recently_deleted"] = true;
+            request["max_items"] = 100;
+        }
         ICloudBackupResult? result = null;
         var candidates = new List<ICloudSourceAsset>();
         ReclaimCandidates = [];

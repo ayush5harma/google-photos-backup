@@ -223,6 +223,14 @@ public sealed partial class MainWindow
     {
         if (_icloudRunCancellation is not null || _runCancellation is not null || !_icloudSignedIn || _credential is null ||
             _preferences.ICloudAccount is not { Length: > 0 } account || _store is null) return;
+        var reclaimAfterBackup = ICloudAutoReclaimToggle.IsOn;
+        if (reclaimAfterBackup)
+        {
+            var dialog = new ContentDialog { XamlRoot = Content.XamlRoot, Title = "Confirm automatic iCloud reclaim",
+                Content = "After each confirmed upload, up to 100 source items will move to iCloud Recently Deleted. This propagates to synced Apple devices, does not recover storage immediately, and is not a permanent purge.",
+                PrimaryButtonText = "Back up and move eligible items", CloseButtonText = "Keep originals", DefaultButton = ContentDialogButton.Close };
+            if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        }
         var generation = ++_icloudGeneration;
         _icloudPaused = false;
         _icloudRunCancellation = new CancellationTokenSource();
@@ -242,7 +250,7 @@ public sealed partial class MainWindow
         RefreshControls();
         try
         {
-            var result = await coordinator.BackupAsync(account, _credential, cancellation.Token);
+            var result = await coordinator.BackupAsync(account, _credential, cancellation.Token, reclaimAfterBackup);
             ClearICloudReclaimPreview();
             foreach (var asset in coordinator.ReclaimCandidates) _icloudReclaimCandidates.Add(asset);
             if (_icloudReclaimCandidates.Count > 0)

@@ -25,6 +25,17 @@ public sealed class ICloudCoordinatorTests
         Assert.Equal(new ICloudReclaimResult(1, 0, 0), await coordinator.ReclaimAsync("first@example.com", Credential(), preview.Token, CancellationToken.None));
         Assert.True(captured!["confirm_recently_deleted"]!.GetValue<bool>());
     }
+
+    [Fact]
+    public async Task AutomaticReclaimIsExplicitlyBoundAndLimited()
+    {
+        JsonObject? captured = null;
+        var bridge = new FakeBridge((request, emit, _) => { captured = request; emit(new JsonObject { ["type"] = "done", ["uploaded"] = 0, ["existing"] = 0, ["failed"] = 0, ["pending"] = 0 }); return Task.FromResult(0); });
+        await new ICloudCoordinator(bridge, "state", "stage").BackupAsync("first@example.com", Credential(), CancellationToken.None, reclaimAfterBackup: true);
+        Assert.True(captured!["reclaim_after_backup"]!.GetValue<bool>());
+        Assert.True(captured["confirm_recently_deleted"]!.GetValue<bool>());
+        Assert.Equal(100, captured["max_items"]!.GetValue<int>());
+    }
     [Theory]
     [InlineData("signed_out", ICloudAuthStatus.SignedOut)]
     [InlineData("signed_in", ICloudAuthStatus.SignedIn)]
