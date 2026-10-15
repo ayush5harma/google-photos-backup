@@ -308,8 +308,8 @@ private final class DeleteContinuationGate: @unchecked Sendable {
 
     private func resolve(_ result: Result<Set<String>, Error>) {
         let continuation = lock.withLock {
-            let value = continuation
-            continuation = nil
+            let value = self.continuation
+            self.continuation = nil
             return value
         }
         continuation?.resume(with: result)
