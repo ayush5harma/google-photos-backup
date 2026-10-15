@@ -35,7 +35,8 @@ public sealed class DeviceMediaStager(string root, long maximumBytes = 2L * 1024
             if (string.IsNullOrWhiteSpace(item.DeviceId) || string.IsNullOrWhiteSpace(item.ObjectId) || item.Size < 0)
                 throw new InvalidOperationException("The connected device returned an invalid media item.");
             var stableId = Hash(item.DeviceId + "\n" + item.ObjectId);
-            var deviceDir = Path.Combine(root, Hash(item.DeviceId));
+            var albumName = CleanAlbumName(item.AlbumName, item.Name);
+            var deviceDir = Path.Combine(root, Hash(item.DeviceId), SafeFolderName(albumName));
             Directory.CreateDirectory(deviceDir);
             var finalPath = Path.Combine(deviceDir, stableId + SafeExtension(item.Name));
             if (!File.Exists(finalPath))
@@ -58,7 +59,7 @@ public sealed class DeviceMediaStager(string root, long maximumBytes = 2L * 1024
                     throw;
                 }
             }
-            output.Add(new StagedDeviceMedia(stableId, finalPath, CleanAlbumName(item.AlbumName, item.Name)));
+            output.Add(new StagedDeviceMedia(stableId, finalPath, albumName));
         }
         return output;
     }
@@ -77,5 +78,10 @@ public sealed class DeviceMediaStager(string root, long maximumBytes = 2L * 1024
     }
     private static string CleanAlbumName(string? album, string fallback) =>
         string.IsNullOrWhiteSpace(album) ? "Connected device" : album.Trim()[..Math.Min(120, album.Trim().Length)];
+    private static string SafeFolderName(string value)
+    {
+        var sanitized = new string(value.Select(ch => Path.GetInvalidFileNameChars().Contains(ch) || ch is '.' or ' ' ? '_' : ch).ToArray()).Trim('_');
+        return string.IsNullOrWhiteSpace(sanitized) ? "Connected_device" : sanitized;
+    }
     private static string Hash(string text) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 }

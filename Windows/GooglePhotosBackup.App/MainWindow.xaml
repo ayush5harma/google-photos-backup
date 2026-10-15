@@ -31,6 +31,9 @@
             <NavigationViewItem Content="Folders" Tag="folders" ToolTipService.ToolTip="Folders" AutomationProperties.Name="Folders">
                 <NavigationViewItem.Icon><SymbolIcon Symbol="Folder" /></NavigationViewItem.Icon>
             </NavigationViewItem>
+            <NavigationViewItem Content="Connected devices" Tag="devices" ToolTipService.ToolTip="Connected devices" AutomationProperties.Name="Connected devices">
+                <NavigationViewItem.Icon><SymbolIcon Symbol="Devices" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
             <NavigationViewItem Content="iCloud Photos" Tag="icloud" ToolTipService.ToolTip="iCloud Photos" AutomationProperties.Name="iCloud Photos">
                 <NavigationViewItem.Icon><SymbolIcon Symbol="Sync" /></NavigationViewItem.Icon>
             </NavigationViewItem>
@@ -83,6 +86,27 @@
                         <TextBlock Text="NEXT BACKUP" Style="{ThemeResource CaptionTextBlockStyle}" />
                         <TextBlock x:Name="SelectionSummary" Text="No folders selected" TextWrapping="Wrap" />
                     </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+
+            <ScrollViewer x:Name="DevicesPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
+                <StackPanel Spacing="18">
+                    <TextBlock Text="Connected devices" Style="{ThemeResource TitleTextBlockStyle}" />
+                    <TextBlock Text="Choose specific media from an unlocked Android phone paired with adb. Copies are staged privately before upload; source media is always kept. iPhone, MTP and PTP devices appear when Windows exposes them, but importing them is not available in this build."
+                               TextWrapping="Wrap" Opacity="0.75" />
+                    <InfoBar x:Name="DeviceNotice" IsOpen="False" IsClosable="True" Severity="Informational" />
+                    <ListView x:Name="DevicesList" Height="120" SelectionMode="Single" SelectionChanged="DevicesList_SelectionChanged"
+                              AutomationProperties.Name="Connected media devices" />
+                    <Button x:Name="RefreshDevicesButton" Content="Refresh devices" Click="RefreshDevices_Click" />
+                    <TextBlock Text="MEDIA" Style="{ThemeResource CaptionTextBlockStyle}" />
+                    <ListView x:Name="DeviceMediaList" Height="300" SelectionMode="Multiple" DisplayMemberPath="Name"
+                              AutomationProperties.Name="Selected connected device media" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <Button x:Name="StageDeviceMediaButton" Content="Add selected media to backup" Click="StageDeviceMedia_Click"
+                                Style="{StaticResource AccentButtonStyle}" />
+                    </StackPanel>
+                    <TextBlock Text="Storage reclaim is unavailable: this app never deletes source media from a connected device."
+                               TextWrapping="Wrap" Opacity="0.65" />
                 </StackPanel>
             </ScrollViewer>
 
