@@ -19,7 +19,13 @@ The preview targets Windows 10 version 1809 or later on x64; Windows 11 is recom
   <img src="../docs/windows-overview.png" alt="Native WinUI 3 backup overview">
 </picture>
 
-This is the actual WinUI window rendered with synthetic data in [verified Windows CI run 38637885601](https://github.com/ayush5harma/google-photos-backup/actions/runs/38637885601). The fixture uses an opaque theme background so Mica transparency is readable in a PNG; the normal app retains its system backdrop.
+This is the actual WinUI window rendered with synthetic data in [verified Windows CI run 38797533801](https://github.com/ayush5harma/google-photos-backup/actions/runs/38797533801). The fixture uses an opaque theme background so Mica transparency is readable in a PNG; the normal app retains its system backdrop.
+
+## Compact navigation
+
+![Collapsed Windows navigation with labeled tooltips and native icons](../docs/windows-navigation-collapsed.png)
+
+The hamburger button switches between labeled navigation and a compact icon rail. Hover an icon for its label; reopening restores the full labels. This screenshot uses synthetic data from the fixed preview build.
 
 ## Set up and back up
 

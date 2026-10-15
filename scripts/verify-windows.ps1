@@ -111,13 +111,21 @@ try {
             if ($UIReport.status -ne 'ok') { throw 'Synthetic WinUI initialization was not successful.' }
             if ($UIReport.icloudPageRendered -ne $true) { throw 'The iCloud sign-in page failed its native UI check.' }
             if ($UIReport.encryptedCredentialRoundTrip -ne $true) { throw 'Synthetic DPAPI credential round-trip failed.' }
+            if ($UIReport.navigationCollapsed -ne $true -or $UIReport.navigationReopened -ne $true) {
+                throw 'Navigation pane collapse and reopen failed its rendered UI check.'
+            }
             if (-not (Test-Path $Screenshot) -or (Get-Item $Screenshot).Length -eq 0) { throw 'Synthetic WinUI screenshot was not produced.' }
+            $CollapsedScreenshot = Join-Path $ReportDirectory 'ui-smoke-collapsed.png'
+            if (-not (Test-Path $CollapsedScreenshot) -or (Get-Item $CollapsedScreenshot).Length -eq 0) {
+                throw 'Collapsed navigation screenshot was not produced.'
+            }
             $DarkScreenshot = Join-Path $ReportDirectory 'ui-smoke-dark.png'
             if (-not (Test-Path $DarkScreenshot) -or (Get-Item $DarkScreenshot).Length -eq 0) { throw 'Dark WinUI screenshot was not produced.' }
             if ($UIReport.lightIconSource -notlike '*/Assets/app-icon.png' -or $UIReport.darkIconSource -notlike '*/Assets/app-icon-dark.png') {
                 throw 'WinUI did not select both appearance assets.'
             }
             $Report.appearanceIcons = 'passed: decoded light and dark assets after changing the window theme'
+            $Report.navigationPane = 'passed: icons rendered without labels in compact mode; labels returned when reopened'
             $Report.encryptedCredentialRoundTrip = $true
             $Report.uiSmoke = 'passed: constructed MainWindow and exited without authentication or network access'
         } finally { $Process.Dispose() }

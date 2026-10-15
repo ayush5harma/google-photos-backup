@@ -84,7 +84,7 @@ echo '{"command":"version"}' | "$PY" -I -B "$RESOURCES/bridge/gpmc_bridge.py" | 
 
 "$PY" -I -B "$ROOT/scripts/verify-icloud.py" "$PY" "$RESOURCES/bridge/icloud_bridge.py"
 
-say "Drawing the icon"
+say "Packaging the canonical icon"
 ICONSET="$(mktemp -d)/AppIcon.iconset"
 mkdir -p "$ICONSET"
 swift "$ROOT/scripts/make-icon.swift" "$RESOURCES/AppIcon-light.png" light
