@@ -56,6 +56,7 @@ private enum FailureSource {
     case asset
     case picked
     case messages(MessagesMediaItem)
+    case device(DeviceMediaItem)
 }
 
 /// One staged file in a batch, with what to record once Google confirms it.
@@ -101,6 +102,11 @@ final class BackupEngine {
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var picked: [String] = []
     @ObservationIgnored private var messages: [MessagesMediaItem] = []
+    @ObservationIgnored private var deviceItems: [DeviceMediaItem] = []
+    /// Kept only while a connected-device run is queued. The device is the
+    /// authority for the bytes, never a persistent path on the Mac.
+    @ObservationIgnored private weak var deviceSource: ConnectedDeviceSource?
+    @ObservationIgnored private var deviceAlbumName: String?
     @ObservationIgnored private var messagesOnly = false
     @ObservationIgnored private var failedAssets = Set<String>()
     @ObservationIgnored private var failedAlbums = Set<String>()
@@ -188,6 +194,21 @@ final class BackupEngine {
         start(trigger: trigger)
     }
 
+    /// Queue explicit media from a directly connected device. These are not
+    /// Photos albums; one optional destination album name is supplied by the
+    /// person importing and is created in Google Photos by the normal bridge.
+    func backUp(device items: [DeviceMediaItem], source: ConnectedDeviceSource, destinationAlbumName: String?) {
+        let queued = Set(deviceItems.map(\.id))
+        let pending = DeviceImportPlan.selected(items, ids: Set(items.map(\.id)))
+            .filter { model.state.uploaded[$0.id] == nil && !queued.contains($0.id) }
+        guard !pending.isEmpty else { return }
+        deviceItems.append(contentsOf: pending)
+        deviceSource = source
+        let trimmed = destinationAlbumName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        deviceAlbumName = trimmed.isEmpty ? nil : trimmed
+        start(trigger: .picker)
+    }
+
     /// While waiting, this ends the wait at once: no bridge is running then.
     func pauseAfterCurrent() {
         if phase == .running || phase == .waiting { phase = .pausing }
@@ -205,6 +226,8 @@ final class BackupEngine {
     func stop() {
         picked = []
         messages = []
+        deviceItems = []
+        deviceSource?.cancelDownload()
         guard task != nil else {
             phase = .idle
             return
@@ -250,7 +273,7 @@ final class BackupEngine {
     private func isBusy(_ id: String) -> Bool {
         if inFlight.contains(id) { return true }
         if failedAssets.contains(id) { return false }
-        return picked.contains(id) || messages.contains { $0.id == id }
+        return picked.contains(id) || messages.contains { $0.id == id } || deviceItems.contains { $0.id == id }
     }
 
     private func requeue(_ id: String) -> Bool {
@@ -265,6 +288,7 @@ final class BackupEngine {
         case .asset: break
         case .picked: if !picked.contains(id) { picked.append(id) }
         case let .messages(item): if !messages.contains(where: { $0.id == id }) { messages.append(item) }
+        case let .device(item): if !deviceItems.contains(where: { $0.id == id }) { deviceItems.append(item) }
         }
         update(id) {
             $0.status = .waiting("Waiting to retry")
@@ -341,6 +365,20 @@ final class BackupEngine {
         // uploaded for All Photos may also belong to a mirrored album.
         while !shouldHalt {
             retryRequested = false
+            deviceItems.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
+            if !deviceItems.isEmpty {
+                guard let deviceSource else {
+                    for item in deviceItems { fail(item.id, "The connected device is no longer available.", retryable: true) }
+                    continue
+                }
+                let batch = Array(deviceItems.prefix(model.settings.batchSize))
+                planned(batch.count)
+                announce(&announced, trigger: trigger)
+                let album = deviceAlbumName.map { (id: "device-album:\($0)", title: $0) }
+                if await upload(device: batch, source: deviceSource, album: album, auth: auth, runtime: runtime,
+                                settings: model.settings) == .halt { return true }
+                continue
+            }
             messages.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
             if !messages.isEmpty {
                 let batch = Array(messages.prefix(model.settings.batchSize))
@@ -394,6 +432,8 @@ final class BackupEngine {
     private func endQueues() {
         picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
         messages.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
+        deviceItems.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
+        if deviceItems.isEmpty { deviceSource = nil; deviceAlbumName = nil }
         messagesOnly = false
     }
 
@@ -591,6 +631,45 @@ final class BackupEngine {
         prepared.forEach { prepared in update(prepared.id) { $0.size = prepared.size } }
         guard !prepared.isEmpty else { return .nothing }
         return await send(prepared, album: nil, category: .messages, auth: auth, runtime: runtime, settings: settings)
+    }
+
+    private func upload(device items: [DeviceMediaItem], source: ConnectedDeviceSource,
+                        album: (id: String, title: String)?, auth: String,
+                        runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
+        if let outcome = await clearance(retryAt: nil, holding: [], category: .photos) { return outcome }
+        let batch = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        inFlight = Set(items.map(\.id))
+        defer {
+            inFlight = []
+            try? FileManager.default.removeItem(at: batch)
+        }
+        do {
+            try FileManager.default.createDirectory(at: batch, withIntermediateDirectories: true,
+                                                    attributes: [.posixPermissions: 0o700])
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: batch.path)
+        } catch {
+            for item in items { fail(item.id, "Could not create the private import folder: \(error.localizedDescription)", retryable: true) }
+            return .nothing
+        }
+        var prepared: [BatchItem] = []
+        for item in items {
+            if phase == .stopping { markStopped(items.map(\.id)); return .halt }
+            show(item.id, filename: item.filename, status: .exporting)
+            do {
+                let staged = try await source.download(item, into: batch)
+                let values = try staged.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                guard values.isRegularFile == true else { throw ConnectedDeviceSource.ImportError.missingOutput }
+                let bytes = Int64(values.fileSize ?? 0)
+                guard bytes > 0 else { throw ConnectedDeviceSource.ImportError.missingOutput }
+                prepared.append(BatchItem(bridgeItem: BridgeItem(id: item.id, path: staged.path, filename: item.filename),
+                                          size: bytes, stamp: nil))
+                update(item.id) { $0.size = bytes; $0.status = .hashing }
+            } catch {
+                fail(item.id, error.localizedDescription, retryable: true)
+            }
+        }
+        guard !prepared.isEmpty else { return .nothing }
+        return await send(prepared, album: album, category: .photos, auth: auth, runtime: runtime, settings: settings)
     }
 
     /// Sends staged items through the bridge until each is confirmed or has
@@ -992,6 +1071,8 @@ final class BackupEngine {
         syncRunCounts()
         if id.hasPrefix("messages:") {
             if let item = messages.first(where: { $0.id == id }) { failures[id] = .messages(item) }
+        } else if id.hasPrefix("device:") {
+            if let item = deviceItems.first(where: { $0.id == id }) { failures[id] = .device(item) }
         } else {
             failures[id] = picked.contains(id) ? .picked : .asset
         }

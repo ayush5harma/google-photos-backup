@@ -4,7 +4,7 @@ import SwiftUI
 enum AppSection: String, CaseIterable, Identifiable {
     // Settings moved to the Settings window (Command-,); a stored "settings"
     // selection falls back to home.
-    case home, albums, icloud, messages, activity
+    case home, albums, devices, icloud, messages, activity
 
     var id: String { rawValue }
 
@@ -12,6 +12,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .home: "Overview"
         case .albums: "Albums"
+        case .devices: "Connected device"
         case .icloud: "iCloud Photos"
         case .messages: "Messages"
         case .activity: "Activity"
@@ -22,6 +23,7 @@ enum AppSection: String, CaseIterable, Identifiable {
         switch self {
         case .home: "square.grid.2x2"
         case .albums: "rectangle.stack"
+        case .devices: "iphone.and.arrow.forward"
         case .icloud: "icloud"
         case .messages: "message"
         case .activity: "clock.arrow.circlepath"
@@ -281,6 +283,7 @@ struct RootView: View {
             switch section {
             case .home: HomeView(section: $section)
             case .albums: AlbumsView(section: $section)
+            case .devices: ConnectedDeviceView()
             case .icloud: ICloudSourceView()
             case .messages: MessagesView(section: $section)
             case .activity: ActivityView(section: $section)
