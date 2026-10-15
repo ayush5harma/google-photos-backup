@@ -6,9 +6,11 @@ This is a development preview, not a stable Windows release. See implementation 
 
 ## Get a preview build
 
-Open a successful **Windows x64** run associated with the PR, then download its **Google-Photos-Backup-Windows-x64** artifact while signed into GitHub. Artifacts expire after 14 days. Extract the artifact, then extract the enclosed application ZIP. Keep the entire **Google Photos Backup** folder together and run **GooglePhotosBackup.exe**.
+Download [Google-Photos-Backup-Windows-x64.zip](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.3.0/Google-Photos-Backup-Windows-x64.zip) and its [SHA-256 checksum](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.3.0/Google-Photos-Backup-Windows-x64.zip.sha256) from release 0.3.0. Extract the ZIP, keep the entire **Google Photos Backup** folder together, and run **GooglePhotosBackup.exe**. The executable depends on the adjacent runtime files; it is not a standalone installer. No developer tools are needed.
 
-The preview targets Windows 10 version 1809 or later on x64; Windows 11 is recommended for its native Mica appearance. ARM64 packages are not provided. The package includes .NET, Windows App SDK, Python, and the uploader. Google sign-in also requires Microsoft Edge WebView2 Runtime. Follow Microsoft’s [Windows App SDK prerequisites](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/deployment-architecture), including the current x64 Visual C++ Redistributable. A clean Windows installation without that redistributable has not been tested. The application is currently unsigned, so Windows may warn when opening it; inspect the source and build provenance before trusting a preview.
+The package was built from release commit `3bbd7307f5b7ad71bab3049c71a1cd07d9ee67e8` by the [Windows x64 workflow](https://github.com/ayush5harma/google-photos-backup/actions/runs/38780698403).
+
+The preview targets Windows 10 version 1809 or later on x64; Windows 11 is recommended for its native Mica appearance. ARM64 packages are not provided; the x64 package passed the checks below under Windows 11 ARM64 emulation in Parallels. The package includes .NET, Windows App SDK, Python, and the uploader. Google sign-in also requires Microsoft Edge WebView2 Runtime. Follow Microsoft’s [Windows App SDK prerequisites](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/deployment-architecture), including the current x64 Visual C++ Redistributable. A clean Windows installation without that redistributable has not been tested. The application is currently unsigned, so Windows may warn when opening it; inspect the source and build provenance before trusting a preview.
 
 ## A look at the preview
 
@@ -30,6 +32,12 @@ This is the actual WinUI window rendered with synthetic data in [verified Window
 Only confirmed uploads enter the local resume state. A later run skips unchanged, confirmed files and retries pending files and album updates; edited files may upload again. Overlapping folder selections are deduplicated. The app uploads copies and does not delete source files or Google Photos media.
 
 This preview does not yet provide automatic scheduling, a tray app, Windows Photos library integration, or the macOS Messages features. Google sign-in and real account uploads still need interactive Windows validation; automated tests use synthetic data and a fake Google service.
+
+## Windows verification
+
+On 2026-10-15, the packaged app was tested in Parallels Desktop 27 on Windows 11 ARM64 (build 26100), using x64 emulation. The actual WinUI window launched successfully, rendered the iCloud sign-in controls and both themes, and passed a synthetic Windows DPAPI credential round trip. The bundled Python ran all 60 bridge fixtures; the real packaged providers passed version/import and signed-out iCloud checks, including the source-deletion guard. Native x64 CI additionally ran 26 core tests and verified the extracted self-contained package.
+
+These checks use synthetic data. They do not verify real Google sign-in or uploads, fresh Apple password/MFA, or every Windows hardware configuration. The download remains an unsigned development preview.
 
 ## Local data
 
@@ -58,6 +66,6 @@ uv run --no-project --python 3.13 python -B -m unittest discover -s Bridge/tests
 
 ## iCloud Photos
 
-Current source builds include an iCloud Photos source. Connect Google first, then open **iCloud Photos** and follow the Apple Account password and verification-code prompts. An iCloud for Windows installation or existing Windows iCloud sign-in is not required. Expired sessions return you to sign-in rather than silently reporting success.
+The 0.3.0 Windows preview includes an iCloud Photos source. Connect Google first, then open **iCloud Photos** and follow the Apple Account password and verification-code prompts. An iCloud for Windows installation or existing Windows iCloud sign-in is not required. Expired sessions return you to sign-in rather than silently reporting success.
 
 See [iCloud setup and limitations](../README.md#icloud-photos-backup). This version retains the iCloud originals; automatic source deletion is not enabled.

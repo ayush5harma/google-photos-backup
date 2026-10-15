@@ -11,7 +11,7 @@ On macOS, choose albums or your whole library, then follow progress from the men
 
 Uploads use [gpmc](https://github.com/xob0t/gpmc), an unofficial Google Photos client. Its **Pixel XL original-quality mode** is intended to use Google's unlimited original-quality storage behavior. Google controls whether uploads work and how they count against storage, and can change either behavior. Check your Google Photos account's storage after your first backup. Photos Backup is an independent project, unaffiliated with Apple or Google.
 
-[Download for macOS](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Set up](#set-up-on-macos) · [Privacy](#privacy) · [Technical reference](docs/REFERENCE.md) · [Contribute](CONTRIBUTING.md)
+[Download for macOS and Windows](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Set up](#set-up-on-macos) · [Privacy](#privacy) · [Technical reference](docs/REFERENCE.md) · [Contribute](CONTRIBUTING.md)
 
 ## Download
 
@@ -19,7 +19,7 @@ Download the **macOS Apple silicon (arm64)** or **macOS Intel (x86_64)** ZIP fro
 
 Unzip the download, move **Photos Backup.app** to Applications, and open it. The app is currently signed ad hoc and is **not notarized by Apple**. If macOS blocks its first launch, find the blocked app in **System Settings > Privacy & Security**, choose **Open Anyway**, and confirm the prompt only if you trust this download. Keep macOS security protections on. The app name remains **Photos Backup.app** so existing installs retain their identity.
 
-**Windows:** A native WinUI 3 x64 preview is included in this repository. See [Windows setup and source builds](Windows/README.md). It is under testing and has no stable release yet.
+**Windows:** Download [Google-Photos-Backup-Windows-x64.zip](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.3.0/Google-Photos-Backup-Windows-x64.zip) from release 0.3.0. Extract the ZIP and run **GooglePhotosBackup.exe** inside the **Google Photos Backup** folder; keep the whole folder together. This unsigned preview was checked on Windows 11 ARM64 in Parallels using x64 emulation and on native x64 Windows CI. See [Windows setup, verification scope, and source builds](Windows/README.md). Real Google sign-in and uploads remain unverified on Windows.
 
 ## Set up on macOS
 
