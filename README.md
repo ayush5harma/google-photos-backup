@@ -12,7 +12,7 @@ Back up selected photos and videos to Google Photos from **macOS, Windows, or An
 ## Start here
 
 1. Install the current v0.4.0 release for your platform below.
-2. Pick a small source, connect your Google account in the app, and run a backup.
+2. Pick a small source and review automatic backup settings (on by default on Mac), then connect Google Photos and run a backup.
 3. Check the uploaded item in Google Photos, including its quality and storage details, before trusting a larger backup.
 
 | Platform | v0.4.0 download |
