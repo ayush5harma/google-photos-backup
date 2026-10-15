@@ -24,6 +24,15 @@ data class MediaItem(
     val status: String = "Ready",
     val key: String = "",
     val progress: Float = 0f,
+    /** Name is user-visible only; remoteId is Google's acknowledged stable identifier. */
+    val albumName: String = "",
+    val albumId: String = "",
+    val membership: String = "",
+    val sha256: String = "",
+    /** Stable MediaStore volume + bucket id. Folder names are not unique. */
+    val folderId: String = "",
+    /** A name-based create may have reached Google before Android crashed. Never retry it blindly. */
+    val albumCreation: String = "",
 ) {
     fun json() =
         JSONObject()
@@ -33,6 +42,12 @@ data class MediaItem(
             .put("status", status)
             .put("key", key)
             .put("progress", progress)
+            .put("albumName", albumName)
+            .put("albumId", albumId)
+            .put("membership", membership)
+            .put("sha256", sha256)
+            .put("folderId", folderId)
+            .put("albumCreation", albumCreation)
 
     companion object {
         fun from(j: JSONObject) =
@@ -43,6 +58,12 @@ data class MediaItem(
                 j.getString("status"),
                 j.optString("key"),
                 j.optDouble("progress", 0.0).toFloat(),
+                j.optString("albumName"),
+                j.optString("albumId"),
+                j.optString("membership"),
+                j.optString("sha256"),
+                j.optString("folderId"),
+                j.optString("albumCreation"),
             )
     }
 }
@@ -225,6 +246,51 @@ class Store private constructor(private val context: Context) {
                 notice = "${added.size} selected. Start when you're ready.",
             )
         }
+    }
+
+    /** Replaces the queued view of a device folder with its currently accessible media.
+     * Existing confirmed keys and Google album ids survive refreshes, so refresh never reuploads.
+     */
+    fun replaceFolderFor(generation: String, folder: DeviceFolder, media: List<DeviceMedia>) {
+        updateFor(generation) { state ->
+            val old = state.items.filter { it.folderId == folder.id }.associateBy { it.uri }
+            val refreshed = media.map { candidate ->
+                old[candidate.uri]?.copy(name = candidate.name)
+                    ?: MediaItem(
+                        id = candidate.stableId,
+                        uri = candidate.uri,
+                        name = candidate.name,
+                        albumName = folder.name,
+                        membership = "Pending album",
+                        folderId = folder.id,
+                    )
+            }
+            state.copy(
+                items = state.items.filterNot { it.folderId == folder.id } + refreshed,
+                notice = "${refreshed.size} currently accessible items in ${folder.name}. Review before backup.",
+            )
+        }
+    }
+
+    /** This is deliberately user initiated after they inspect Google Photos. It never guesses
+     * whether an interrupted name-based request created an album. */
+    fun confirmAlbumCreateRetry(folderId: String): Boolean {
+        var changed = false
+        update { state ->
+            val next = state.items.map { item ->
+                if (item.folderId == folderId && item.albumId.isBlank() && item.albumCreation == "Attempted") {
+                    changed = true
+                    item.copy(albumCreation = "User confirmed retry", membership = "Pending album")
+                } else item
+            }
+            if (changed)
+                state.copy(
+                    items = next,
+                    notice = "Album creation retry confirmed. It may create another album with this name.",
+                )
+            else state
+        }
+        return changed
     }
 
     @Synchronized

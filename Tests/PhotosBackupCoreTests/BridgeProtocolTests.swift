@@ -16,6 +16,8 @@ private func event(_ json: String) throws -> BridgeEvent {
             == .progress(id: "A/L0/001", phase: .uploading, completed: 5, total: 10))
         #expect(try event(#"{"type":"item","v":1,"id":"A","media_key":"k","status":"existing"}"#) == .item(id: "A", mediaKey: "k", existing: true))
         #expect(try event(#"{"type":"item","v":1,"id":"A","media_key":"k","status":"uploaded"}"#) == .item(id: "A", mediaKey: "k", existing: false))
+        #expect(try event(#"{"type":"verified","v":1,"id":"A","media_key":"k","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bytes":12}"#)
+            == .verified(id: "A", mediaKey: "k", sha256: String(repeating: "a", count: 64), bytes: 12))
         #expect(try event(#"{"type":"item_failed","v":1,"id":"A","message":"413","retryable":false}"#)
             == .itemFailed(id: "A", message: "413", retryable: false))
         #expect(try event(#"{"type":"item_failed","v":1,"id":"A","message":"503","retryable":true}"#)
@@ -68,6 +70,19 @@ private func event(_ json: String) throws -> BridgeEvent {
         #expect(json["command"] as? String == "add-to-album")
         #expect((json["media_keys"] as? [String]) == ["k1"])
         #expect(json["items"] == nil)
+    }
+
+    @Test func verificationRequestCarriesAnImmutableExpectedFingerprint() throws {
+        let request = BridgeRequest.verifyOriginal("auth", items: [
+            OriginalVerificationItem(id: "device:1", path: "/private/staging/one.heic", mediaKey: "key",
+                                     expectedSHA256: String(repeating: "b", count: 64), expectedBytes: 42),
+        ])
+        let json = try #require(JSONSerialization.jsonObject(with: request.encoded()) as? [String: Any])
+        #expect(json["command"] as? String == "verify-original")
+        let item = try #require((json["items"] as? [[String: Any]])?.first)
+        #expect(item["media_key"] as? String == "key")
+        #expect(item["expected_sha256"] as? String == String(repeating: "b", count: 64))
+        #expect(item["expected_bytes"] as? Int == 42)
     }
 }
 
