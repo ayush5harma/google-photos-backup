@@ -240,4 +240,30 @@ class QueueSmokeTest {
         assertEquals("", result.albumId)
         assertEquals("Remote album creation needs review", result.membership)
     }
+
+    @Test
+    fun userCanExplicitlyRecoverUncertainAlbumCreationButNotAcknowledgedAlbum() {
+        val store = Store.get(context)
+        store.disconnect()
+        store.connect("Email=album%40example.test&Token=synthetic")
+        val uncertain = MediaItem(
+            "uncertain", "file:///one", "one.png", key = "key-one", albumName = "Camera",
+            folderId = "external:camera", albumCreation = "Attempted",
+            membership = "Remote album creation needs review",
+        )
+        val acknowledged = MediaItem(
+            "acknowledged", "file:///two", "two.png", key = "key-two", albumName = "Camera",
+            folderId = "external:camera", albumId = "known-google-id", albumCreation = "Acknowledged",
+            membership = "Added",
+        )
+        store.update { it.copy(items = listOf(uncertain, acknowledged)) }
+        assertTrue(store.confirmAlbumCreateRetry("external:camera"))
+        val recovered = store.state.value.items.first { it.id == "uncertain" }
+        assertEquals("User confirmed retry", recovered.albumCreation)
+        assertEquals("Pending album", recovered.membership)
+        val known = store.state.value.items.first { it.id == "acknowledged" }
+        assertEquals("Acknowledged", known.albumCreation)
+        assertEquals("Added", known.membership)
+        assertFalse(store.confirmAlbumCreateRetry("external:unknown"))
+    }
 }

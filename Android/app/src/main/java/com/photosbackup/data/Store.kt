@@ -272,6 +272,27 @@ class Store private constructor(private val context: Context) {
         }
     }
 
+    /** This is deliberately user initiated after they inspect Google Photos. It never guesses
+     * whether an interrupted name-based request created an album. */
+    fun confirmAlbumCreateRetry(folderId: String): Boolean {
+        var changed = false
+        update { state ->
+            val next = state.items.map { item ->
+                if (item.folderId == folderId && item.albumId.isBlank() && item.albumCreation == "Attempted") {
+                    changed = true
+                    item.copy(albumCreation = "User confirmed retry", membership = "Pending album")
+                } else item
+            }
+            if (changed)
+                state.copy(
+                    items = next,
+                    notice = "Album creation retry confirmed. It may create another album with this name.",
+                )
+            else state
+        }
+        return changed
+    }
+
     @Synchronized
     fun updateFor(generation: String, change: (BackupState) -> BackupState) {
         if (state.value.generation == generation) update(change)

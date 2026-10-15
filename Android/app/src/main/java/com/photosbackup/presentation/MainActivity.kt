@@ -79,6 +79,7 @@ class MainActivity : ComponentActivity() {
         var folders by remember { mutableStateOf<List<DeviceFolder>>(emptyList()) }
         var showFolders by remember { mutableStateOf(false) }
         var loadingFolders by remember { mutableStateOf(false) }
+        var albumRecovery by remember { mutableStateOf<MediaItem?>(null) }
         DisposableEffect(advanced) {
             if (advanced) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
             else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -326,7 +327,7 @@ class MainActivity : ComponentActivity() {
                             )
                         }
                     items(state.items.filter { it.key.isBlank() || (it.albumName.isNotBlank() && it.membership != "Added") }, key = { it.id }) {
-                        MediaRow(it, !busy) {
+                        MediaRow(it, !busy, {
                             store.update { s ->
                                 s.copy(items = s.items.filter { row -> row.id != it.id })
                             }
@@ -336,7 +337,7 @@ class MainActivity : ComponentActivity() {
                                     Intent.FLAG_GRANT_READ_URI_PERMISSION,
                                 )
                             }
-                        }
+                        }) { candidate -> albumRecovery = candidate }
                     }
                 }
                 if (tab == 1) {
@@ -354,7 +355,7 @@ class MainActivity : ComponentActivity() {
                                 "Your selected items and confirmed backups will appear here.",
                             )
                         }
-                    items(state.items, key = { it.id }) { MediaRow(it, false, {}) }
+                    items(state.items, key = { it.id }) { MediaRow(it, false, {}, {}) }
                 }
                 if (tab == 2) {
                     item {
@@ -511,6 +512,24 @@ class MainActivity : ComponentActivity() {
                 dismissButton = { TextButton(onClick = { refreshFolders() }) { Text("Refresh") } },
             )
         }
+        albumRecovery?.let { item ->
+            AlertDialog(
+                onDismissRequest = { albumRecovery = null },
+                title = { Text("Retry album creation?") },
+                text = {
+                    Text(
+                        "Check Google Photos first for an album named ${item.albumName}. The earlier request may have reached Google. Retrying can create another album with the same name; confirmed media will not be uploaded again."
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        store.confirmAlbumCreateRetry(item.folderId)
+                        albumRecovery = null
+                    }) { Text("Create again") }
+                },
+                dismissButton = { TextButton(onClick = { albumRecovery = null }) { Text("Cancel") } },
+            )
+        }
     }
 }
 
@@ -533,7 +552,12 @@ private fun Empty(title: String, description: String) {
 }
 
 @Composable
-private fun MediaRow(item: MediaItem, removable: Boolean, onRemove: () -> Unit) {
+private fun MediaRow(
+    item: MediaItem,
+    removable: Boolean,
+    onRemove: () -> Unit,
+    onRecoverAlbum: (MediaItem) -> Unit = {},
+) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(
             Modifier.fillMaxWidth().padding(16.dp),
@@ -560,6 +584,8 @@ private fun MediaRow(item: MediaItem, removable: Boolean, onRemove: () -> Unit) 
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                if (item.membership == "Remote album creation needs review" && item.folderId.isNotBlank())
+                    TextButton(onClick = { onRecoverAlbum(item) }) { Text("Review & retry album") }
                 if (item.status == "Uploading")
                     LinearProgressIndicator(
                         progress = { item.progress },
