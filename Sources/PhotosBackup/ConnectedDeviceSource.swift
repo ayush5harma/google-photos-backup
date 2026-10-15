@@ -69,6 +69,21 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
         return nil
     }
 
+    /// A reclaim batch may exceed the ordinary upload limit so no Live Photo
+    /// group is split across batches. Import-only batches retain the normal
+    /// limit because no source deletion is contemplated.
+    func batchKeepingPairsTogether(_ queued: [DeviceMediaItem], limit: Int) -> [DeviceMediaItem] {
+        var groups: [String: Set<String>] = [:]
+        for (id, file) in files {
+            guard let relationship = file.relatedUUID ?? file.groupUUID else { continue }
+            let members = Set(files.compactMap { candidateID, candidate in
+                (candidate.relatedUUID == relationship || candidate.groupUUID == relationship) ? candidateID : nil
+            })
+            if members.count > 1 { groups[id] = members }
+        }
+        return DeviceImportPlan.batchKeepingGroupsTogether(queued, limit: limit, groups: groups)
+    }
+
     override init() {
         super.init()
         browser.delegate = self
@@ -188,16 +203,23 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
         let targets = ids.compactMap { files[$0] }
         guard targets.count == ids.count else { throw ImportError.disconnected }
         return try await withCheckedThrowingContinuation { continuation in
-            _ = camera.requestDeleteFiles(targets, deleteFailed: { _ in
+            let gate = DeleteContinuationGate(continuation)
+            let progress = camera.requestDeleteFiles(targets, deleteFailed: { _ in
                 // The completion result remains the only authority for what
                 // actually changed; no per-file error text is displayed.
             }, completion: { result, error in
-                if let error { continuation.resume(throwing: error); return }
+                if let error { gate.fail(error); return }
                 let successful = Set((result[ICDeleteResult.successful] ?? []).compactMap { item in
                     self.files.first(where: { $0.value === item })?.key
                 })
-                continuation.resume(returning: successful)
+                gate.succeed(successful)
             })
+            // A nil progress means Image Capture rejected the request before
+            // it was queued. Resume now; the gate safely ignores any broken
+            // driver's late completion rather than hanging a reclaim run.
+            if progress == nil {
+                gate.fail(ImportError.reclaimUnavailable("The device rejected the deletion request; source media was retained."))
+            }
         }
     }
 
@@ -214,8 +236,10 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
         supportsDeviceDeletion = camera.capabilities.contains(ICDeviceCapability.cameraDeviceCanDeleteOneFile.rawValue)
         let cameraFiles = (camera.mediaFiles ?? []).compactMap { $0 as? ICCameraFile }
         let descriptors = cameraFiles.compactMap { file -> (DeviceMediaItem, ICCameraFile)? in
-            let stable = file.fingerprint ?? "\(file.ptpObjectHandle):\(file.originalFilename ?? file.name ?? "file")"
-            let id = "device:\(stable)"
+            let deviceID = camera.uuidString ?? "usb:\(camera.usbVendorID):\(camera.usbProductID):\(camera.usbLocationID)"
+            let id = DeviceImportPlan.stableIdentifier(deviceID: deviceID, fingerprint: file.fingerprint,
+                                                       objectHandle: file.ptpObjectHandle,
+                                                       filename: file.originalFilename ?? file.name ?? "file")
             let filename = file.originalFilename ?? file.name ?? "Untitled"
             let item = DeviceMediaItem(id: id, filename: filename, byteCount: Int64(file.fileSize),
                                        createdAt: file.fileCreationDate as Date?, isMovie: file.uti == "public.movie")
@@ -258,5 +282,29 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
             case let .reclaimUnavailable(reason): reason
             }
         }
+    }
+}
+
+/// Image Capture callbacks are normally on the main thread but drivers are
+/// external. A one-shot gate protects against a rejected request followed by
+/// a late callback, which would otherwise resume a continuation twice.
+private final class DeleteContinuationGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Set<String>, Error>?
+
+    init(_ continuation: CheckedContinuation<Set<String>, Error>) {
+        self.continuation = continuation
+    }
+
+    func succeed(_ ids: Set<String>) { resolve(.success(ids)) }
+    func fail(_ error: Error) { resolve(.failure(error)) }
+
+    private func resolve(_ result: Result<Set<String>, Error>) {
+        let continuation = lock.withLock {
+            let value = continuation
+            continuation = nil
+            return value
+        }
+        continuation?.resume(with: result)
     }
 }

@@ -108,6 +108,9 @@ final class BackupEngine {
 
     @ObservationIgnored private unowned let model: AppModel
     @ObservationIgnored private let bridge = BridgeProcess()
+    /// Verification belongs to the run just like upload: Stop terminates it,
+    /// and no orphan child can later make a deletion decision.
+    @ObservationIgnored private let verifier = BridgeProcess()
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var picked: [String] = []
     @ObservationIgnored private var messages: [MessagesMediaItem] = []
@@ -117,6 +120,7 @@ final class BackupEngine {
     @ObservationIgnored private weak var deviceSource: ConnectedDeviceSource?
     @ObservationIgnored private var deviceAlbumName: String?
     @ObservationIgnored private var deviceReclaimRequested = false
+    @ObservationIgnored private var reclaimGeneration = 0
     @ObservationIgnored private var messagesOnly = false
     @ObservationIgnored private var failedAssets = Set<String>()
     @ObservationIgnored private var failedAlbums = Set<String>()
@@ -236,10 +240,12 @@ final class BackupEngine {
     /// end that read early. A run that is waiting has no bridge, and leaves
     /// its wait within a second.
     func stop() {
+        reclaimGeneration &+= 1
         picked = []
         messages = []
         deviceItems = []
         deviceSource?.cancelDownload()
+        verifier.terminate()
         guard task != nil else {
             phase = .idle
             return
@@ -383,11 +389,14 @@ final class BackupEngine {
                     for item in deviceItems { fail(item.id, "The connected device is no longer available.", retryable: true) }
                     continue
                 }
-                let batch = Array(deviceItems.prefix(model.settings.batchSize))
+                let batch = deviceReclaimRequested
+                    ? deviceSource.batchKeepingPairsTogether(deviceItems, limit: model.settings.batchSize)
+                    : Array(deviceItems.prefix(model.settings.batchSize))
                 planned(batch.count)
                 announce(&announced, trigger: trigger)
                 let album = deviceAlbumName.map { (id: "device-album:\($0)", title: $0) }
-                if await upload(device: batch, source: deviceSource, album: album, auth: auth, runtime: runtime,
+                if await upload(device: batch, source: deviceSource, album: album, auth: auth,
+                                accountEmail: model.state.accountEmail, reclaimGeneration: reclaimGeneration, runtime: runtime,
                                 settings: model.settings) == .halt { return true }
                 continue
             }
@@ -650,7 +659,8 @@ final class BackupEngine {
     }
 
     private func upload(device items: [DeviceMediaItem], source: ConnectedDeviceSource,
-                        album: (id: String, title: String)?, auth: String,
+                        album: (id: String, title: String)?, auth: String, accountEmail: String?,
+                        reclaimGeneration: Int,
                         runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
         if let outcome = await clearance(retryAt: nil, holding: [], category: .photos) { return outcome }
         let batch = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -688,7 +698,8 @@ final class BackupEngine {
         guard !prepared.isEmpty else { return .nothing }
         let outcome = await send(prepared, album: album, category: .photos, auth: auth, runtime: runtime, settings: settings)
         guard outcome != .halt, deviceReclaimRequested else { return outcome }
-        await verifyAndReclaim(prepared, source: source, auth: auth, runtime: runtime)
+        await verifyAndReclaim(prepared, source: source, auth: auth, accountEmail: accountEmail,
+                               reclaimGeneration: reclaimGeneration, runtime: runtime)
         return outcome
     }
 
@@ -696,7 +707,8 @@ final class BackupEngine {
     /// Any missing proof, source change, bridge failure, or deletion error
     /// retains the source; the app never turns an upload acknowledgement into
     /// a deletion permission.
-    private func verifyAndReclaim(_ items: [BatchItem], source: ConnectedDeviceSource, auth: String, runtime: BridgeRuntime) async {
+    private func verifyAndReclaim(_ items: [BatchItem], source: ConnectedDeviceSource, auth: String, accountEmail: String?,
+                                  reclaimGeneration: Int, runtime: BridgeRuntime) async {
         let verifiedInputs = items.compactMap { item -> OriginalVerificationItem? in
             guard let record = model.state.uploaded[item.id], let fingerprint = item.fingerprint else { return nil }
             return OriginalVerificationItem(id: item.id, path: item.bridgeItem.path, mediaKey: record.mediaKey,
@@ -706,7 +718,7 @@ final class BackupEngine {
         var verified = Set<String>()
         let request = BridgeRequest.verifyOriginal(auth, items: verifiedInputs)
         do {
-            let exit = try await BridgeProcess().run(request, runtime: runtime, workDirectory: model.paths.logs, log: model.paths.bridgeLog) { event in
+            let exit = try await verifier.run(request, runtime: runtime, workDirectory: model.paths.logs, log: model.paths.bridgeLog) { event in
                 if case let .verified(id, mediaKey, sha256, bytes) = event,
                    let expected = verifiedInputs.first(where: { $0.id == id }),
                    expected.mediaKey == mediaKey, expected.expectedSHA256 == sha256, expected.expectedBytes == bytes {
@@ -715,6 +727,14 @@ final class BackupEngine {
             }
             guard exit == 0, verified.count == verifiedInputs.count else {
                 model.log(.photos, "Original verification did not complete; source media was retained.", problem: true)
+                return
+            }
+            // A new sign-in, Stop, or account transition invalidates a
+            // confirmation even after Google replied. Check immediately
+            // before the destructive request, on the main actor.
+            guard phase == .running, self.reclaimGeneration == reclaimGeneration,
+                  model.authData == auth, model.state.accountEmail == accountEmail else {
+                model.log(.photos, "Backup state changed while verifying; source media was retained.")
                 return
             }
             let deleted = try await source.deleteVerified(verified)

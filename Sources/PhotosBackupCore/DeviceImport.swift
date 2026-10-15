@@ -21,6 +21,14 @@ public struct DeviceMediaItem: Codable, Equatable, Identifiable, Sendable {
 
 /// Pure selection rules shared by the connected-device UI and its tests.
 public enum DeviceImportPlan {
+    /// File fingerprints and PTP handles are only unique within one camera.
+    /// The device UUID keeps two cameras with identical names/handles from
+    /// sharing backup state, while remaining stable across reconnects.
+    public static func stableIdentifier(deviceID: String, fingerprint: String?, objectHandle: UInt32, filename: String) -> String {
+        let local = fingerprint?.isEmpty == false ? fingerprint! : "\(objectHandle):\(filename)"
+        return "device:\(deviceID):\(local)"
+    }
+
     /// Keep the first occurrence of every stable camera identity. The order
     /// from Image Capture is preserved, so a reconnect cannot reshuffle a
     /// person's selection.
@@ -31,5 +39,25 @@ public enum DeviceImportPlan {
 
     public static func selected(_ items: [DeviceMediaItem], ids: Set<String>) -> [DeviceMediaItem] {
         unique(items).filter { ids.contains($0.id) }
+    }
+
+    /// Reclaim batches are allowed to grow past the regular limit so related
+    /// camera components are never separated. The caller supplies only
+    /// relationships it has established with confidence.
+    public static func batchKeepingGroupsTogether(_ queued: [DeviceMediaItem], limit: Int,
+                                                   groups: [String: Set<String>]) -> [DeviceMediaItem] {
+        guard !queued.isEmpty else { return [] }
+        let queuedIDs = Set(queued.map(\.id))
+        var ids = Set(queued.prefix(max(1, limit)).map(\.id))
+        var changed = true
+        while changed {
+            changed = false
+            for id in Array(ids) {
+                for related in groups[id, default: []] where queuedIDs.contains(related) {
+                    if ids.insert(related).inserted { changed = true }
+                }
+            }
+        }
+        return queued.filter { ids.contains($0.id) }
     }
 }
