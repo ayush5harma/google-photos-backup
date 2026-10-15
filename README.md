@@ -21,6 +21,12 @@ Unzip the download, move **Photos Backup.app** to Applications, and open it. The
 
 **Windows:** Download [Google-Photos-Backup-Windows-x64.zip](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.3.0/Google-Photos-Backup-Windows-x64.zip) from release 0.3.0. Extract the ZIP and run **GooglePhotosBackup.exe** inside the **Google Photos Backup** folder; keep the whole folder together. This unsigned preview was checked on Windows 11 ARM64 in Parallels using x64 emulation and on native x64 Windows CI. See [Windows setup, verification scope, and source builds](Windows/README.md). Real Google sign-in and uploads remain unverified on Windows.
 
+## Windows preview
+
+[![Google Photos Backup running in Windows 11 on Parallels](docs/windows-parallels.png)](Windows/README.md)
+
+The released Windows app running in Parallels on Windows 11 ARM64 through x64 emulation. This capture uses synthetic backup data and an opaque background; it does not show a real account or upload. See the [Windows setup guide](Windows/README.md).
+
 ## Set up on macOS
 
 1. Open **Photos Backup.app** and follow the welcome guide. Grant Photos access so the app can read the library and albums you want to back up.
@@ -66,13 +72,6 @@ The shared provider replaces the earlier iCloud-to-Google-Photos pipeline, using
 [![The welcome guide](docs/welcome-guide-light.png)](docs/welcome-guide-light.png)
 
 </details>
-
-<a href="Windows/README.md"><picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/windows-overview-dark.png">
-  <img src="docs/windows-overview.png" alt="Windows WinUI 3 preview">
-</picture></a>
-
-The Windows image shows the native preview with an opaque capture background.
 
 These screenshots use [made-up fixture data](docs/SCREENSHOTS.md), not a real library, account, or conversation.
 
