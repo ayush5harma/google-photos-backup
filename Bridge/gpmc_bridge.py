@@ -480,7 +480,10 @@ def verify_original(client: Any, item: Event, stop: StopSignal | None = None) ->
         if final_digest.hexdigest() != sha256:
             raise ValueError("source changed during verification")
         after = os.fstat(source.fileno())
-        current = path.stat()
+        # Compare handle metadata with handle metadata. On Windows, stat(path)
+        # and fstat(handle) may expose different file-ID widths.
+        with path.open("rb", buffering=0) as current_source:
+            current = os.fstat(current_source.fileno())
         fingerprint = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
         if fingerprint(before) != fingerprint(after) or fingerprint(before) != fingerprint(current):
             raise ValueError("source changed during verification")
