@@ -28,7 +28,17 @@ The macOS menu bar has a separate **iCloud Photos** card with progress and start
 
 Apple session material is stored in macOS Keychain or encrypted with Windows DPAPI. Passwords and verification codes are passed to the bundled helper through a pipe and are not saved by the form. The helper uses a private temporary cookie directory while running; a forced termination can leave it until the next helper launch cleans it up.
 
-This integration currently copies media and retains the iCloud originals. Automatic iCloud deletion is unavailable until the destination can be independently verified. Upload completion alone is not a safe basis for reclaiming iCloud storage. Offloading and automatic source deletion are not implemented.
+This integration currently copies media and retains the iCloud originals. Upload completion alone is not a safe basis for reclaiming iCloud storage.
+
+### Upcoming v0.5.0: verified iCloud reclaim preview
+
+The upcoming v0.5.0 preview keeps iCloud backup copy-only by default. Reclaim is a separate, opt-in action: review a manual preview, or explicitly confirm an automatic run of no more than 100 assets. Before an asset is moved, the app freshly downloads every original component from iCloud, reads the uploaded original back from Google Photos, and compares SHA-256 hashes and byte counts. A changed source, failed verification, or uncertain deletion leaves the source retained.
+
+A successful reclaim moves the item to **Recently Deleted**; it does not permanently purge it, guarantee immediate iCloud storage recovery, or avoid propagation to devices sharing that iCloud Photos library. Review the preview and Recently Deleted consequence carefully. Validation of synthetic iCloud reclaim synchronization is still pending.
+
+### Upcoming v0.5.0: connected devices
+
+On macOS, an unlocked and trusted iPhone or camera can supply selected originals through Image Capture/DCIM. This imports files that the connected device exposes; it does not browse PhotoKit albums or cloud-only items. The import path copies originals and retains the device source. Connected-iPhone end-to-end validation remains pending.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="icloud-setup-dark.png">
