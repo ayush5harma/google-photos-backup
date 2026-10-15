@@ -44,6 +44,7 @@ progress is allowed to finish and report first.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -52,11 +53,12 @@ import re
 import signal
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, TextIO
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 PROTOCOL_VERSION = 1
 
@@ -376,6 +378,123 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
     return EXIT_OK
 
 
+
+def _verification_items(request: Event) -> list[Event]:
+    items = _require(request, "items", list)
+    if not items or len(items) > 1000:
+        raise RequestError("verification requires 1-1000 items")
+    for item in items:
+        if not isinstance(item, dict) or not all(isinstance(item.get(k), str) and item[k] for k in ("id", "path", "media_key")):
+            raise RequestError("verification items require id, path and media_key")
+        if "expected_bytes" in item and (type(item["expected_bytes"]) is not int or item["expected_bytes"] <= 0):
+            raise RequestError("expected_bytes must be positive")
+        if "expected_sha256" in item and (not isinstance(item["expected_sha256"], str) or not re.fullmatch(r"[a-f0-9]{64}", item["expected_sha256"])):
+            raise RequestError("expected_sha256 must be a lowercase SHA-256 digest")
+    return items
+
+
+def _original_url(value: Any) -> str:
+    # Both the initial URL and every redirect must remain on Google download
+    # hosts. No authorization header is sent: these are signed download URLs.
+    if not isinstance(value, str):
+        raise ValueError("original download unavailable")
+    parsed = urlsplit(value)
+    host = (parsed.hostname or "").lower()
+    if (parsed.scheme != "https" or parsed.username or parsed.password or
+            parsed.port not in (None, 443) or not any(
+                host == suffix or host.endswith("." + suffix)
+                for suffix in ("googleusercontent.com", "googlevideo.com"))):
+        raise ValueError("untrusted original download location")
+    return value
+
+
+def verify_original(client: Any, item: Event, stop: StopSignal | None = None) -> Event:
+    """Compare a fresh Google ORIGINAL readback with a stable local source.
+
+    Success proves bytes for this media key at this instant, not future
+    availability or quota treatment. Call immediately before source removal.
+    Never return/log signed URLs or provider exception text.
+    """
+    stop = stop or StopSignal()
+    deadline = time.monotonic() + 1800
+
+    def check() -> None:
+        if stop.requested:
+            raise StopRequested
+        if time.monotonic() > deadline:
+            raise TimeoutError("original verification timed out")
+
+    path = Path(item["path"])
+    with path.open("rb") as source:
+        before = os.fstat(source.fileno())
+        if before.st_size <= 0 or before.st_size > 20 * 1024**3:
+            raise ValueError("source outside verification size limit")
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            check()
+            digest.update(chunk)
+        sha256 = digest.hexdigest()
+        if item.get("expected_bytes", before.st_size) != before.st_size or item.get("expected_sha256", sha256) != sha256:
+            raise ValueError("source changed since preview")
+        check()
+        decoded = client.api.get_download_urls(item["media_key"])
+        url = _original_url(decoded["1"]["5"]["2"]["6"])
+        remote_digest, count = hashlib.sha256(), 0
+        # A fresh session has no account cookies or Authorization defaults.
+        with client.api._new_session() as session:
+            session.verify = True
+            session.trust_env = False
+            session.headers.clear()
+            session.cookies.clear()
+            # Disable provider retry/backoff on streamed reads; the caller can retry.
+            for adapter in getattr(session, "adapters", {}).values():
+                adapter.max_retries = 0
+            for redirect in range(6):
+                check()
+                response = session.get(url, stream=True, allow_redirects=False,
+                                       headers={"Accept-Encoding": "identity"}, timeout=(15, 30))
+                try:
+                    if response.status_code in (301, 302, 303, 307, 308):
+                        if redirect == 5:
+                            raise ValueError("too many original download redirects")
+                        url = _original_url(urljoin(url, response.headers.get("Location", "")))
+                        continue
+                    if response.status_code != 200:
+                        raise ValueError("original download refused")
+                    for chunk in response.iter_content(1024 * 1024):
+                        check()
+                        count += len(chunk)
+                        if count > before.st_size:
+                            raise ValueError("original download exceeds source size")
+                        remote_digest.update(chunk)
+                    break
+                finally:
+                    response.close()
+        after = os.fstat(source.fileno())
+        current = path.stat()
+        fingerprint = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+        if fingerprint(before) != fingerprint(after) or fingerprint(before) != fingerprint(current):
+            raise ValueError("source changed during verification")
+        if count != before.st_size or remote_digest.hexdigest() != sha256:
+            raise ValueError("Google original differs from source")
+        return {"id": item["id"], "media_key": item["media_key"], "sha256": sha256, "bytes": count}
+
+
+def _verify_originals(request: Event, client: Any, emit: Emit, stop: StopSignal) -> int:
+    counts = {"verified": 0, "failed": 0}
+    for item in _verification_items(request):
+        try:
+            proof = verify_original(client, item, stop)
+        except Exception:
+            # Provider exceptions can contain signed download URLs.
+            counts["failed"] += 1
+            emit(_event("item_failed", id=item["id"], message="Original verification failed; retain the source", retryable=True))
+        else:
+            counts["verified"] += 1
+            emit(_event("verified", **proof))
+    emit(_event("done", **counts))
+    return EXIT_OK if not counts["failed"] else EXIT_INTERNAL
+
 def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client_factory, stop: StopSignal | None = None) -> int:
     """Answer one request through emit(); returns the process exit status."""
     stop = stop or StopSignal()
@@ -388,12 +507,14 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
         if command == "version":
             emit(_event("version", protocol=PROTOCOL_VERSION, gpmc=_gpmc_version(), python=platform.python_version()))
             return EXIT_OK
-        if command not in ("check-auth", "upload", "add-to-album"):
+        if command not in ("check-auth", "upload", "add-to-album", "verify-original"):
             raise RequestError(f"unknown command {command!r}")
 
         # Validate everything that needs no network before authenticating.
         if command == "upload":
             _items(request)
+        elif command == "verify-original":
+            _verification_items(request)
         elif command == "add-to-album":
             if not all(isinstance(key, str) and key for key in _require(request, "media_keys", list)):
                 raise RequestError("`media_keys` must be non-empty strings")
@@ -409,6 +530,8 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
             emit(_event("fatal", kind=kind, message=str(error)))
             return code
 
+        if command == "verify-original":
+            return _verify_originals(request, client, emit, stop)
         if command == "check-auth":
             # A bearer token proves the sign-in; a hash lookup proves Google
             # Photos itself accepts the account (gotohp validates the same way).

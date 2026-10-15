@@ -15,6 +15,13 @@ final class ICloudSource {
     private(set) var completed = 0
     private(set) var total = 0
     private(set) var notice: String?
+    private(set) var reclaimFiles: [String: String] = [:]
+    var reclaimSelection: Set<String> = [] { didSet { reclaimToken = nil } }
+    private(set) var reclaimToken: String?
+    private(set) var reclaimCount = 0
+    private(set) var reclaimBytes = 0
+    private var reclaimAuth: String?
+    private var reclaimAccount: String?
     private(set) var verification = ICloudVerificationState()
     var trustedPhones: [ICloudTrustedPhone] { verification.phones }
     var deviceCodeAvailable: Bool { verification.deviceCodeAvailable }
@@ -125,7 +132,7 @@ final class ICloudSource {
                     phoneID: verification.selectedSMSPhoneID))
     }
 
-    func backUp() {
+    func backUp(reclaimAfterBackup: Bool = false) {
         guard operation == nil, hasConfirmedSelection,
               phase == .ready || phase == .finished || phase == .stopped || phase == .failed else { return }
         guard runtimeAvailable else {
@@ -138,9 +145,31 @@ final class ICloudSource {
         }
         uploaded = 0; existing = 0; failed = 0; pending = 0; completed = 0; total = 0
         notice = nil
+        reclaimFiles = [:]; reclaimSelection = []; reclaimToken = nil
         phase = .backingUp
         start(.init(command: .backup, account: account, stateDir: stateDirectory.path,
-                    stagingDir: stagingDirectory.path, authData: auth))
+                    stagingDir: stagingDirectory.path, authData: auth,
+                    confirmRecentlyDeleted: reclaimAfterBackup ? true : nil, reclaimAfterBackup: reclaimAfterBackup))
+    }
+
+    func previewReclaim() {
+        guard operation == nil, hasConfirmedSelection, let auth = model.authData,
+              !reclaimSelection.isEmpty, reclaimSelection.count <= 100 else { return }
+        reclaimAuth = auth; reclaimAccount = account; reclaimToken = nil
+        phase = .backingUp
+        start(.init(command: .reclaimPreview, account: account, stateDir: stateDirectory.path,
+                    authData: auth, assetIDs: Array(reclaimSelection).sorted()))
+    }
+
+    func reclaimVerifiedCopies() {
+        guard operation == nil, let token = reclaimToken, reclaimCount > 0,
+              hasConfirmedSelection, account == reclaimAccount, let auth = model.authData,
+              auth == reclaimAuth else { reclaimToken = nil; return }
+        reclaimToken = nil
+        phase = .backingUp
+        start(.init(command: .reclaim, account: account, stateDir: stateDirectory.path,
+                    stagingDir: stagingDirectory.path, authData: auth,
+                    previewToken: token, confirmRecentlyDeleted: true))
     }
 
     func pause() {
@@ -249,6 +278,16 @@ final class ICloudSource {
             notice = remaining > 0 ? "Some items remain. Start again to resume." : "Backup finished."
         case .stopped: phase = .stopped; notice = "Paused. Start again to resume remaining items."
         case .reclaim: break
+        case let .sourceAsset(id, filename):
+            if reclaimFiles.count < 100 { reclaimFiles[id] = filename }
+        case let .reclaimPreview(token, count, bytes):
+            reclaimToken = token; reclaimCount = count; reclaimBytes = bytes
+            phase = .finished
+            notice = "Preview ready. Originals will be independently verified before removal."
+        case let .reclaimDone(deleted, retained, uncertain):
+            phase = .finished
+            notice = "Moved \(deleted) to Recently Deleted. Retained \(retained); deletion unconfirmed for \(uncertain). Space recovery may be delayed."
+            reclaimFiles = [:]; reclaimSelection = []; reclaimToken = nil
         case .failure(let kind):
             if kind == "mfa_delivery" {
                 phase = .needs2FA
