@@ -169,6 +169,19 @@
                     </StackPanel>
                     <TextBlock Text="This is a backup-only transfer. Originals remain in iCloud and no source photo is deleted. A paused or interrupted run can resume from confirmed uploads."
                                TextWrapping="Wrap" Opacity="0.75" />
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="OPTIONAL STORAGE RECLAIM" Style="{ThemeResource CaptionTextBlockStyle}" />
+                        <TextBlock Text="After a confirmed backup, you can preview up to 100 source items. Reclaim moves them to iCloud Recently Deleted, which propagates to synced Apple devices. It does not immediately recover storage and never permanently purges media."
+                                   TextWrapping="Wrap" Opacity="0.75" />
+                        <ListView x:Name="ICloudReclaimList" Height="150" SelectionMode="Multiple" DisplayMemberPath="Filename"
+                                  AutomationProperties.Name="Confirmed iCloud media available for reclaim" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button x:Name="ICloudPreviewReclaimButton" Content="Preview reclaim" Click="ICloudPreviewReclaim_Click" />
+                            <Button x:Name="ICloudConfirmReclaimButton" Content="Move previewed items to Recently Deleted" Click="ICloudConfirmReclaim_Click" IsEnabled="False"
+                                    Style="{StaticResource AccentButtonStyle}" />
+                        </StackPanel>
+                        <TextBlock x:Name="ICloudReclaimStatus" Text="Copy-only by default." TextWrapping="Wrap" Opacity="0.75" />
+                    </StackPanel>
                 </StackPanel>
             </ScrollViewer>
 

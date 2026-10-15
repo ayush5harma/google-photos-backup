@@ -1,4 +1,5 @@
 using GooglePhotosBackup.Core;
+using System.Collections.ObjectModel;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 
@@ -17,9 +18,12 @@ public sealed partial class MainWindow
     private bool _icloudPaused;
     private int _icloudAuthGeneration;
     private int _icloudGeneration;
+    private readonly ObservableCollection<ICloudSourceAsset> _icloudReclaimCandidates = [];
+    private ICloudReclaimPreview? _icloudReclaimPreview;
 
     private void InitializeICloud()
     {
+        ICloudReclaimList.ItemsSource = _icloudReclaimCandidates;
         if (_preferences.ICloudAccount is not { Length: > 0 } account) return;
         ICloudAccountBox.Text = account;
         ICloudAccountStatus.Text = "Checking iCloud session";
@@ -239,6 +243,10 @@ public sealed partial class MainWindow
         try
         {
             var result = await coordinator.BackupAsync(account, _credential, cancellation.Token);
+            ClearICloudReclaimPreview();
+            foreach (var asset in coordinator.ReclaimCandidates) _icloudReclaimCandidates.Add(asset);
+            if (_icloudReclaimCandidates.Count > 0)
+                ICloudReclaimStatus.Text = $"{_icloudReclaimCandidates.Count} confirmed item(s) can be previewed for reclaim. Copy-only remains the default.";
             ICloudBackupStatus.Text = result.Pending > 0 ? "Backup paused with items still pending"
                 : result.Failed > 0 ? "Backup finished with failures" : "iCloud backup complete";
             ICloudProgressText.Text = $"{result.Uploaded} uploaded · {result.Existing} already backed up · {result.Failed} failed · {result.Pending} pending";
@@ -275,6 +283,43 @@ public sealed partial class MainWindow
         _icloudRunCancellation.Cancel();
         ICloudBackupStatus.Text = "Pausing after the current transfer";
         RefreshICloudControls();
+    }
+
+    private async void ICloudPreviewReclaim_Click(object sender, RoutedEventArgs args)
+    {
+        if (_credential is null || _preferences.ICloudAccount is not { Length: > 0 } account || _icloudRunCancellation is not null) return;
+        var selected = ICloudReclaimList.SelectedItems.Cast<ICloudSourceAsset>().Take(100).ToArray();
+        if (selected.Length == 0) { ShowICloudNotice("Select confirmed items to preview first.", InfoBarSeverity.Informational); return; }
+        try
+        {
+            _icloudReclaimPreview = await GetICloudCoordinator().PreviewReclaimAsync(account, _credential, selected, CancellationToken.None);
+            ICloudReclaimStatus.Text = $"Preview: {_icloudReclaimPreview.Count} item(s), {_icloudReclaimPreview.Bytes:N0} bytes. Nothing has been deleted.";
+            ICloudConfirmReclaimButton.IsEnabled = true;
+        }
+        catch { ClearICloudReclaimPreview(); ShowICloudNotice("Reclaim preview could not be prepared. Nothing was deleted.", InfoBarSeverity.Warning); }
+    }
+
+    private async void ICloudConfirmReclaim_Click(object sender, RoutedEventArgs args)
+    {
+        if (_icloudReclaimPreview is null || _credential is null || _preferences.ICloudAccount is not { Length: > 0 } account) return;
+        var dialog = new ContentDialog { XamlRoot = Content.XamlRoot, Title = "Move source media to Recently Deleted?",
+            Content = "This affects iCloud Photos and synced Apple devices. Storage is not recovered immediately; this app does not permanently delete media.",
+            PrimaryButtonText = "Move to Recently Deleted", CloseButtonText = "Keep originals", DefaultButton = ContentDialogButton.Close };
+        if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
+        try
+        {
+            var result = await GetICloudCoordinator().ReclaimAsync(account, _credential, _icloudReclaimPreview.Token, CancellationToken.None);
+            ICloudReclaimStatus.Text = $"Recently Deleted: {result.SoftDeleted}; retained: {result.Retained}; needs review: {result.Uncertain}.";
+        }
+        catch { ICloudReclaimStatus.Text = "Reclaim was not fully confirmed. Check iCloud Recently Deleted before taking further action."; }
+        finally { ClearICloudReclaimPreview(); }
+    }
+
+    private void ClearICloudReclaimPreview()
+    {
+        _icloudReclaimPreview = null;
+        _icloudReclaimCandidates.Clear();
+        ICloudConfirmReclaimButton.IsEnabled = false;
     }
 
     private void RefreshICloudControls()
