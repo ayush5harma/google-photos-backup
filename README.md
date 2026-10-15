@@ -5,7 +5,7 @@
   <img src="docs/app-icon.png" width="112" height="112" alt="Aperture and infinity app icon">
 </picture></p>
 
-Back up selected photos and videos to Google Photos from **macOS, Windows, or Android**. The apps upload copies and leave your source media in place.
+Back up selected photos and videos to Google Photos from **macOS, Windows, or Android**. The apps keep your originals by default and include a **currently working unlimited original-quality mode** through the unofficial gpmc client. [Validation and limits](#upload-mode-and-its-limits).
 
 [Website](https://ayush5harma.github.io/google-photos-backup/) · [Download v0.4.0](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Setup](docs/SETUP.md) · [Reference](docs/REFERENCE.md) · [Credits](ACKNOWLEDGEMENTS.md)
 
@@ -35,7 +35,7 @@ These capabilities are being prepared for v0.5.0 and are not part of the v0.4.0 
 
 - **Android:** select accessible MediaStore folders and mirror them as Google Photos albums. These are device folders, not logical Google albums. Android's partial-media permission means only media you granted the app can appear.
 - **macOS:** import selected originals from a connected, unlocked and trusted iPhone or camera through DCIM/Image Capture. This is file import, not PhotoKit album access or cloud-only media.
-- **Windows:** import selected media from portable MTP/PTP devices and their DCIM-style storage. An optional, explicitly configured ADB source can import from a wireless Android connection.
+- **Windows:** import selected media from devices exposed through Windows portable storage/DCIM. An optional, explicitly configured ADB source can import from a wireless Android connection.
 - **iCloud reclaim:** iCloud backup remains copy-only by default. A manual preview, or an explicitly confirmed automatic run of at most 100 items, may move verified source assets to Recently Deleted only after fresh original readback and SHA-256 verification of every component. Recently Deleted changes propagate to iCloud devices; it does not promise immediate free space or purge the items.
 
 ## Know before backing up
