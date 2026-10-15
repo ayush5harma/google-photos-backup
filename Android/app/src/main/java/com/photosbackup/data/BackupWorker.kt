@@ -178,18 +178,32 @@ open class BackupWorker(context: Context, params: WorkerParameters) : Worker(con
             // persisted, never send the bytes again just because Google album membership failed.
             val memberships = store.state.value.items
                 .filter { it.id in selected && it.key.isNotBlank() && it.albumName.isNotBlank() && it.membership != "Added" }
-                .groupBy { it.albumName }
-            for ((albumName, grouped) in memberships) {
+                .groupBy { it.folderId.ifBlank { "legacy-name:${it.albumName}" } }
+            for ((sourceFolderId, grouped) in memberships) {
                 if (isStopped || cancellation.get() || store.state.value.generation != generation) break
+                val albumName = grouped.first().albumName
                 val priorIds = grouped.map { it.albumId }.filter { it.isNotBlank() }.distinct()
                 if (priorIds.size > 1) {
                     store.updateFor(generation) { state -> state.copy(notice = "Album $albumName needs review before retrying.") }
                     failed = true
                     continue
                 }
+                val hasUncertainCreation = priorIds.isEmpty() && grouped.any { it.albumCreation == "Attempted" }
+                if (hasUncertainCreation) {
+                    store.updateFor(generation) { state -> state.copy(items = state.items.map { item ->
+                        if (item.folderId == sourceFolderId) item.copy(membership = "Remote album creation needs review") else item
+                    }, notice = "Google album creation for $albumName was interrupted. It will not be retried automatically.") }
+                    failed = true
+                    continue
+                }
                 val album = JSONObject().apply {
                     if (priorIds.singleOrNull() != null) put("id", priorIds.single()) else put("name", albumName)
                 }
+                // This must reach durable storage before a name-based Google call. If the
+                // process dies before Google returns an ID, retrying could make a duplicate.
+                if (priorIds.isEmpty()) store.updateFor(generation) { state -> state.copy(items = state.items.map { item ->
+                    if (item.folderId == sourceFolderId) item.copy(albumCreation = "Attempted", membership = "Creating remote album") else item
+                }) }
                 store.updateFor(generation) { state ->
                     state.copy(items = state.items.map { item ->
                         if (item.id in grouped.map { it.id }) item.copy(membership = "Adding to album") else item
@@ -208,7 +222,7 @@ open class BackupWorker(context: Context, params: WorkerParameters) : Worker(con
                     failed = true
                     store.updateFor(generation) { state ->
                         state.copy(items = state.items.map { item ->
-                            if (item.id in grouped.map { it.id }) item.copy(membership = "Album retry needed") else item
+                        if (item.id in grouped.map { it.id }) item.copy(membership = if (priorIds.isEmpty()) "Remote album creation needs review" else "Album retry needed") else item
                         })
                     }
                 }
@@ -377,7 +391,7 @@ class AlbumListener(
                         // An empty acknowledgement is ambiguous: keep it retryable rather than
                         // pretending we know which remote album Google chose.
                         if (remoteId.isBlank()) item.copy(membership = "Album retry needed")
-                        else item.copy(albumId = remoteId, membership = "Added")
+                        else item.copy(albumId = remoteId, albumCreation = "Acknowledged", membership = "Added")
                     }
                     "album_failed", "fatal" -> item.copy(membership = "Album retry needed")
                     else -> item

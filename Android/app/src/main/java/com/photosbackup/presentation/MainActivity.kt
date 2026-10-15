@@ -495,10 +495,11 @@ class MainActivity : ComponentActivity() {
                                 supportingContent = { Text("${folder.count} currently accessible items") },
                                 modifier = Modifier.fillMaxWidth().clickable {
                                     showFolders = false
+                                    val generation = state.generation
                                     scope.launch(Dispatchers.IO) {
                                         val result = runCatching { DeviceLibrary(this@MainActivity).media(folder) }
-                                        result.onSuccess { media -> store.replaceFolder(folder, media) }
-                                            .onFailure { store.update { state -> state.copy(notice = "Could not read ${folder.name}.") } }
+                                        result.onSuccess { media -> store.replaceFolderFor(generation, folder, media) }
+                                            .onFailure { store.updateFor(generation) { state -> state.copy(notice = "Could not read ${folder.name}.") } }
                                     }
                                 },
                             )
