@@ -27,6 +27,14 @@ Unzip the download, move **Photos Backup.app** to Applications, and open it. The
 
 The released Windows app running in Parallels on Windows 11 ARM64 through x64 emulation. This capture uses synthetic backup data and an opaque background; it does not show a real account or upload. See the [Windows setup guide](Windows/README.md).
 
+## Android preview
+
+A native Android app backs up only the on-device photos and videos you explicitly select. It uses Android's private photo picker, a cancellable upload notification, encrypted credentials, and matching light/dark themes. iCloud transfer is not included in Android v1.
+
+See [Android installation, build instructions and verification scope](Android/README.md). The APK supports Android 8 or later on ARM64 and x86_64 devices. Google sign-in uses the same unofficial provider as the desktop app.
+
+<img src="docs/android-overview-dark.png" alt="Android backup overview with the finalized F icon" width="300">
+
 ## Set up on macOS
 
 1. Open **Photos Backup.app** and follow the welcome guide. Grant Photos access so the app can read the library and albums you want to back up.
