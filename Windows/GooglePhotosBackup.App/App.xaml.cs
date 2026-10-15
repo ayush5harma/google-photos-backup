@@ -56,12 +56,18 @@ public partial class App : Application
                     stage = "capture-theme-screenshots";
                     (lightIconSource, darkIconSource) = await window.SaveThemeScreenshotsAsync(arguments[screenshotIndex + 1]);
                 }
+                stage = "navigation-collapse-reopen";
+                var collapsedScreenshot = screenshotIndex >= 0 && screenshotIndex + 1 < arguments.Length
+                    ? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(arguments[screenshotIndex + 1]))!, "ui-smoke-collapsed.png")
+                    : null;
+                var (navigationCollapsed, navigationReopened) = await window.ValidateNavigationPaneAsync(collapsedScreenshot);
                 if (reportPath is not null)
                 {
                     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
                     File.WriteAllText(reportPath, JsonSerializer.Serialize(new
                     {
-                        status = "ok", encryptedCredentialRoundTrip, icloudPageRendered, lightIconSource, darkIconSource
+                        status = "ok", encryptedCredentialRoundTrip, icloudPageRendered, lightIconSource, darkIconSource,
+                        navigationCollapsed, navigationReopened, collapsedScreenshot
                     }));
                 }
                 Environment.Exit(0);

@@ -1,9 +1,11 @@
 using System.Collections.ObjectModel;
 using GooglePhotosBackup.Core;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Media.Imaging;
+using Windows.Foundation;
 using Windows.Graphics;
 using Windows.Graphics.Imaging;
 using Windows.Storage;
@@ -411,6 +413,59 @@ public sealed partial class MainWindow : Window
         var light = await CaptureThemeAsync(ElementTheme.Light, "app-icon.png", fullPath);
         var dark = await CaptureThemeAsync(ElementTheme.Dark, "app-icon-dark.png", darkPath);
         return (light, dark);
+    }
+
+    public async Task<(bool Collapsed, bool Reopened)> ValidateNavigationPaneAsync(string? collapsedScreenshotPath)
+    {
+        var items = Navigation.MenuItems.Cast<NavigationViewItem>().ToArray();
+        if (items.Any(item => item.Icon is not SymbolIcon ||
+            ToolTipService.GetToolTip(item)?.ToString() != item.Content?.ToString() ||
+            AutomationProperties.GetName(item) != item.Content?.ToString()))
+            throw new InvalidOperationException("Navigation items need icons, tooltips, and accessible names.");
+
+        Navigation.IsPaneOpen = false;
+        await Task.Delay(500);
+        Navigation.UpdateLayout();
+        var collapsed = !Navigation.IsPaneOpen &&
+            items.All(item => item.Icon is SymbolIcon icon && icon.IsLoaded && icon.ActualWidth > 0 &&
+                !IsNavigationLabelVisible(item, Navigation.CompactPaneLength));
+        if (!collapsed) throw new InvalidOperationException("The compact navigation rail still shows a label or has no rendered icon.");
+        if (collapsedScreenshotPath is not null) await SaveScreenshotAsync(collapsedScreenshotPath);
+
+        Navigation.IsPaneOpen = true;
+        await Task.Delay(500);
+        Navigation.UpdateLayout();
+        var reopened = Navigation.IsPaneOpen && items.All(item => IsNavigationLabelVisible(item, item.ActualWidth));
+        if (!reopened) throw new InvalidOperationException("Navigation labels did not reappear after opening the pane.");
+        return (collapsed, reopened);
+    }
+
+    private static bool IsNavigationLabelVisible(NavigationViewItem item, double visibleWidth)
+    {
+        var label = FindLabel(item, item.Content?.ToString());
+        if (label is null || label.ActualWidth <= 0 || label.ActualHeight <= 0) return false;
+        var bounds = label.TransformToVisual(item).TransformBounds(new Rect(0, 0, label.ActualWidth, label.ActualHeight));
+        if (bounds.Right <= 0 || bounds.Left >= visibleWidth || bounds.Bottom <= 0 || bounds.Top >= item.ActualHeight)
+            return false;
+        for (DependencyObject? current = label; current is not null && current != item; current = VisualTreeHelper.GetParent(current))
+        {
+            if (current is UIElement { Visibility: Visibility.Collapsed } ||
+                current is UIElement { Opacity: <= 0.01 } ||
+                current is FrameworkElement element && (element.ActualWidth <= 0 || element.ActualHeight <= 0))
+                return false;
+        }
+        return true;
+    }
+
+    private static TextBlock? FindLabel(DependencyObject root, string? text)
+    {
+        if (root is TextBlock label && label.Text == text) return label;
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var found = FindLabel(VisualTreeHelper.GetChild(root, index), text);
+            if (found is not null) return found;
+        }
+        return null;
     }
 
     private async Task<string> CaptureThemeAsync(ElementTheme theme, string expectedAsset, string path)

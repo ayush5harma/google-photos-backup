@@ -25,11 +25,21 @@
             </ResourceDictionary>
         </NavigationView.Resources>
         <NavigationView.MenuItems>
-            <NavigationViewItem Content="Overview" Tag="overview" />
-            <NavigationViewItem Content="Folders" Tag="folders" />
-            <NavigationViewItem Content="iCloud Photos" Tag="icloud" />
-            <NavigationViewItem Content="Activity" Tag="activity" />
-            <NavigationViewItem Content="Settings" Tag="settings" />
+            <NavigationViewItem Content="Overview" Tag="overview" ToolTipService.ToolTip="Overview" AutomationProperties.Name="Overview">
+                <NavigationViewItem.Icon><SymbolIcon Symbol="Home" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Folders" Tag="folders" ToolTipService.ToolTip="Folders" AutomationProperties.Name="Folders">
+                <NavigationViewItem.Icon><SymbolIcon Symbol="Folder" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="iCloud Photos" Tag="icloud" ToolTipService.ToolTip="iCloud Photos" AutomationProperties.Name="iCloud Photos">
+                <NavigationViewItem.Icon><SymbolIcon Symbol="Sync" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Activity" Tag="activity" ToolTipService.ToolTip="Activity" AutomationProperties.Name="Activity">
+                <NavigationViewItem.Icon><SymbolIcon Symbol="List" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
+            <NavigationViewItem Content="Settings" Tag="settings" ToolTipService.ToolTip="Settings" AutomationProperties.Name="Settings">
+                <NavigationViewItem.Icon><SymbolIcon Symbol="Setting" /></NavigationViewItem.Icon>
+            </NavigationViewItem>
         </NavigationView.MenuItems>
         <Grid Padding="32,20,32,28" MaxWidth="1000" HorizontalAlignment="Stretch">
             <ScrollViewer x:Name="OverviewPage" VerticalScrollBarVisibility="Auto">
