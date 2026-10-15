@@ -425,7 +425,7 @@ def verify_original(client: Any, item: Event, stop: StopSignal | None = None) ->
             raise TimeoutError("original verification timed out")
 
     path = Path(item["path"])
-    with path.open("rb") as source:
+    with path.open("rb", buffering=0) as source:
         before = os.fstat(source.fileno())
         if before.st_size <= 0 or before.st_size > 20 * 1024**3:
             raise ValueError("source outside verification size limit")
@@ -470,6 +470,15 @@ def verify_original(client: Any, item: Event, stop: StopSignal | None = None) ->
                     break
                 finally:
                     response.close()
+        # Windows may defer timestamp updates while another handle is open.
+        # Re-read bytes as well as metadata; never accept a same-size mutation.
+        source.seek(0)
+        final_digest = hashlib.sha256()
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            check()
+            final_digest.update(chunk)
+        if final_digest.hexdigest() != sha256:
+            raise ValueError("source changed during verification")
         after = os.fstat(source.fileno())
         current = path.stat()
         fingerprint = lambda st: (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
