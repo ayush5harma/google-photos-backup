@@ -99,3 +99,7 @@ Contributions are distributed under the repository's [MIT license](LICENSE).
 ## Release documentation
 
 Keep the README and release notes concise and focused on what a new user needs: supported sources, actual downloads, setup, and material limitations. Use [.github/RELEASE_TEMPLATE.md](.github/RELEASE_TEMPLATE.md) for each release. Always retain linked upstream credits; update [ACKNOWLEDGEMENTS.md](ACKNOWLEDGEMENTS.md) when adding a project. Describe completed checks and their scope, never a profile name as proof of unlimited storage.
+
+## Project website
+
+Edit `site/index.html` and `site/styles.css`, then run `python3 scripts/build-site.py`. Serve `build/site` locally to preview it. The build reads `VERSION` and copies approved screenshots from `docs/`; it checks local links and assets. GitHub Pages deploys from `main` through `.github/workflows/pages.yml`. Keep downloads, limitations and upstream credits consistent with the README.

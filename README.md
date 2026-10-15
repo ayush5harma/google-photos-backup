@@ -7,7 +7,7 @@
 
 Back up photos and videos to Google Photos with native apps for **macOS, Windows and Android**. Choose what to upload, follow progress, and keep your originals.
 
-[Download](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Setup](docs/SETUP.md) · [Credits](ACKNOWLEDGEMENTS.md) · [Contribute](CONTRIBUTING.md)
+[Website](https://ayush5harma.github.io/google-photos-backup/) · [Download](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Setup](docs/SETUP.md) · [Credits](ACKNOWLEDGEMENTS.md) · [Contribute](CONTRIBUTING.md)
 
 ## Choose your app
 
