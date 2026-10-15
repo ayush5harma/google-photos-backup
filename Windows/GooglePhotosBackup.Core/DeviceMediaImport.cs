@@ -44,11 +44,13 @@ public sealed class DeviceMediaStager(string root, long maximumBytes = 2L * 1024
                 var temporary = finalPath + ".partial";
                 try
                 {
-                    await using var input = await source.OpenReadAsync(item, ct).ConfigureAwait(false);
-                    await using var outputStream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None,
-                        128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
-                    await input.CopyToAsync(outputStream, 128 * 1024, ct).ConfigureAwait(false);
-                    await outputStream.FlushAsync(ct).ConfigureAwait(false);
+                    await using (var input = await source.OpenReadAsync(item, ct).ConfigureAwait(false))
+                    await using (var outputStream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None,
+                        128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
+                    {
+                        await input.CopyToAsync(outputStream, 128 * 1024, ct).ConfigureAwait(false);
+                        await outputStream.FlushAsync(ct).ConfigureAwait(false);
+                    }
                     if (item.Size != 0 && new FileInfo(temporary).Length != item.Size)
                         throw new IOException("The device disconnected before the media copy finished.");
                     File.Move(temporary, finalPath, false);
