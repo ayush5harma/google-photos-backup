@@ -13,6 +13,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -75,6 +76,9 @@ class MainActivity : ComponentActivity() {
         var advanced by remember { mutableStateOf(false) }
         var secret by remember { mutableStateOf("") }
         var validating by remember { mutableStateOf(false) }
+        var folders by remember { mutableStateOf<List<DeviceFolder>>(emptyList()) }
+        var showFolders by remember { mutableStateOf(false) }
+        var loadingFolders by remember { mutableStateOf(false) }
         DisposableEffect(advanced) {
             if (advanced) window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
             else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
@@ -92,6 +96,18 @@ class MainActivity : ComponentActivity() {
                 work?.any { !it.state.isFinished } == true
         val notificationPermission =
             rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+        fun refreshFolders() {
+            loadingFolders = true
+            scope.launch(Dispatchers.IO) {
+                val result = runCatching { DeviceLibrary(this@MainActivity).folders() }
+                withContext(Dispatchers.Main) {
+                    loadingFolders = false
+                    result.onSuccess { folders = it; showFolders = true }
+                        .onFailure { store.update { state -> state.copy(notice = "Could not read accessible device folders.") } }
+                }
+            }
+        }
+        val libraryPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { refreshFolders() }
         val picker =
             rememberLauncherForActivityResult(
                 ActivityResultContracts.PickMultipleVisualMedia(100)
@@ -235,6 +251,27 @@ class MainActivity : ComponentActivity() {
                                 Icon(Icons.Rounded.Add, null)
                                 Text("Select media")
                             }
+                            OutlinedButton(
+                                onClick = {
+                                    val permissions = when {
+                                        Build.VERSION.SDK_INT >= 34 -> arrayOf(
+                                            Manifest.permission.READ_MEDIA_IMAGES,
+                                            Manifest.permission.READ_MEDIA_VIDEO,
+                                            Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
+                                        )
+                                        Build.VERSION.SDK_INT >= 33 -> arrayOf(
+                                            Manifest.permission.READ_MEDIA_IMAGES,
+                                            Manifest.permission.READ_MEDIA_VIDEO,
+                                        )
+                                        else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+                                    }
+                                    libraryPermission.launch(permissions)
+                                },
+                                enabled = !busy && !loadingFolders,
+                            ) {
+                                Icon(Icons.Rounded.Folder, null)
+                                Text("Device folders")
+                            }
                             Button(
                                 onClick = {
                                     if (
@@ -251,11 +288,18 @@ class MainActivity : ComponentActivity() {
                                 enabled =
                                     !busy &&
                                         state.email != null &&
-                                        state.items.any { it.key.isEmpty() },
+                                        state.items.any { it.key.isEmpty() || (it.albumName.isNotBlank() && it.membership != "Added") },
                             ) {
                                 Text("Start backup")
                             }
                         }
+                    }
+                    item {
+                        Text(
+                            "${DeviceLibrary.permissionState(this@MainActivity)} · Folder access lists only media Android makes available to this app. Refresh is always manual.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     }
                     if (busy)
                         item {
@@ -281,7 +325,7 @@ class MainActivity : ComponentActivity() {
                                 "Choose photos and videos with Android's private photo picker.",
                             )
                         }
-                    items(state.items.filter { it.key.isBlank() }, key = { it.id }) {
+                    items(state.items.filter { it.key.isBlank() || (it.albumName.isNotBlank() && it.membership != "Added") }, key = { it.id }) {
                         MediaRow(it, !busy) {
                             store.update { s ->
                                 s.copy(items = s.items.filter { row -> row.id != it.id })
@@ -438,6 +482,34 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+        if (showFolders) {
+            AlertDialog(
+                onDismissRequest = { showFolders = false },
+                title = { Text("Accessible device folders") },
+                text = {
+                    LazyColumn {
+                        if (folders.isEmpty()) item { Text("No accessible photos or videos were found.") }
+                        items(folders, key = { it.id }) { folder ->
+                            ListItem(
+                                headlineContent = { Text(folder.name) },
+                                supportingContent = { Text("${folder.count} currently accessible items") },
+                                modifier = Modifier.fillMaxWidth().clickable {
+                                    showFolders = false
+                                    scope.launch(Dispatchers.IO) {
+                                        val result = runCatching { DeviceLibrary(this@MainActivity).media(folder) }
+                                        result.onSuccess { media -> store.replaceFolder(folder, media) }
+                                            .onFailure { store.update { state -> state.copy(notice = "Could not read ${folder.name}.") } }
+                                    }
+                                },
+                            )
+                            HorizontalDivider()
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { showFolders = false }) { Text("Close") } },
+                dismissButton = { TextButton(onClick = { refreshFolders() }) { Text("Refresh") } },
+            )
+        }
     }
 }
 
@@ -481,6 +553,12 @@ private fun MediaRow(item: MediaItem, removable: Boolean, onRemove: () -> Unit) 
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                if (item.albumName.isNotBlank())
+                    Text(
+                        "Google album: ${item.albumName} · ${item.membership.ifBlank { "Pending album" }}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 if (item.status == "Uploading")
                     LinearProgressIndicator(
                         progress = { item.progress },

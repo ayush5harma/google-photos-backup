@@ -19,4 +19,10 @@ class DebugBackupWorker(context: Context, params: WorkerParameters) :
                 inputData.getString("fixture") ?: "success",
             )
     }
+
+    override fun addToAlbum(payload: String, listener: AlbumListener, cancellation: AtomicBoolean) {
+        Python.getInstance()
+            .getModule("debug_backend")
+            .callAttr("run", payload, listener, cancellation, inputData.getString("fixture") ?: "success")
+    }
 }

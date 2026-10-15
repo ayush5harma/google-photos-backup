@@ -24,6 +24,11 @@ data class MediaItem(
     val status: String = "Ready",
     val key: String = "",
     val progress: Float = 0f,
+    /** Name is user-visible only; remoteId is Google's acknowledged stable identifier. */
+    val albumName: String = "",
+    val albumId: String = "",
+    val membership: String = "",
+    val sha256: String = "",
 ) {
     fun json() =
         JSONObject()
@@ -33,6 +38,10 @@ data class MediaItem(
             .put("status", status)
             .put("key", key)
             .put("progress", progress)
+            .put("albumName", albumName)
+            .put("albumId", albumId)
+            .put("membership", membership)
+            .put("sha256", sha256)
 
     companion object {
         fun from(j: JSONObject) =
@@ -43,6 +52,10 @@ data class MediaItem(
                 j.getString("status"),
                 j.optString("key"),
                 j.optDouble("progress", 0.0).toFloat(),
+                j.optString("albumName"),
+                j.optString("albumId"),
+                j.optString("membership"),
+                j.optString("sha256"),
             )
     }
 }
@@ -223,6 +236,29 @@ class Store private constructor(private val context: Context) {
             s.copy(
                 items = s.items + added.filter { a -> s.items.none { it.uri == a.uri } },
                 notice = "${added.size} selected. Start when you're ready.",
+            )
+        }
+    }
+
+    /** Replaces the queued view of a device folder with its currently accessible media.
+     * Existing confirmed keys and Google album ids survive refreshes, so refresh never reuploads.
+     */
+    fun replaceFolder(folder: DeviceFolder, media: List<DeviceMedia>) {
+        update { state ->
+            val old = state.items.filter { it.albumName == folder.name }.associateBy { it.uri }
+            val refreshed = media.map { candidate ->
+                old[candidate.uri]?.copy(name = candidate.name)
+                    ?: MediaItem(
+                        id = candidate.stableId,
+                        uri = candidate.uri,
+                        name = candidate.name,
+                        albumName = folder.name,
+                        membership = "Pending album",
+                    )
+            }
+            state.copy(
+                items = state.items.filterNot { it.albumName == folder.name } + refreshed,
+                notice = "${refreshed.size} currently accessible items in ${folder.name}. Review before backup.",
             )
         }
     }

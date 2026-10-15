@@ -147,4 +147,39 @@ class QueueSmokeTest {
             assertFalse(store.state.value.connecting)
             assertNull(store.state.value.email)
         }
+
+    @Test
+    fun albumFailureKeepsConfirmedMediaForMembershipRetry() {
+        val store = Store.get(context)
+        store.disconnect()
+        store.connect("Email=album%40example.test&Token=synthetic")
+        val item = MediaItem(
+            "album-item", "file:///synthetic", "synthetic.png", key = "confirmed-key",
+            albumName = "Camera", membership = "Adding to album",
+        )
+        store.update { it.copy(items = listOf(item)) }
+        AlbumListener(store, setOf(item.id), store.state.value.generation)
+            .event(JSONObject().put("type", "album_failed").toString())
+        val retry = store.state.value.items.single()
+        assertEquals("confirmed-key", retry.key)
+        assertEquals("Album retry needed", retry.membership)
+    }
+
+    @Test
+    fun albumAcknowledgementPersistsExactRemoteId() {
+        val store = Store.get(context)
+        store.disconnect()
+        store.connect("Email=album%40example.test&Token=synthetic")
+        val item = MediaItem(
+            "album-item", "file:///synthetic", "synthetic.png", key = "confirmed-key",
+            albumName = "Camera", membership = "Adding to album",
+        )
+        store.update { it.copy(items = listOf(item)) }
+        AlbumListener(store, setOf(item.id), store.state.value.generation)
+            .event(JSONObject().put("type", "album").put("album_id", "remote-album-42").toString())
+        val confirmed = store.state.value.items.single()
+        assertEquals("confirmed-key", confirmed.key)
+        assertEquals("remote-album-42", confirmed.albumId)
+        assertEquals("Added", confirmed.membership)
+    }
 }
