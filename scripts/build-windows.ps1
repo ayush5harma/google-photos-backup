@@ -44,6 +44,27 @@ if (-not (Test-Path $Python)) { throw 'Managed runtime has no root python.exe.' 
 if ($LASTEXITCODE -ne 0) { throw 'Pinned bridge dependency installation failed.' }
 Copy-Item (Join-Path $Root 'Bridge/*.py') $BridgeRoot
 Copy-Item (Join-Path $Root 'LICENSE') $Bundle
+# The 20261009 CPython 3.13.16 ARM64 distribution includes an unused x64
+# vcruntime140_1.dll. Keep the shipped runtime strictly native; never remove
+# it if any bundled binary references it, or if its format changes.
+$ExtraRuntime = Join-Path $PythonRoot 'vcruntime140_1.dll'
+if ($Architecture -eq 'arm64' -and (Test-Path $ExtraRuntime)) {
+    $ExtraRuntime = (Get-Item -LiteralPath $ExtraRuntime).FullName
+    $Bytes = [System.IO.File]::ReadAllBytes($ExtraRuntime)
+    $PEOffset = [BitConverter]::ToInt32($Bytes, 0x3C)
+    if ([BitConverter]::ToUInt32($Bytes, $PEOffset) -ne 0x00004550) { throw 'Invalid extra Python runtime PE header.' }
+    $Machine = [BitConverter]::ToUInt16($Bytes, $PEOffset + 4)
+    if ($Machine -eq 0x8664) {
+        foreach ($Binary in Get-ChildItem $Runtime -Recurse -File | Where-Object { $_.Extension -in @('.exe', '.dll', '.pyd') -and $_.FullName -ne $ExtraRuntime }) {
+            $Contents = [System.Text.Encoding]::ASCII.GetString([System.IO.File]::ReadAllBytes($Binary.FullName))
+            if ($Contents.IndexOf('vcruntime140_1.dll', [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                throw "Cannot remove incompatible Python runtime: $($Binary.FullName) references vcruntime140_1.dll."
+            }
+        }
+        Remove-Item $ExtraRuntime
+        Write-Host 'Removed unreferenced x64 vcruntime140_1.dll from the upstream ARM64 Python distribution.'
+    } elseif ($Machine -ne 0xAA64) { throw "Unexpected extra Python runtime architecture: $Machine" }
+}
 & (Join-Path $PSScriptRoot 'verify-windows.ps1') -Bundle $Bundle -Architecture $Architecture -ReportDirectory (Join-Path $Verification 'original')
 
 $Archive = Join-Path $Out "Google-Photos-Backup-$Version-Windows-$Architecture.zip"

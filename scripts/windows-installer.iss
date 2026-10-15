@@ -34,6 +34,11 @@ SolidCompression=yes
 WizardStyle=modern
 LicenseFile={#BundleDir}\LICENSE
 
+[InstallDelete]
+; Replace bundled providers on upgrade, including when switching architectures.
+; User preferences and credentials live outside {app} and are preserved.
+Type: filesandordirs; Name: "{app}\runtime"
+
 [Files]
 Source: "{#BundleDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
