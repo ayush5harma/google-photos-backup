@@ -27,6 +27,25 @@ public sealed class ICloudCoordinatorTests
     }
 
     [Fact]
+    public async Task ReclaimRejectsPreviewCreatedForAnotherICloudAccount()
+    {
+        var calls = 0;
+        var bridge = new FakeBridge((_, emit, _) =>
+        {
+            calls++;
+            emit(new JsonObject { ["type"] = "reclaim_preview", ["token"] = "preview-token", ["count"] = 1, ["bytes"] = 42L, ["expires_in"] = 900 });
+            return Task.FromResult(0);
+        });
+        var coordinator = new ICloudCoordinator(bridge, "state", "stage");
+        var preview = await coordinator.PreviewReclaimAsync("first@example.com", Credential(), [new("asset-1", "one.jpg")], CancellationToken.None);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.ReclaimAsync("second@example.com", Credential(), preview.Token, CancellationToken.None));
+
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
     public async Task AutomaticReclaimIsExplicitlyBoundAndLimited()
     {
         JsonObject? captured = null;

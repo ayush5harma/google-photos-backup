@@ -15,6 +15,7 @@ public sealed record ICloudReclaimResult(int SoftDeleted, int Retained, int Unce
 
 public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirectory, string stagingDirectory)
 {
+    private string? reclaimPreviewAccount;
     public event Action<ICloudBackupProgress>? ProgressChanged;
     public IReadOnlyList<ICloudTrustedPhone> TrustedPhones { get; private set; } = [];
     public bool DeviceCodeAvailable { get; private set; }
@@ -151,12 +152,17 @@ public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirector
                 preview = new ICloudReclaimPreview(token, Number(message, "count"), Long(message, "bytes"), Number(message, "expires_in"));
         }, cancellationToken).ConfigureAwait(false);
         if (exit != 0 || preview is null || preview.Count != selected.Count) throw new InvalidOperationException("Reclaim preview could not be prepared. Nothing was deleted.");
+        reclaimPreviewAccount = account.Trim();
         return preview;
     }
 
     public async Task<ICloudReclaimResult> ReclaimAsync(string account, string googleCredential, string previewToken, CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(previewToken)) throw new ArgumentException("Preview again before reclaiming storage.", nameof(previewToken));
+        if (!string.Equals(reclaimPreviewAccount, account.Trim(), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidOperationException("Preview again before reclaiming storage.");
+        // A confirmation is one-shot locally as well as in the bridge. Any retry must obtain a fresh preview.
+        reclaimPreviewAccount = null;
         var request = ReclaimRequest("reclaim", account, googleCredential);
         request["preview_token"] = previewToken;
         request["confirm_recently_deleted"] = true;

@@ -34,7 +34,57 @@ public sealed class DeviceMediaImportTests
         Assert.Equal(0, source.Opened);
     }
 
-    private sealed class FakeDeviceSource(IReadOnlyList<DeviceMediaItem> items, bool fail = false) : IDeviceMediaSource
+    [Fact]
+    public async Task StagingRejectsZeroSizedItemsBeforeOpeningSource()
+    {
+        using var temp = new TempFolder();
+        var source = new FakeDeviceSource([new("d", "a", "IMG.jpg", 0)]);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => new DeviceMediaStager(temp.Root).StageAsync(source, source.Items, CancellationToken.None));
+
+        Assert.Equal(0, source.Opened);
+    }
+
+    [Fact]
+    public async Task StagingRemovesPartialWhenSourceExceedsReportedSize()
+    {
+        using var temp = new TempFolder();
+        var source = new FakeDeviceSource([new("d", "a", "IMG.jpg", 3)], bytes: "abcd"u8.ToArray());
+
+        await Assert.ThrowsAsync<IOException>(() => new DeviceMediaStager(temp.Root).StageAsync(source, source.Items, CancellationToken.None));
+
+        Assert.Empty(Directory.EnumerateFiles(temp.Root, "*.partial", SearchOption.AllDirectories));
+        Assert.Empty(Directory.EnumerateFiles(temp.Root, "*.jpg", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task StagingRespectsBytesAlreadyRetainedInCache()
+    {
+        using var temp = new TempFolder();
+        File.WriteAllBytes(Path.Combine(temp.Root, "retained.media"), "abc"u8.ToArray());
+        var source = new FakeDeviceSource([new("d", "a", "IMG.jpg", 2)], bytes: "ab"u8.ToArray());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => new DeviceMediaStager(temp.Root, 4).StageAsync(source, source.Items, CancellationToken.None));
+
+        Assert.Equal(0, source.Opened);
+        Assert.True(File.Exists(Path.Combine(temp.Root, "retained.media")));
+    }
+
+    [Fact]
+    public async Task CompletedMediaIsRetainedUntilExplicitCleanup()
+    {
+        using var temp = new TempFolder();
+        var source = new FakeDeviceSource([new("d", "a", "IMG.jpg", 3)]);
+        var stager = new DeviceMediaStager(temp.Root);
+
+        var staged = await stager.StageAsync(source, source.Items, CancellationToken.None);
+        Assert.True(File.Exists(staged[0].Path));
+
+        stager.ClearCompleted();
+        Assert.False(File.Exists(staged[0].Path));
+    }
+
+    private sealed class FakeDeviceSource(IReadOnlyList<DeviceMediaItem> items, bool fail = false, byte[]? bytes = null) : IDeviceMediaSource
     {
         public IReadOnlyList<DeviceMediaItem> Items { get; } = items;
         public int Opened { get; private set; }
@@ -44,7 +94,7 @@ public sealed class DeviceMediaImportTests
         {
             Opened++;
             if (fail) throw new IOException("disconnected");
-            return Task.FromResult<Stream>(new MemoryStream("abc"u8.ToArray()));
+            return Task.FromResult<Stream>(new MemoryStream(bytes ?? "abc"u8.ToArray()));
         }
     }
 
