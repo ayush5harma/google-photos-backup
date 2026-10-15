@@ -28,6 +28,7 @@ struct ConnectedDeviceView: View {
                     .foregroundStyle(.secondary)
                 Text("The app copies originals into private temporary storage for upload, then removes those copies. Reclaim stays off unless every selected source original is independently read back from Google first.")
                     .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, 6)
             }
 
@@ -59,7 +60,7 @@ struct ConnectedDeviceView: View {
             Button("Clear") { selected = [] }.disabled(selected.isEmpty)
         }
         TextField("Google Photos album name (optional)", text: $destinationAlbum,
-                  prompt: Text("Creates or uses an album with this name"))
+                  prompt: Text("Google Photos album name (optional)"))
             .textFieldStyle(.roundedBorder)
         let blocker = source.reclaimBlocker(for: selected)
         Toggle("Remove verified originals from this device after backup", isOn: $reclaimAfterVerification)
