@@ -46,4 +46,18 @@ public sealed class DeviceMediaImportTests
             return Task.FromResult<Stream>(new MemoryStream("abc"u8.ToArray()));
         }
     }
+
+    private sealed class TempFolder : IDisposable
+    {
+        public TempFolder()
+        {
+            Root = Path.Combine(Path.GetTempPath(), "PhotosBackupDeviceTests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(Root);
+        }
+        public string Root { get; }
+        public void Dispose()
+        {
+            try { if (Directory.Exists(Root)) Directory.Delete(Root, true); } catch { }
+        }
+    }
 }
