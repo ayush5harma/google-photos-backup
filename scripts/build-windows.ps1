@@ -113,7 +113,17 @@ try {
 } finally {
     $Uninstaller = Join-Path $Installed 'unins000.exe'
     if (Test-Path $Uninstaller) { Invoke-Setup $Uninstaller @('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') }
-    if (Test-Path $Installed) { Remove-Item -Recurse -Force $Installed }
+    # Inno's temporary uninstaller may still be releasing unins000.exe after
+    # the launched process exits, especially on ARM64. Retry only cleanup.
+    for ($Attempt = 0; $Attempt -lt 20; $Attempt++) {
+        try {
+            if (Test-Path $Installed) { Remove-Item -Recurse -Force $Installed }
+            break
+        } catch {
+            if ($Attempt -eq 19) { throw }
+            Start-Sleep -Milliseconds 500
+        }
+    }
 }
 foreach ($Artifact in @($Archive, $Installer)) {
     $Digest = (Get-FileHash -Algorithm SHA256 $Artifact).Hash.ToLowerInvariant()
