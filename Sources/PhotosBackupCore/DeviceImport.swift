@@ -41,12 +41,13 @@ public enum DeviceImportPlan {
         unique(items).filter { ids.contains($0.id) }
     }
 
-    /// Reclaim batches are allowed to grow past the regular limit so related
-    /// camera components are never separated. The caller supplies only
-    /// relationships it has established with confidence.
+    /// Keep small related groups together, but never expand beyond a bounded
+    /// batch. Oversized groups are copied normally; the deletion completeness
+    /// guard retains their sources instead of staging an unbounded burst.
     public static func batchKeepingGroupsTogether(_ queued: [DeviceMediaItem], limit: Int,
                                                    groups: [String: Set<String>]) -> [DeviceMediaItem] {
         guard !queued.isEmpty else { return [] }
+        let cap = max(2, limit)
         let queuedIDs = Set(queued.map(\.id))
         var ids = Set(queued.prefix(max(1, limit)).map(\.id))
         var changed = true
@@ -55,6 +56,7 @@ public enum DeviceImportPlan {
             for id in Array(ids) {
                 for related in groups[id, default: []] where queuedIDs.contains(related) {
                     if ids.insert(related).inserted { changed = true }
+                    if ids.count > cap { return Array(queued.prefix(max(1, limit))) }
                 }
             }
         }
