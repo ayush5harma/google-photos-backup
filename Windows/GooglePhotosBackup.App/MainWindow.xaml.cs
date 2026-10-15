@@ -114,7 +114,7 @@ public sealed partial class MainWindow : Window
         try
         {
             _devices.Clear(); _deviceMedia.Clear();
-            foreach (var device in await _portableMedia.GetDevicesAsync()) _devices.Add(device);
+            foreach (var device in await _portableMedia.GetDevicesAsync(CancellationToken.None)) _devices.Add(device);
             foreach (var device in await _adbMedia.GetDevicesAsync(CancellationToken.None)) _devices.Add(device);
             if (_devices.Count == 0) ShowDeviceNotice("No paired Android device found. Install Android Platform Tools, pair with adb, unlock the phone, then refresh.", InfoBarSeverity.Informational);
         }
