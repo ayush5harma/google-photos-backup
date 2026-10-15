@@ -3,11 +3,8 @@ import Foundation
 import Observation
 import PhotosBackupCore
 
-/// Imports *copies* from a USB/Wi-Fi camera exposed through Image Capture.
-/// It deliberately never asks Image Capture to delete a source file. iCloud
-/// Photos deletion is especially dangerous because it propagates to every
-/// device, so reclaim is a separately gated feature rather than an import
-/// option.
+/// Imports originals from cameras exposed through Image Capture. Optional
+/// deletion requires explicit confirmation and independent Google readback.
 @MainActor
 @Observable
 final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDelegate, @preconcurrency ICCameraDeviceDelegate, ICCameraDeviceDownloadDelegate {
@@ -37,9 +34,7 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
 
     private(set) var status: Status = .searching
     private(set) var items: [DeviceMediaItem] = []
-    /// Image Capture tells us whether a device can delete, but import never
-    /// uses that capability. This remains useful to explain why reclaim is
-    /// unavailable on a particular connection.
+    /// Image Capture must advertise deletion support before reclaim is offered.
     private(set) var supportsDeviceDeletion = false
 
     /// A reclaim decision is intentionally stricter than importing. Every
@@ -85,6 +80,16 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
 
     override init() {
         super.init()
+        #if DEBUG
+        if Snapshots.isRequested {
+            items = [
+                .init(id: "fixture:photo", filename: "Coast.jpg", byteCount: 4_200_000, createdAt: nil, isMovie: false),
+                .init(id: "fixture:video", filename: "Morning.mov", byteCount: 18_600_000, createdAt: nil, isMovie: true)
+            ]
+            status = .ready(name: "Test iPhone", count: items.count)
+            return
+        }
+        #endif
         browser.delegate = self
         browser.start()
     }
@@ -92,6 +97,9 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
     deinit { browser.stop() }
 
     func refresh() {
+        #if DEBUG
+        if Snapshots.isRequested { return }
+        #endif
         items = []
         files = [:]
         camera = nil
