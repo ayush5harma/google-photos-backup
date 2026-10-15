@@ -22,6 +22,7 @@ final class ICloudSource {
     private(set) var reclaimBytes = 0
     private var reclaimAuth: String?
     private var reclaimAccount: String?
+    private var reclaimSummaryReceived = false
     private(set) var verification = ICloudVerificationState()
     var trustedPhones: [ICloudTrustedPhone] { verification.phones }
     var deviceCodeAvailable: Bool { verification.deviceCodeAvailable }
@@ -188,13 +189,14 @@ final class ICloudSource {
     private var stagingDirectory: URL { model.paths.staging.deletingLastPathComponent().appendingPathComponent("iCloud Source", isDirectory: true) }
 
     private func start(_ request: ICloudRequest) {
+        reclaimSummaryReceived = false
         operation = Task {
             defer { operation = nil }
             if phase == .stopping { phase = .stopped; return }
             do {
                 let exit = try await run(request)
                 if phase == .stopping { phase = .stopped; notice = "Paused. Start again to resume remaining items." }
-                else if exit != 0, phase != .failed, phase != .needs2FA,
+                else if exit != 0, !reclaimSummaryReceived, phase != .failed, phase != .needs2FA,
                         phase != .signedOut, phase != .stopped {
                     phase = .failed
                     notice = "The iCloud source could not finish. Check the account and network, then try again."
@@ -285,6 +287,7 @@ final class ICloudSource {
             phase = .finished
             notice = "Preview ready. Originals will be independently verified before removal."
         case let .reclaimDone(deleted, retained, uncertain):
+            reclaimSummaryReceived = true
             phase = .finished
             notice = "Moved \(deleted) to Recently Deleted. Retained \(retained); deletion unconfirmed for \(uncertain). Space recovery may be delayed."
             reclaimFiles = [:]; reclaimSelection = []; reclaimToken = nil
