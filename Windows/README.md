@@ -6,11 +6,16 @@ This is a development preview, not a stable Windows release. See implementation 
 
 ## Get a preview build
 
-Download [Google-Photos-Backup-Windows-x64.zip](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.3.0/Google-Photos-Backup-Windows-x64.zip) and its [SHA-256 checksum](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.3.0/Google-Photos-Backup-Windows-x64.zip.sha256) from release 0.3.0. Extract the ZIP, keep the entire **Google Photos Backup** folder together, and run **GooglePhotosBackup.exe**. The executable depends on the adjacent runtime files; it is not a standalone installer. No developer tools are needed.
+The v0.4.0 packages are listed on the [latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest). Choose your native architecture under **Settings > System > About > System type**:
 
-The package was built from release commit `3bbd7307f5b7ad71bab3049c71a1cd07d9ee67e8` by the [Windows x64 workflow](https://github.com/ayush5harma/google-photos-backup/actions/runs/38780698403).
+| System | Per-user installer | Portable package |
+| --- | --- | --- |
+| ARM64 | `Google-Photos-Backup-0.4.0-Windows-arm64-Setup.exe` | `Google-Photos-Backup-0.4.0-Windows-arm64.zip` |
+| Intel or AMD x64 | `Google-Photos-Backup-0.4.0-Windows-x64-Setup.exe` | `Google-Photos-Backup-0.4.0-Windows-x64.zip` |
 
-The preview targets Windows 10 version 1809 or later on x64; Windows 11 is recommended for its native Mica appearance. ARM64 packages are not provided; the x64 package passed the checks below under Windows 11 ARM64 emulation in Parallels. The package includes .NET, Windows App SDK, Python, and the uploader. Google sign-in also requires Microsoft Edge WebView2 Runtime. Follow Microsoft’s [Windows App SDK prerequisites](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/deployment-architecture), including the current x64 Visual C++ Redistributable. A clean Windows installation without that redistributable has not been tested. The application is currently unsigned, so Windows may warn when opening it; inspect the source and build provenance before trusting a preview.
+Run `Setup.exe` to install under your account's `%LOCALAPPDATA%\Programs\Google Photos Backup`; uninstall through Windows Settings. For a portable package, extract the ZIP, keep the entire **Google Photos Backup** folder together, and run **GooglePhotosBackup.exe**. The app executable needs the adjacent runtime files. Both formats include .NET, Windows App SDK, a native Python runtime, and the backup providers; no developer tools are needed. Each download has a matching `.sha256` file.
+
+The x64 build targets Windows 10 version 1809 or later; use Windows 11 for ARM64 and for the native Mica appearance. ARM64 packages contain native ARM64 app and provider binaries. Google sign-in requires Microsoft Edge WebView2 Runtime. Follow Microsoft's [Windows App SDK runtime prerequisites](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/deployment-architecture), including the Visual C++ Redistributable for your package's architecture (x64 or ARM64). A clean installation without that redistributable has not been tested. The app and installer are unsigned, so Windows may warn when opening them; inspect the source and build provenance before trusting a preview.
 
 ## A look at the preview
 
@@ -45,6 +50,8 @@ On 2026-10-15, the packaged app was tested in Parallels Desktop 27 on Windows 11
 
 These checks use synthetic data. They do not verify real Google sign-in or uploads, fresh Apple password/MFA, or every Windows hardware configuration. The download remains an unsigned development preview.
 
+The v0.4.0 workflow builds x64 and ARM64 on matching native Windows runners. It verifies PE architectures, application version, provider imports, ZIP relocation, and a silent installer installation followed by the same synthetic UI checks. These are the release gates; the earlier Parallels result above does not establish that a new ARM64 package or installer has passed them. Check the [Windows workflow run](https://github.com/ayush5harma/google-photos-backup/actions/workflows/windows.yml) for the revision you download.
+
 ## Local data
 
 Settings, history, and account-specific resume state are stored in `%LOCALAPPDATA%\GooglePhotosBackup`. Credentials are encrypted with DPAPI `CurrentUser` and sent to the uploader through standard input, not command-line arguments. Disconnecting removes the saved credential. Deleting resume state can cause files to be reconsidered on the next run.
@@ -53,15 +60,17 @@ Selected media and optional album names are sent to Google Photos using an unoff
 
 ## Build on Windows
 
-Use a native Windows x64 host with PowerShell 7, .NET 10 SDK, the Windows SDK and C++ build tools required by WinUI 3, and uv. Visual Studio with the WinUI application development workload supplies the native build tools. Run from the repository root:
+Use a native Windows x64 or ARM64 host with PowerShell 7, .NET 10 SDK, the Windows SDK and C++ build tools required by WinUI 3, [uv](https://docs.astral.sh/uv/), and [Inno Setup 6](https://jrsoftware.org/isinfo.php). Visual Studio with the WinUI application development workload supplies the native build tools. Build on the target architecture: the script refuses a mismatched host, and a missing native Python distribution or provider dependency fails the build. Run from the repository root:
 
 ```powershell
 git clone https://github.com/ayush5harma/google-photos-backup.git
 cd google-photos-backup
-./scripts/build-windows.ps1
+./scripts/build-windows.ps1 -Architecture x64
+# On a native Windows ARM64 host:
+./scripts/build-windows.ps1 -Architecture arm64
 ```
 
-The script publishes the self-contained app, bundles Python 3.13 and gpmc, verifies native binaries and imports, and tests the app after extracting the ZIP into a new location. Output is `build/windows/Google-Photos-Backup-Windows-x64.zip`, with a SHA-256 checksum and verification reports. The smoke test uses synthetic content, checks an encrypted credential round trip, and captures the actual WinUI window without signing in or uploading anything.
+The script reads the release version from the root `VERSION` file, publishes the self-contained app, bundles native Python 3.13 and the backup providers, verifies native binaries and imports, and tests ZIP relocation and a silent installer installation. Output is the matching versioned `.zip` and `-Setup.exe` under `build/windows/`, with SHA-256 checksums and reports under `build/windows/verification/`. It finds `ISCC.exe` on `PATH` or in the standard Inno Setup 6 installation directories; pass `-InnoCompiler 'C:\path\to\ISCC.exe'` for another location. The smoke test uses synthetic content, checks an encrypted credential round trip, and captures the actual WinUI window without signing in or uploading anything.
 
 Run the core and bridge tests separately:
 
@@ -72,6 +81,6 @@ uv run --no-project --python 3.13 python -B -m unittest discover -s Bridge/tests
 
 ## iCloud Photos
 
-The 0.3.0 Windows preview includes an iCloud Photos source. Connect Google first, then open **iCloud Photos** and follow the Apple Account password and verification-code prompts. An iCloud for Windows installation or existing Windows iCloud sign-in is not required. Expired sessions return you to sign-in rather than silently reporting success.
+The Windows preview includes an iCloud Photos source. Connect Google first, then open **iCloud Photos** and follow the Apple Account password and verification-code prompts. An iCloud for Windows installation or existing Windows iCloud sign-in is not required. Expired sessions return you to sign-in rather than silently reporting success.
 
 See [iCloud setup and limitations](../README.md#icloud-photos-backup). This version retains the iCloud originals; automatic source deletion is not enabled.

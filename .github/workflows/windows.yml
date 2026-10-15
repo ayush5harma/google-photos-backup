@@ -1,7 +1,8 @@
-name: Windows x64
+name: Windows native distributions
 
 on:
   workflow_dispatch:
+  workflow_call:
   pull_request:
   push:
     branches: [main]
@@ -15,8 +16,19 @@ concurrency:
 
 jobs:
   build:
-    runs-on: windows-2025
-    timeout-minutes: 35
+    name: Windows ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            arch: x64
+            platform: x64
+          - runner: windows-11-arm
+            arch: arm64
+            platform: ARM64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
     defaults:
       run:
         shell: pwsh
@@ -29,8 +41,15 @@ jobs:
         with:
           dotnet-version: '10.0.x'
       - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: '3.13'
+      - name: Check native architecture and release version
+        env:
+          EXPECTED_ARCH: ${{ matrix.arch }}
+        run: |
+          if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ine $env:EXPECTED_ARCH) { throw 'Incorrect native runner architecture.' }
+          $version = (Get-Content -Raw VERSION).Trim()
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid release version.' }
+          if ($env:GITHUB_REF -like 'refs/tags/*' -and $env:GITHUB_REF_NAME -ne "v$version") { throw 'Release tag does not match VERSION.' }
+          "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
       - name: Parse PowerShell scripts
         run: |
           foreach ($script in @('scripts/build-windows.ps1', 'scripts/verify-windows.ps1')) {
@@ -41,7 +60,7 @@ jobs:
           }
       - name: Restore pinned native app dependencies
         run: |
-          dotnet restore Windows/GooglePhotosBackup.App/GooglePhotosBackup.App.csproj -r win-x64 -p:Platform=x64
+          dotnet restore Windows/GooglePhotosBackup.App/GooglePhotosBackup.App.csproj -r win-${{ matrix.arch }} -p:Platform=${{ matrix.platform }}
           if ($LASTEXITCODE -ne 0) { throw 'NuGet restore failed.' }
           dotnet list Windows/GooglePhotosBackup.App/GooglePhotosBackup.App.csproj package
           if ($LASTEXITCODE -ne 0) { throw 'NuGet package evidence failed.' }
@@ -54,14 +73,14 @@ jobs:
           uv run --no-project --python 3.13 python -B -m unittest discover -s Bridge/tests
           if ($LASTEXITCODE -ne 0) { throw 'Bridge fixture tests failed.' }
       - name: Build and verify relocated native application
-        if: ${{ !cancelled() }}
-        run: ./scripts/build-windows.ps1
+        run: ./scripts/build-windows.ps1 -Architecture '${{ matrix.arch }}'
       - name: Upload package
         uses: actions/upload-artifact@v4
         with:
-          name: Google-Photos-Backup-Windows-x64
+          name: Google-Photos-Backup-${{ env.RELEASE_VERSION }}-Windows-${{ matrix.arch }}
           path: |
             build/windows/*.zip
+            build/windows/*-Setup.exe
             build/windows/*.sha256
           if-no-files-found: error
           retention-days: 14
@@ -69,7 +88,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: Windows-x64-verification
+          name: Windows-${{ matrix.arch }}-verification
           path: |
             build/windows/verification/
             build/windows/test-results/

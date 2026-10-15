@@ -2,24 +2,29 @@
 param(
     [Parameter(Mandatory)][string]$Bundle,
     [Parameter(Mandatory)][string]$ReportDirectory,
+    [ValidateSet('x64', 'arm64')][string]$Architecture = 'x64',
     [switch]$SmokeTest
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if (-not $IsWindows) { throw 'Verification requires Windows.' }
+if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ine $Architecture) {
+    throw "Runtime verification requires a native Windows $Architecture host."
+}
+$ExpectedMachine = if ($Architecture -eq 'arm64') { 0xAA64 } else { 0x8664 }
 $Bundle = [System.IO.Path]::GetFullPath($Bundle)
 $ReportDirectory = [System.IO.Path]::GetFullPath($ReportDirectory)
 New-Item -ItemType Directory -Force -Path $ReportDirectory | Out-Null
 
-function Assert-X64PE([string]$Path) {
+function Assert-NativePE([string]$Path) {
     $Reader = [System.IO.BinaryReader]::new([System.IO.File]::OpenRead($Path))
     try {
         if ($Reader.ReadUInt16() -ne 0x5A4D) { throw "Not a PE binary: $Path" }
         $Reader.BaseStream.Position = 0x3C
         $Offset = $Reader.ReadInt32()
         $Reader.BaseStream.Position = $Offset
-        if ($Reader.ReadUInt32() -ne 0x00004550 -or $Reader.ReadUInt16() -ne 0x8664) {
-            throw "Expected native x64 PE binary: $Path"
+        if ($Reader.ReadUInt32() -ne 0x00004550 -or $Reader.ReadUInt16() -ne $ExpectedMachine) {
+            throw "Expected native $Architecture PE binary: $Path"
         }
     } finally { $Reader.Dispose() }
 }
@@ -27,8 +32,16 @@ function Assert-X64PE([string]$Path) {
 $App = Join-Path $Bundle 'GooglePhotosBackup.exe'
 $Python = Join-Path $Bundle 'runtime/python/python.exe'
 $Bridge = Join-Path $Bundle 'runtime/bridge/gpmc_bridge.py'
-Assert-X64PE $App
-Assert-X64PE $Python
+$ReleaseVersion = (Get-Content -Raw (Join-Path (Split-Path $PSScriptRoot -Parent) 'VERSION')).Trim()
+$ProductVersion = [System.Diagnostics.FileVersionInfo]::GetVersionInfo($App).ProductVersion
+if (-not $ProductVersion -or $ProductVersion.Split('+')[0] -ne $ReleaseVersion) {
+    throw "Incorrect application version: $ProductVersion (expected $ReleaseVersion)"
+}
+Assert-NativePE $App
+Assert-NativePE $Python
+foreach ($RuntimeLibrary in @('coreclr.dll', 'hostfxr.dll', 'hostpolicy.dll', 'Microsoft.UI.Xaml.dll')) {
+    Assert-NativePE (Join-Path $Bundle $RuntimeLibrary)
+}
 $Resources = @(Get-ChildItem $Bundle -Recurse -File | Where-Object { $_.Extension -in @('.pri', '.xbf') } | Sort-Object FullName | ForEach-Object {
     [ordered]@{ path = [System.IO.Path]::GetRelativePath($Bundle, $_.FullName); bytes = $_.Length; sha256 = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLowerInvariant() }
 })
@@ -39,16 +52,19 @@ if (-not ((Test-Path (Join-Path $Bundle 'GooglePhotosBackup.pri')) -or (Test-Pat
 if (-not (Test-Path (Join-Path $Bundle 'coreclr.dll'))) { throw 'The .NET self-contained runtime is missing.' }
 if (-not (Test-Path (Join-Path $Bundle 'Microsoft.UI.Xaml.dll'))) { throw 'The self-contained WinUI runtime is missing.' }
 $NativeModules = @(Get-ChildItem (Join-Path $Bundle 'runtime/python') -Recurse -Filter '*.pyd')
-foreach ($Module in $NativeModules) { Assert-X64PE $Module.FullName }
+foreach ($Module in $NativeModules) { Assert-NativePE $Module.FullName }
 $NativeDependencies = @(Get-ChildItem (Join-Path $Bundle 'runtime/bridge') -Recurse -Filter '*.pyd')
-foreach ($Module in $NativeDependencies) { Assert-X64PE $Module.FullName }
+foreach ($Module in $NativeDependencies) { Assert-NativePE $Module.FullName }
+$NativeLibraries = @(Get-ChildItem (Join-Path $Bundle 'runtime') -Recurse -Filter '*.dll')
+foreach ($Library in $NativeLibraries) { Assert-NativePE $Library.FullName }
 $Machine = (& $Python -I -B -c 'import platform, struct; print(platform.machine(), struct.calcsize("P") * 8)').Trim()
-if ($LASTEXITCODE -ne 0 -or $Machine -ne 'AMD64 64') { throw "Incorrect Python architecture: $Machine" }
+$ExpectedPythonMachine = if ($Architecture -eq 'arm64') { 'ARM64 64' } else { 'AMD64 64' }
+if ($LASTEXITCODE -ne 0 -or $Machine -ine $ExpectedPythonMachine) { throw "Incorrect Python architecture: $Machine (expected $ExpectedPythonMachine)" }
 $VersionOutput = '{"command":"version"}' | & $Python -I -B $Bridge
 if ($LASTEXITCODE -ne 0) { throw 'The bundled bridge version request failed.' }
 $VersionEvents = @($VersionOutput | ForEach-Object { $_ | ConvertFrom-Json })
-$Version = @($VersionEvents | Where-Object { $_.type -eq 'version' })
-if ($Version.Count -ne 1 -or $Version[0].gpmc -ne '0.9.0') { throw 'The pinned real gpmc package is missing.' }
+$BridgeVersion = @($VersionEvents | Where-Object { $_.type -eq 'version' })
+if ($BridgeVersion.Count -ne 1 -or $BridgeVersion[0].gpmc -ne '0.9.0') { throw 'The pinned real gpmc package is missing.' }
 & $Python -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); import ssl, sqlite3; from gpmc import Client; from pyicloud_ipd import PyiCloudService' (Join-Path $Bundle 'runtime/bridge/site-packages')
 if ($LASTEXITCODE -ne 0) { throw 'The bundled Python dependencies cannot be imported.' }
 
@@ -56,18 +72,20 @@ if ($LASTEXITCODE -ne 0) { throw 'The bundled Python dependencies cannot be impo
 if ($LASTEXITCODE -ne 0) { throw 'Packaged iCloud signed-out guidance verification failed.' }
 
 $Report = [ordered]@{
-    architecture = 'x64'
-    appHost = 'native PE x64'
+    version = $ReleaseVersion
+    architecture = $Architecture
+    appHost = "native PE $Architecture"
     selfContainedDotNet = $true
     selfContainedWinUI = $true
-    python = $Version[0].python
-    gpmc = $Version[0].gpmc
+    python = $BridgeVersion[0].python
+    gpmc = $BridgeVersion[0].gpmc
     nativePythonModules = $NativeModules.Count + $NativeDependencies.Count
+    nativeRuntimeLibraries = $NativeLibraries.Count
     bridgeSmoke = 'passed'
     icloudSignedOutSmoke = 'passed'
     icloudReclaim = 'disabled: no independent destination proof'
     uiSmoke = 'not requested'
-    signing = 'unsigned CI artifact; no Windows release published'
+    signing = 'unsigned; no Authenticode signing certificate configured'
 }
 $ReportPath = Join-Path $ReportDirectory 'verification.json'
 try {

@@ -15,17 +15,24 @@ Uploads use [gpmc](https://github.com/xob0t/gpmc), an unofficial Google Photos c
 
 ## Download
 
-Download the **macOS Apple silicon (arm64)** or **macOS Intel (x86_64)** ZIP from the [latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest). Version 0.3.0 supports macOS 14 or later. The prebuilt app includes its uploader; you do not need Xcode, Python, uv, or other developer tools.
+Choose the v0.4.0 package for your computer from the [latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest). Each package has a matching `.sha256` checksum.
 
-Unzip the download, move **Photos Backup.app** to Applications, and open it. The app is currently signed ad hoc and is **not notarized by Apple**. If macOS blocks its first launch, find the blocked app in **System Settings > Privacy & Security**, choose **Open Anyway**, and confirm the prompt only if you trust this download. Keep macOS security protections on. The app name remains **Photos Backup.app** so existing installs retain their identity.
+| Computer | Download |
+| --- | --- |
+| macOS Apple silicon | `Photos-Backup-0.4.0-macOS-arm64.dmg` |
+| macOS Intel | `Photos-Backup-0.4.0-macOS-x86_64.dmg` |
+| Windows ARM64 | `Google-Photos-Backup-0.4.0-Windows-arm64-Setup.exe` |
+| Windows Intel or AMD x64 | `Google-Photos-Backup-0.4.0-Windows-x64-Setup.exe` |
 
-**Windows:** Download [Google-Photos-Backup-Windows-x64.zip](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.3.0/Google-Photos-Backup-Windows-x64.zip) from release 0.3.0. Extract the ZIP and run **GooglePhotosBackup.exe** inside the **Google Photos Backup** folder; keep the whole folder together. This unsigned preview was checked on Windows 11 ARM64 in Parallels using x64 emulation and on native x64 Windows CI. See [Windows setup, verification scope, and source builds](Windows/README.md). Real Google sign-in and uploads remain unverified on Windows.
+**macOS:** Requires macOS 14 or later. Open the DMG, drag **Photos Backup.app** to **Applications**, eject the image, and open the app. ZIP alternatives use the same names with `.zip` instead of `.dmg`; extract the ZIP and move the app to Applications. The prebuilt app includes its uploader and needs no developer tools. It is signed ad hoc and **not notarized by Apple**. If macOS blocks its first launch, find the blocked app in **System Settings > Privacy & Security**, choose **Open Anyway**, and confirm only if you trust the download. Keep macOS security protections on.
+
+**Windows:** Choose the installer matching **System > About > System type**. Run the `Setup.exe` to install for your Windows account. Portable alternatives are `Google-Photos-Backup-0.4.0-Windows-arm64.zip` and `Google-Photos-Backup-0.4.0-Windows-x64.zip`; extract the whole folder and run **GooglePhotosBackup.exe**, keeping the adjacent runtime files together. These remain unsigned development previews. See [Windows requirements, verification scope, and source builds](Windows/README.md). Real Google sign-in and uploads remain unverified on Windows.
 
 ## Windows preview
 
 [![Google Photos Backup running in Windows 11 on Parallels](docs/windows-parallels.png)](Windows/README.md)
 
-The released Windows app running in Parallels on Windows 11 ARM64 through x64 emulation. This capture uses synthetic backup data and an opaque background; it does not show a real account or upload. See the [Windows setup guide](Windows/README.md).
+An earlier x64 Windows preview running in Parallels on Windows 11 ARM64 through x64 emulation. This capture uses synthetic backup data and an opaque background; it does not show a real account or upload. See the [Windows setup guide](Windows/README.md).
 
 ## Android preview
 
@@ -46,7 +53,7 @@ Automatic backups are on by default after the welcome guide. They run when the l
 
 ## iCloud Photos backup
 
-The iCloud source is included in macOS v0.3.0 and current Windows preview source builds. You do not need to be signed in to iCloud in macOS System Settings or have iCloud for Windows installed.
+The macOS app and Windows preview include an iCloud Photos source. You do not need to be signed in to iCloud in macOS System Settings or have iCloud for Windows installed.
 
 1. Connect your destination Google account in the app.
 2. Open **iCloud Photos**, enter your Apple Account, and follow the sign-in prompts. Enter your password in the app and complete Apple's verification code prompt when requested. Use a trusted-device code, or select a masked trusted phone number and choose **Send Text Message** for SMS verification.
@@ -119,7 +126,7 @@ The [technical reference](docs/REFERENCE.md#links) lists the section-specific li
 
 ## Build and contribute
 
-The release ZIP is the easiest way to use the app. To build from source, use macOS 14 or later, Xcode 26 or later, and [uv](https://docs.astral.sh/uv/):
+The release DMG is the easiest way to use the macOS app. To build from source, use macOS 14 or later, Xcode 26 or later, and [uv](https://docs.astral.sh/uv/):
 
 ```sh
 git clone https://github.com/ayush5harma/google-photos-backup.git
