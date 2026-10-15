@@ -21,6 +21,7 @@ public sealed partial class MainWindow : Window
     private readonly ObservableCollection<DeviceDescriptor> _devices = [];
     private readonly ObservableCollection<DeviceMediaItem> _deviceMedia = [];
     private readonly AndroidAdbMediaSource _adbMedia = new();
+    private readonly WindowsPortableMediaSource _portableMedia = new();
     private readonly LocalStore? _store;
     private readonly List<RunRecord> _history = [];
     private AppPreferences _preferences = new();
@@ -113,7 +114,7 @@ public sealed partial class MainWindow : Window
         try
         {
             _devices.Clear(); _deviceMedia.Clear();
-            foreach (var device in await WindowsPortableDeviceCatalog.GetDevicesAsync()) _devices.Add(device);
+            foreach (var device in await _portableMedia.GetDevicesAsync()) _devices.Add(device);
             foreach (var device in await _adbMedia.GetDevicesAsync(CancellationToken.None)) _devices.Add(device);
             if (_devices.Count == 0) ShowDeviceNotice("No paired Android device found. Install Android Platform Tools, pair with adb, unlock the phone, then refresh.", InfoBarSeverity.Informational);
         }
@@ -126,12 +127,8 @@ public sealed partial class MainWindow : Window
         try
         {
             _deviceMedia.Clear();
-            if (device.Kind != "Android (ADB)")
-            {
-                ShowDeviceNotice("Windows detected this device. Its MTP/PTP media reader is not available yet; use a paired Android device or select its mounted folder.", InfoBarSeverity.Informational);
-                return;
-            }
-            foreach (var media in await _adbMedia.GetMediaAsync(device.Id, CancellationToken.None)) _deviceMedia.Add(media);
+            var source = device.Kind == "Android (ADB)" ? (IDeviceMediaSource)_adbMedia : _portableMedia;
+            foreach (var media in await source.GetMediaAsync(device.Id, CancellationToken.None)) _deviceMedia.Add(media);
             if (_deviceMedia.Count == 0) ShowDeviceNotice("No supported photos or videos were exposed by this device.", InfoBarSeverity.Informational);
         }
         catch (Exception) { ShowDeviceNotice("Media could not be read. Unlock the device and accept its pairing prompt, then refresh.", InfoBarSeverity.Warning); }
@@ -147,7 +144,8 @@ public sealed partial class MainWindow : Window
             StageDeviceMediaButton.IsEnabled = false;
             var staging = new DeviceMediaStager(Path.Combine(_store.Root, "Device staging"));
             staging.CleanupIncomplete();
-            var files = await staging.StageAsync(_adbMedia, selected, CancellationToken.None);
+            var source = DevicesList.SelectedItem is DeviceDescriptor { Kind: "Android (ADB)" } ? (IDeviceMediaSource)_adbMedia : _portableMedia;
+            var files = await staging.StageAsync(source, selected, CancellationToken.None);
             foreach (var folder in files.Select(file => Path.GetDirectoryName(file.Path)!).Distinct(StringComparer.OrdinalIgnoreCase))
                 if (!_folders.Contains(folder, StringComparer.OrdinalIgnoreCase)) _folders.Add(folder);
             SavePreferences(); RefreshControls();
