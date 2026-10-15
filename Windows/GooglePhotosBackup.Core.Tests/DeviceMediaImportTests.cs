@@ -1,4 +1,5 @@
 using GooglePhotosBackup.Core;
+using Xunit;
 
 namespace GooglePhotosBackup.Core.Tests;
 
