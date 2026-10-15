@@ -19,8 +19,15 @@ def main():
         result = subprocess.run([python, "-I", "-B", script], input=json.dumps(request) + "\n",
                                 capture_output=True, text=True, timeout=30)
         events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
-        assert any(event.get("type") == "reclaim" and event.get("enabled") is False for event in events), \
-            "Unverified iCloud deletion must stay disabled"
+        assert any(event.get("type") == "reclaim" and event.get("requires_preview") is True
+                   and event.get("immediate_space_recovery") is False for event in events), \
+            "iCloud reclaim must require preview and disclose delayed storage recovery"
+        request.update(command="reclaim", auth_data="Email=fixture@example.invalid")
+        result = subprocess.run([python, "-I", "-B", script], input=json.dumps(request) + "\n",
+                                capture_output=True, text=True, timeout=30)
+        events = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        assert result.returncode == 4 and any(e.get("type") == "fatal" and e.get("kind") == "request" for e in events), \
+            "Reclaim without explicit confirmation must fail before network access"
     crypto_code = """
 import os, sys, tempfile
 from pathlib import Path
