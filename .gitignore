@@ -11,3 +11,8 @@ Windows/**/TestResults/
 dist/
 *.user
 *.suo
+Android/.gradle/
+Android/local.properties
+Android/**/build/
+Android/*.jks
+Android/*.keystore
