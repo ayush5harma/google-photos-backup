@@ -69,9 +69,8 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
         return nil
     }
 
-    /// A reclaim batch may exceed the ordinary upload limit so no Live Photo
-    /// group is split across batches. Import-only batches retain the normal
-    /// limit because no source deletion is contemplated.
+    /// Keep paired components together within the bounded batch. Oversized
+    /// camera groups are copied in normal batches and retained at the source.
     func batchKeepingPairsTogether(_ queued: [DeviceMediaItem], limit: Int) -> [DeviceMediaItem] {
         var groups: [String: Set<String>] = [:]
         for (id, file) in files {

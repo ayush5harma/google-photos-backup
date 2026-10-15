@@ -26,4 +26,12 @@ final class DeviceImportTests: XCTestCase {
                                                                  groups: ["one": ["movie"], "movie": ["one"]])
         XCTAssertEqual(batch, [one, movie])
     }
+    func testOversizedCameraGroupCannotExpandStagingBatch() {
+        let items = (0..<1000).map { DeviceMediaItem(id: String($0), filename: "frame.jpg", byteCount: 1, createdAt: nil, isMovie: false) }
+        let members = Set(items.map(\.id))
+        let batch = DeviceImportPlan.batchKeepingGroupsTogether(items, limit: 10, groups: ["0": members])
+        XCTAssertEqual(batch.count, 10)
+        XCTAssertFalse(members.isSubset(of: Set(batch.map(\.id))))
+    }
+
 }
