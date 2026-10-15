@@ -1,4 +1,4 @@
-name: macOS release artifacts
+name: Desktop release artifacts
 
 on:
   workflow_dispatch:
@@ -36,8 +36,9 @@ jobs:
         run: |
           test "$(uname -m)" = "$EXPECTED_ARCH"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            test "$GITHUB_REF_NAME" = v0.3.0
+            test "$GITHUB_REF_NAME" = "v$(cat VERSION)"
           fi
+          echo "RELEASE_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
       - name: Fixture tests
         run: |
           swift test
@@ -50,9 +51,12 @@ jobs:
         run: scripts/package-release.sh 'build/Photos Backup.app' "$EXPECTED_ARCH"
       - uses: actions/upload-artifact@v4
         with:
-          name: Photos-Backup-0.3.0-macOS-${{ matrix.arch }}
+          name: Photos-Backup-${{ env.RELEASE_VERSION }}-macOS-${{ matrix.arch }}
           path: dist/*
           if-no-files-found: error
           retention-days: 14
       - name: State signing status
         run: echo 'Artifacts are ad-hoc signed, not Developer ID signed or notarized. Publication is a separate step.' >> "$GITHUB_STEP_SUMMARY"
+
+  windows:
+    uses: ./.github/workflows/windows.yml
