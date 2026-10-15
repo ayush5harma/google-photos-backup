@@ -32,7 +32,7 @@
                 <NavigationViewItem.Icon><SymbolIcon Symbol="Folder" /></NavigationViewItem.Icon>
             </NavigationViewItem>
             <NavigationViewItem Content="Connected devices" Tag="devices" ToolTipService.ToolTip="Connected devices" AutomationProperties.Name="Connected devices">
-                <NavigationViewItem.Icon><SymbolIcon Symbol="Devices" /></NavigationViewItem.Icon>
+                <NavigationViewItem.Icon><SymbolIcon Symbol="Phone" /></NavigationViewItem.Icon>
             </NavigationViewItem>
             <NavigationViewItem Content="iCloud Photos" Tag="icloud" ToolTipService.ToolTip="iCloud Photos" AutomationProperties.Name="iCloud Photos">
                 <NavigationViewItem.Icon><SymbolIcon Symbol="Sync" /></NavigationViewItem.Icon>
