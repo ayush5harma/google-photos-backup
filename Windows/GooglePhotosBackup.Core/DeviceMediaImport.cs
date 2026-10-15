@@ -26,13 +26,16 @@ public sealed class DeviceMediaStager(string root, long maximumBytes = 2L * 1024
         IDeviceMediaSource source, IReadOnlyList<DeviceMediaItem> selected, CancellationToken ct)
     {
         if (selected.Count == 0) return [];
-        if (selected.Sum(item => item.Size) > maximumBytes)
+        long declared;
+        try { declared = checked(selected.Aggregate(0L, (total, item) => checked(total + item.Size))); }
+        catch (OverflowException) { throw new InvalidOperationException("Selected device media exceeds the private staging limit."); }
+        if (selected.Any(item => item.Size <= 0) || declared > maximumBytes)
             throw new InvalidOperationException("Selected device media exceeds the private staging limit.");
         var output = new List<StagedDeviceMedia>();
         foreach (var item in selected)
         {
             ct.ThrowIfCancellationRequested();
-            if (string.IsNullOrWhiteSpace(item.DeviceId) || string.IsNullOrWhiteSpace(item.ObjectId) || item.Size < 0)
+            if (string.IsNullOrWhiteSpace(item.DeviceId) || string.IsNullOrWhiteSpace(item.ObjectId) || item.Size <= 0)
                 throw new InvalidOperationException("The connected device returned an invalid media item.");
             var stableId = Hash(item.DeviceId + "\n" + item.ObjectId);
             var albumName = CleanAlbumName(item.AlbumName, item.Name);
@@ -48,11 +51,19 @@ public sealed class DeviceMediaStager(string root, long maximumBytes = 2L * 1024
                     await using (var outputStream = new FileStream(temporary, FileMode.Create, FileAccess.Write, FileShare.None,
                         128 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
                     {
-                        await input.CopyToAsync(outputStream, 128 * 1024, ct).ConfigureAwait(false);
+                        var buffer = new byte[128 * 1024];
+                        long copied = 0;
+                        while (true)
+                        {
+                            var read = await input.ReadAsync(buffer, ct).ConfigureAwait(false);
+                            if (read == 0) break;
+                            copied = checked(copied + read);
+                            if (copied > item.Size || copied > maximumBytes) throw new IOException("The device media size changed while copying.");
+                            await outputStream.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+                        }
+                        if (copied != item.Size) throw new IOException("The device disconnected before the media copy finished.");
                         await outputStream.FlushAsync(ct).ConfigureAwait(false);
                     }
-                    if (item.Size != 0 && new FileInfo(temporary).Length != item.Size)
-                        throw new IOException("The device disconnected before the media copy finished.");
                     File.Move(temporary, finalPath, false);
                 }
                 catch
