@@ -9,14 +9,14 @@ internal static class WindowsPortableDeviceCatalog
     public static async Task<IReadOnlyList<DeviceDescriptor>> GetDevicesAsync()
     {
         var found = new Dictionary<string, DeviceDescriptor>(StringComparer.OrdinalIgnoreCase);
-        foreach (var kind in new[] { DeviceClass.PortableStorageDevice, DeviceClass.ImageScanner })
+        foreach (var kind in new[] { DeviceClass.PortableStorageDevice })
         {
             var devices = await DeviceInformation.FindAllAsync(kind);
             foreach (var device in devices)
             {
                 if (!device.IsEnabled || found.ContainsKey(device.Id)) continue;
                 var name = string.IsNullOrWhiteSpace(device.Name) ? "Connected device" : device.Name;
-                var status = kind == DeviceClass.ImageScanner ? "PTP imaging device" : "MTP / portable storage device";
+                var status = "Portable storage / DCIM device";
                 found[device.Id] = new DeviceDescriptor(device.Id, name, "Windows device", status);
             }
         }

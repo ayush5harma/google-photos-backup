@@ -92,7 +92,7 @@
             <ScrollViewer x:Name="DevicesPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
                 <StackPanel Spacing="18">
                     <TextBlock Text="Connected devices" Style="{ThemeResource TitleTextBlockStyle}" />
-                    <TextBlock Text="Choose specific media from an unlocked Android phone paired with adb. Copies are staged privately before upload; source media is always kept. iPhone, MTP and PTP devices appear when Windows exposes them, but importing them is not available in this build."
+                    <TextBlock Text="Choose specific media from an unlocked Android phone paired with adb or a Windows portable-storage device that exposes DCIM. Copies are staged privately before upload; source media is always kept. Listings show at most 2,000 files."
                                TextWrapping="Wrap" Opacity="0.75" />
                     <InfoBar x:Name="DeviceNotice" IsOpen="False" IsClosable="True" Severity="Informational" />
                     <ListView x:Name="DevicesList" Height="120" SelectionMode="Single" SelectionChanged="DevicesList_SelectionChanged"

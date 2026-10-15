@@ -191,6 +191,8 @@ public sealed partial class MainWindow : Window
     {
         if (_runCancellation is not null || FoldersList.SelectedItem is not string selected) return;
         _folders.Remove(selected);
+        if (_store is not null && selected.StartsWith(_store.DeviceStagingDirectory, StringComparison.OrdinalIgnoreCase))
+            new DeviceMediaStager(_store.DeviceStagingDirectory).ClearCompleted();
         SavePreferences();
         RefreshControls();
     }
@@ -220,6 +222,8 @@ public sealed partial class MainWindow : Window
             var options = new BackupOptions([.. _folders], _preferences.Quality,
                 _preferences.MirrorFolders, _preferences.Threads);
             summary = await _coordinator.RunAsync(options, _credential, _runCancellation.Token);
+            if (!summary.Canceled && summary.Failed == 0)
+                new DeviceMediaStager(_store.DeviceStagingDirectory).ClearCompleted();
             StatusText.Text = summary.Canceled ? "Backup canceled" : summary.Failed > 0 ? "Backup finished with failures" : "Backup complete";
             ProgressText.Text = $"{summary.Uploaded} uploaded · {summary.Existing} already backed up · {summary.Failed} failed";
         }

@@ -29,7 +29,8 @@ public sealed class DeviceMediaStager(string root, long maximumBytes = 2L * 1024
         long declared;
         try { declared = checked(selected.Aggregate(0L, (total, item) => checked(total + item.Size))); }
         catch (OverflowException) { throw new InvalidOperationException("Selected device media exceeds the private staging limit."); }
-        if (selected.Any(item => item.Size <= 0) || declared > maximumBytes)
+        var retained = Directory.Exists(root) ? Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories).Sum(path => new FileInfo(path).Length) : 0L;
+        if (selected.Any(item => item.Size <= 0) || declared > maximumBytes || retained > maximumBytes - declared)
             throw new InvalidOperationException("Selected device media exceeds the private staging limit.");
         var output = new List<StagedDeviceMedia>();
         foreach (var item in selected)
@@ -82,6 +83,15 @@ public sealed class DeviceMediaStager(string root, long maximumBytes = 2L * 1024
         if (!Directory.Exists(root)) return;
         foreach (var partial in Directory.EnumerateFiles(root, "*.partial", SearchOption.AllDirectories))
             try { File.Delete(partial); } catch { }
+    }
+
+    public void ClearCompleted()
+    {
+        if (!Directory.Exists(root)) return;
+        foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+            try { File.Delete(file); } catch { }
+        foreach (var directory in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories).OrderByDescending(path => path.Length))
+            try { Directory.Delete(directory); } catch { }
     }
 
     private static string SafeExtension(string name)
