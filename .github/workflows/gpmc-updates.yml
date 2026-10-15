@@ -1,0 +1,55 @@
+name: Monitor gpmc updates
+on:
+  schedule:
+    - cron: '17 7 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Report updates without creating issues
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - '.github/dependabot.yml'
+      - '.github/workflows/gpmc-updates.yml'
+      - 'scripts/watch-gpmc-updates.py'
+      - 'scripts/tests/test_gpmc_updates.py'
+      - 'docs/dependency-updates.md'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m unittest discover -s scripts/tests -p test_gpmc_updates.py -v
+  notify:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    concurrency:
+      group: gpmc-upstream-issues
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Check upstream metadata and open missing issues
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        run: python scripts/watch-gpmc-updates.py

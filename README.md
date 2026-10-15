@@ -11,7 +11,7 @@ On macOS, choose albums or your whole library, then follow progress from the men
 
 Uploads use [gpmc](https://github.com/xob0t/gpmc), an unofficial Google Photos client. Its **Pixel XL original-quality mode** is intended to use Google's unlimited original-quality storage behavior. Google controls whether uploads work and how they count against storage, and can change either behavior. Check your Google Photos account's storage after your first backup. Photos Backup is an independent project, unaffiliated with Apple or Google.
 
-[Download for macOS and Windows](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Set up](#set-up-on-macos) · [Privacy](#privacy) · [Technical reference](docs/REFERENCE.md) · [Contribute](CONTRIBUTING.md)
+[Download for macOS and Windows](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Set up](#set-up-on-macos) · [Privacy](#privacy) · [Dependency update policy](docs/dependency-updates.md) · [Technical reference](docs/REFERENCE.md) · [Contribute](CONTRIBUTING.md)
 
 ## Download
 
