@@ -142,10 +142,11 @@ or [the official app on a rooted phone or emulator, via HTTP Toolkit](https://gi
 
 ## Build and run
 
-For most users, download the macOS arm64 or x86_64 ZIP from the
+For most users, download the macOS arm64 or x86_64 DMG from the
 [latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest).
 The prebuilt app requires macOS 14 or later and needs no developer tools.
-Unzip it, move **Photos Backup.app** to Applications, and open it. Version 0.2.0
+Open the DMG, drag **Photos Backup.app** to Applications, eject the image, and
+open the app. ZIP alternatives are also provided. The v0.4.0 app
 is signed ad hoc and is not notarized. If macOS blocks it, use **System Settings
 > Privacy & Security > Open Anyway** after checking that you trust the download.
 
@@ -161,8 +162,15 @@ open "build/Photos Backup.app"
 The script compiles the app and copies a relocatable CPython 3.13 into the
 bundle. That CPython is the python-build-standalone build uv installs. The
 script then installs gpmc beside the bridge, precompiles the Python, draws
-the icon, and signs everything from the inside out. The bundle is about 76 MB
+the icon, and signs everything from the inside out. The bundle is about 96 MB
 and needs nothing else installed on the Mac.
+
+The release version comes from the root `VERSION` file. On a native build host,
+`scripts/package-release.sh 'build/Photos Backup.app' arm64` (or `x86_64` on
+Intel) produces versioned ZIP and DMG files plus SHA-256 checksums under `dist/`.
+It verifies the original bundle, extracted ZIP, and a copy from the mounted DMG.
+The DMG includes an Applications shortcut. Windows has separate native x64 and
+ARM64 executable installers and portable ZIPs; see the [Windows build guide](../Windows/README.md#build-on-windows).
 
 Signing uses the first Apple Development / iPhone Developer / Developer ID
 identity in your keychain; `--identity -` (or `CODESIGN_IDENTITY`) overrides
@@ -369,9 +377,10 @@ shortcuts.
   until Messages has downloaded them to this Mac.
 - Google caps an album at 20,000 items. gpmc splits a larger new album into
   "Name 1", "Name 2" and so on, but the app only remembers the first.
-- Release builds are signed ad hoc and are not notarized. Version 0.2.0 has
-  separate Apple silicon and Intel macOS ZIPs. Windows WinUI 3 is in
-  development and has no release yet.
+- macOS release builds are signed ad hoc and are not notarized. Version 0.4.0
+  has separate Apple silicon and Intel DMGs and ZIPs. Windows WinUI 3 remains
+  an unsigned development preview, with ARM64 and x64 installers and portable ZIPs;
+  real Google sign-in and uploads remain unverified on Windows.
 - If the response to creating a Google album is lost (a timeout, a crash, or
   a quit that outlasts the 15-second stop), the album exists but the app never
   learned its id, and the next run creates another. gpmc cannot list albums,
