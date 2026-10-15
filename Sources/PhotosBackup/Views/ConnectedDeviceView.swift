@@ -8,6 +8,8 @@ struct ConnectedDeviceView: View {
     @State private var selected = Set<String>()
     @State private var destinationAlbum = ""
     @State private var query = ""
+    @State private var reclaimAfterVerification = false
+    @State private var showReclaimConfirmation = false
 
     var body: some View {
         let source = model.connectedDevice
@@ -24,7 +26,7 @@ struct ConnectedDeviceView: View {
             Card {
                 Label("Choose individual photos and videos exposed by the connected device. Device albums are not available through Image Capture.", systemImage: "info.circle")
                     .foregroundStyle(.secondary)
-                Text("The app copies originals into private temporary storage for upload, then removes those copies. It never deletes from the device. iCloud Photos deletion would affect every synced device and remains unavailable until each uploaded original is independently verified.")
+                Text("The app copies originals into private temporary storage for upload, then removes those copies. Reclaim stays off unless every selected source original is independently read back from Google first.")
                     .font(.callout).foregroundStyle(.secondary)
                     .padding(.top, 6)
             }
@@ -59,6 +61,16 @@ struct ConnectedDeviceView: View {
         TextField("Google Photos album name (optional)", text: $destinationAlbum,
                   prompt: Text("Creates or uses an album with this name"))
             .textFieldStyle(.roundedBorder)
+        let blocker = source.reclaimBlocker(for: selected)
+        Toggle("Remove verified originals from this device after backup", isOn: $reclaimAfterVerification)
+            .disabled(blocker != nil)
+            .help(blocker ?? "Requires an exact Google original readback before every deletion.")
+        if let blocker {
+            Text(blocker).font(.callout).foregroundStyle(.secondary)
+        } else if reclaimAfterVerification {
+            Text("Each selected item must match a fresh Google original download. iCloud Photos deletion may propagate to every synced device. Recently Deleted is never purged.")
+                .font(.callout).foregroundStyle(.orange)
+        }
         List(visible, selection: $selected) { item in
             HStack(spacing: 12) {
                 Image(systemName: item.isMovie ? "video" : "photo")
@@ -75,11 +87,20 @@ struct ConnectedDeviceView: View {
         HStack {
             Spacer()
             Button {
-                let chosen = DeviceImportPlan.selected(source.items, ids: selected)
-                model.engine.backUp(device: chosen, source: source, destinationAlbumName: destinationAlbum)
+                if reclaimAfterVerification {
+                    showReclaimConfirmation = true
+                } else {
+                    startBackup(source)
+                }
             } label: { Label("Back Up Selected", systemImage: "arrow.up") }
             .buttonStyle(.borderedProminent)
             .disabled(selected.isEmpty || model.engine.isActive || !model.hasAuthData)
+        }
+        .alert("Remove verified originals?", isPresented: $showReclaimConfirmation) {
+            Button("Keep originals", role: .cancel) {}
+            Button("Back Up and Remove Verified Originals", role: .destructive) { startBackup(source) }
+        } message: {
+            Text("Only items that match a fresh Google original readback will be removed. Every paired Live Photo component must be selected. If this iPhone uses iCloud Photos, removal can propagate to other devices. Recently Deleted is not purged.")
         }
     }
 
@@ -92,5 +113,11 @@ struct ConnectedDeviceView: View {
         let type = item.isMovie ? "Video" : "Photo"
         let date = item.createdAt.map { " · \($0.formatted(date: .abbreviated, time: .omitted))" } ?? ""
         return "\(type) · \(ByteCountFormatter.string(fromByteCount: item.byteCount, countStyle: .file))\(date)"
+    }
+
+    private func startBackup(_ source: ConnectedDeviceSource) {
+        let chosen = DeviceImportPlan.selected(source.items, ids: selected)
+        model.engine.backUp(device: chosen, source: source, destinationAlbumName: destinationAlbum,
+                            reclaimOriginals: reclaimAfterVerification)
     }
 }

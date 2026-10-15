@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import Observation
 import PhotosBackupCore
 
@@ -64,8 +65,16 @@ private struct BatchItem {
     let bridgeItem: BridgeItem
     let size: Int64?
     let stamp: EditStamp?
+    /// Present only for connected-device staging. This binds the deletion
+    /// decision to the exact bytes Google later reads back.
+    let fingerprint: SourceFingerprint?
 
     var id: String { bridgeItem.id }
+}
+
+private struct SourceFingerprint: Equatable {
+    let sha256: String
+    let bytes: Int64
 }
 
 /// Runs backups: plans from the selected albums, exports each batch from
@@ -107,6 +116,7 @@ final class BackupEngine {
     /// authority for the bytes, never a persistent path on the Mac.
     @ObservationIgnored private weak var deviceSource: ConnectedDeviceSource?
     @ObservationIgnored private var deviceAlbumName: String?
+    @ObservationIgnored private var deviceReclaimRequested = false
     @ObservationIgnored private var messagesOnly = false
     @ObservationIgnored private var failedAssets = Set<String>()
     @ObservationIgnored private var failedAlbums = Set<String>()
@@ -197,7 +207,8 @@ final class BackupEngine {
     /// Queue explicit media from a directly connected device. These are not
     /// Photos albums; one optional destination album name is supplied by the
     /// person importing and is created in Google Photos by the normal bridge.
-    func backUp(device items: [DeviceMediaItem], source: ConnectedDeviceSource, destinationAlbumName: String?) {
+    func backUp(device items: [DeviceMediaItem], source: ConnectedDeviceSource, destinationAlbumName: String?,
+                reclaimOriginals: Bool = false) {
         let queued = Set(deviceItems.map(\.id))
         let pending = DeviceImportPlan.selected(items, ids: Set(items.map(\.id)))
             .filter { model.state.uploaded[$0.id] == nil && !queued.contains($0.id) }
@@ -206,6 +217,7 @@ final class BackupEngine {
         deviceSource = source
         let trimmed = destinationAlbumName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         deviceAlbumName = trimmed.isEmpty ? nil : trimmed
+        deviceReclaimRequested = reclaimOriginals
         start(trigger: .picker)
     }
 
@@ -433,7 +445,11 @@ final class BackupEngine {
         picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
         messages.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
         deviceItems.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
-        if deviceItems.isEmpty { deviceSource = nil; deviceAlbumName = nil }
+        if deviceItems.isEmpty {
+            deviceSource = nil
+            deviceAlbumName = nil
+            deviceReclaimRequested = false
+        }
         messagesOnly = false
     }
 
@@ -575,7 +591,7 @@ final class BackupEngine {
         }, finished: { id, result in
             switch result {
             case let .success(file):
-                items.append(BatchItem(bridgeItem: BridgeItem(id: id, path: file.url.path, filename: file.filename), size: file.size, stamp: file.stamp))
+                items.append(BatchItem(bridgeItem: BridgeItem(id: id, path: file.url.path, filename: file.filename), size: file.size, stamp: file.stamp, fingerprint: nil))
                 self.update(id) { $0.size = file.size; $0.status = .hashing }
             case let .failure(error):
                 // A missing asset or an unreadable original: sending it again
@@ -617,7 +633,7 @@ final class BackupEngine {
                       MessagesMediaScanner.contentHash(of: staged) == item.contentHash else { return nil }
                 let attributes = try? files.attributesOfItem(atPath: staged.path)
                 let size = (attributes?[.size] as? NSNumber)?.int64Value
-                return BatchItem(bridgeItem: BridgeItem(id: item.id, path: staged.path, filename: item.filename), size: size, stamp: nil)
+                return BatchItem(bridgeItem: BridgeItem(id: item.id, path: staged.path, filename: item.filename), size: size, stamp: nil, fingerprint: nil)
             }
         }.value
         if phase == .stopping {
@@ -661,15 +677,70 @@ final class BackupEngine {
                 guard values.isRegularFile == true else { throw ConnectedDeviceSource.ImportError.missingOutput }
                 let bytes = Int64(values.fileSize ?? 0)
                 guard bytes > 0 else { throw ConnectedDeviceSource.ImportError.missingOutput }
+                let fingerprint = try Self.fingerprint(of: staged)
                 prepared.append(BatchItem(bridgeItem: BridgeItem(id: item.id, path: staged.path, filename: item.filename),
-                                          size: bytes, stamp: nil))
+                                          size: bytes, stamp: nil, fingerprint: fingerprint))
                 update(item.id) { $0.size = bytes; $0.status = .hashing }
             } catch {
                 fail(item.id, error.localizedDescription, retryable: true)
             }
         }
         guard !prepared.isEmpty else { return .nothing }
-        return await send(prepared, album: album, category: .photos, auth: auth, runtime: runtime, settings: settings)
+        let outcome = await send(prepared, album: album, category: .photos, auth: auth, runtime: runtime, settings: settings)
+        guard outcome != .halt, deviceReclaimRequested else { return outcome }
+        await verifyAndReclaim(prepared, source: source, auth: auth, runtime: runtime)
+        return outcome
+    }
+
+    /// Verification is completed while the private staging files still exist.
+    /// Any missing proof, source change, bridge failure, or deletion error
+    /// retains the source; the app never turns an upload acknowledgement into
+    /// a deletion permission.
+    private func verifyAndReclaim(_ items: [BatchItem], source: ConnectedDeviceSource, auth: String, runtime: BridgeRuntime) async {
+        let verifiedInputs = items.compactMap { item -> OriginalVerificationItem? in
+            guard let record = model.state.uploaded[item.id], let fingerprint = item.fingerprint else { return nil }
+            return OriginalVerificationItem(id: item.id, path: item.bridgeItem.path, mediaKey: record.mediaKey,
+                                            expectedSHA256: fingerprint.sha256, expectedBytes: fingerprint.bytes)
+        }
+        guard !verifiedInputs.isEmpty else { return }
+        var verified = Set<String>()
+        let request = BridgeRequest.verifyOriginal(auth, items: verifiedInputs)
+        do {
+            let exit = try await BridgeProcess().run(request, runtime: runtime, workDirectory: model.paths.logs, log: model.paths.bridgeLog) { event in
+                if case let .verified(id, mediaKey, sha256, bytes) = event,
+                   let expected = verifiedInputs.first(where: { $0.id == id }),
+                   expected.mediaKey == mediaKey, expected.expectedSHA256 == sha256, expected.expectedBytes == bytes {
+                    verified.insert(id)
+                }
+            }
+            guard exit == 0, verified.count == verifiedInputs.count else {
+                model.log(.photos, "Original verification did not complete; source media was retained.", problem: true)
+                return
+            }
+            let deleted = try await source.deleteVerified(verified)
+            if deleted.count == verified.count {
+                model.log(.photos, "Removed \(deleted.count) independently verified source item\(deleted.count == 1 ? "" : "s") from the connected device.")
+            } else {
+                model.log(.photos, "Some verified source media could not be removed; retained items remain on the device.", problem: true)
+            }
+        } catch {
+            model.log(.photos, "Original verification or source removal failed; source media was retained.", problem: true)
+        }
+    }
+
+    private static func fingerprint(of url: URL) throws -> SourceFingerprint {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        var bytes: Int64 = 0
+        while true {
+            let chunk = try handle.read(upToCount: 1_048_576) ?? Data()
+            if chunk.isEmpty { break }
+            hasher.update(data: chunk)
+            bytes += Int64(chunk.count)
+        }
+        guard bytes > 0 else { throw ConnectedDeviceSource.ImportError.missingOutput }
+        return SourceFingerprint(sha256: hasher.finalize().map { String(format: "%02x", $0) }.joined(), bytes: bytes)
     }
 
     /// Sends staged items through the bridge until each is confirmed or has

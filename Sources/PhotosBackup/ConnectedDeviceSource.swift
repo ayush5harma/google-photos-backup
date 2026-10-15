@@ -10,7 +10,7 @@ import PhotosBackupCore
 /// option.
 @MainActor
 @Observable
-final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDelegate, @preconcurrency ICCameraDeviceDelegate, @preconcurrency ICCameraDeviceDownloadDelegate {
+final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDelegate, @preconcurrency ICCameraDeviceDelegate, ICCameraDeviceDownloadDelegate {
     enum Status: Equatable {
         case searching
         case unavailable(String)
@@ -41,6 +41,33 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
     /// uses that capability. This remains useful to explain why reclaim is
     /// unavailable on a particular connection.
     private(set) var supportsDeviceDeletion = false
+
+    /// A reclaim decision is intentionally stricter than importing. Every
+    /// related component Image Capture can identify must be selected together;
+    /// an ambiguous relationship is retained rather than guessed at.
+    func reclaimBlocker(for selected: Set<String>) -> String? {
+        guard supportsDeviceDeletion else {
+            return "This device does not allow deletion through Image Capture."
+        }
+        guard let camera, !camera.isLocked, !camera.isAccessRestrictedAppleDevice else {
+            return "Unlock and trust the device before reclaim can be reviewed."
+        }
+        for id in selected {
+            guard let file = files[id] else { return "A selected file is no longer available on the device." }
+            let relationship = file.relatedUUID ?? file.groupUUID
+            guard let relationship else { continue }
+            let members = Set(files.compactMap { key, candidate in
+                (candidate.relatedUUID == relationship || candidate.groupUUID == relationship) ? key : nil
+            })
+            guard members.count > 1 else {
+                return "The paired components for a selected Live Photo cannot be established."
+            }
+            guard members.isSubset(of: selected) else {
+                return "Select every paired component of each Live Photo before reclaim."
+            }
+        }
+        return nil
+    }
 
     override init() {
         super.init()
@@ -152,6 +179,28 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
         camera?.cancelDownload()
     }
 
+    /// Called only after Google has independently read back the exact staged
+    /// originals and the person confirmed this preview. It intentionally uses
+    /// no \"delete after download\" option, and never purges Recently Deleted.
+    func deleteVerified(_ ids: Set<String>) async throws -> Set<String> {
+        if let blocker = reclaimBlocker(for: ids) { throw ImportError.reclaimUnavailable(blocker) }
+        guard let camera else { throw ImportError.disconnected }
+        let targets = ids.compactMap { files[$0] }
+        guard targets.count == ids.count else { throw ImportError.disconnected }
+        return try await withCheckedThrowingContinuation { continuation in
+            _ = camera.requestDeleteFiles(targets, deleteFailed: { _ in
+                // The completion result remains the only authority for what
+                // actually changed; no per-file error text is displayed.
+            }, completion: { result, error in
+                if let error { continuation.resume(throwing: error); return }
+                let successful = Set((result[ICDeleteResult.successful] ?? []).compactMap { item in
+                    self.files.first(where: { $0.value === item })?.key
+                })
+                continuation.resume(returning: successful)
+            })
+        }
+    }
+
     private func load(_ camera: ICCameraDevice) {
         guard !camera.isLocked, !camera.isAccessRestrictedAppleDevice else {
             items = []
@@ -199,13 +248,14 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
     }
 
     enum ImportError: LocalizedError {
-        case disconnected, busy, locked, missingOutput
+        case disconnected, busy, locked, missingOutput, reclaimUnavailable(String)
         var errorDescription: String? {
             switch self {
             case .disconnected: "The device was disconnected before the original could be copied."
             case .busy: "Another device import is already in progress."
             case .locked: "Unlock and trust the iPhone before importing."
             case .missingOutput: "The device did not return a downloaded file."
+            case let .reclaimUnavailable(reason): reason
             }
         }
     }
