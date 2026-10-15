@@ -386,7 +386,8 @@ public sealed partial class MainWindow
         var original = Navigation.SelectedItem;
         try
         {
-            Navigation.SelectedItem = Navigation.MenuItems[2];
+            Navigation.SelectedItem = Navigation.MenuItems.OfType<NavigationViewItem>()
+                .First(item => string.Equals(item.Tag?.ToString(), "icloud", StringComparison.Ordinal));
             return ICloudPage.Visibility == Visibility.Visible &&
                 ICloudAccountBox is not null && ICloudPasswordBox is not null &&
                 ICloudTwoFactorPanel.Visibility == Visibility.Collapsed && !ICloudStartButton.IsEnabled;
