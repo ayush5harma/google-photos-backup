@@ -1,138 +1,70 @@
-# Google Photos Backup for macOS and Windows
+# Photos Backup
 
 <p align="center"><picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/app-icon-dark.png">
-  <img src="docs/app-icon.png" width="128" height="128" alt="Translucent mint and violet camera aperture with an interwoven white infinity mark">
+  <img src="docs/app-icon.png" width="112" height="112" alt="Aperture and infinity app icon">
 </picture></p>
 
-Native desktop backup to Google Photos, with an unlimited original-quality upload mode through gpmc. The released macOS app backs up your Apple Photos library; the Windows WinUI 3 preview backs up folders of photos and videos.
+Back up photos and videos to Google Photos with native apps for **macOS, Windows and Android**. Choose what to upload, follow progress, and keep your originals.
 
-On macOS, choose albums or your whole library, then follow progress from the menu bar. Photos Backup can also upload photos and videos from Messages and keep a readable, local archive of your conversations.
+[Download](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Setup](docs/SETUP.md) · [Credits](ACKNOWLEDGEMENTS.md) · [Contribute](CONTRIBUTING.md)
 
-Uploads use [gpmc](https://github.com/xob0t/gpmc), an unofficial Google Photos client. Its **Pixel XL original-quality mode** is intended to use Google's unlimited original-quality storage behavior. Google controls whether uploads work and how they count against storage, and can change either behavior. Check your Google Photos account's storage after your first backup. Photos Backup is an independent project, unaffiliated with Apple or Google.
+## Choose your app
 
-[Download for macOS and Windows](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Set up](#set-up-on-macos) · [Privacy](#privacy) · [Dependency update policy](docs/dependency-updates.md) · [Technical reference](docs/REFERENCE.md) · [Contribute](CONTRIBUTING.md)
+| Platform | What you can back up | v0.4.0 download |
+| --- | --- | --- |
+| macOS 14+ | Apple Photos albums/library; optional Messages media; iCloud Photos | [Apple silicon DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/Photos-Backup-0.4.0-macOS-arm64.dmg) · [Intel DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/Photos-Backup-0.4.0-macOS-x86_64.dmg) |
+| Windows 10 1809+ (x64) / Windows 11 (ARM64) | Selected photo/video folders; iCloud Photos | [ARM64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/Google-Photos-Backup-0.4.0-Windows-arm64-Setup.exe) · [Intel/AMD x64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/Google-Photos-Backup-0.4.0-Windows-x64-Setup.exe) |
+| Android 8+ | Individually selected on-device photos/videos | [APK — ARM64 and x86_64](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/Photos-Backup-0.4.0-Android.apk) |
 
-## Download
+These are early releases. No Python or developer tools are needed to use them. [SHA256SUMS.txt](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/SHA256SUMS.txt) covers all five downloads.
 
-Choose the v0.4.0 package for your computer from the [latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest). Each package has a matching `.sha256` checksum.
+## Get started
 
-| Computer | Download |
+1. **Install.** On Mac, open the DMG and drag the app to Applications. On Windows, run the installer matching your system architecture. On Android, install the APK, allowing installation from your browser when prompted.
+2. **Choose your sources.** On Mac, review album selection and automatic backup settings before connecting: automatic backups are enabled by default. Start with a small test album or folder.
+3. **Connect Google Photos** in the app, select your photos/albums/folders, and start a backup. Android uploads only files you explicitly select.
+4. **Check the result** in Google Photos, including the item's quality and storage information.
+
+The macOS release is ad-hoc signed and not notarized; if blocked, use **System Settings → Privacy & Security → Open Anyway** only if you trust the download. Windows installers are unsigned previews. See the [Windows requirements](Windows/README.md) and [detailed setup](docs/SETUP.md) for help.
+
+## Does it use Google storage?
+
+Uploads use [xob0t's gpmc](https://github.com/xob0t/gpmc), an **unofficial** Google Photos client. Its Original / Pixel XL profile requests original-quality uploads using that device profile. This is not a guaranteed unlimited-storage entitlement.
+
+In our 16 October 2026 test, Google Photos marked a photo and video uploaded from **each platform** as **Original quality** and **not taking up account storage**. All six downloaded originals matched their source SHA-256 hashes. The Mac album and Windows folder appeared with the same names and exactly the expected files. [Read the validation report](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/live-validation.md).
+
+Those results apply to the tested files and account. Google can change sign-in, uploads or storage charging. This project is not affiliated with Google or Apple.
+
+## Screenshots
+
+Screenshots use synthetic data; they are not live-upload evidence.
+
+| macOS | Windows |
 | --- | --- |
-| macOS Apple silicon | `Photos-Backup-0.4.0-macOS-arm64.dmg` |
-| macOS Intel | `Photos-Backup-0.4.0-macOS-x86_64.dmg` |
-| Windows ARM64 | `Google-Photos-Backup-0.4.0-Windows-arm64-Setup.exe` |
-| Windows Intel or AMD x64 | `Google-Photos-Backup-0.4.0-Windows-x64-Setup.exe` |
+| ![macOS menu bar](docs/menu-bar-panel-light.png) | ![Windows app in Parallels](docs/windows-parallels.png) |
 
-**macOS:** Requires macOS 14 or later. Open the DMG, drag **Photos Backup.app** to **Applications**, eject the image, and open the app. ZIP alternatives use the same names with `.zip` instead of `.dmg`; extract the ZIP and move the app to Applications. The prebuilt app includes its uploader and needs no developer tools. It is signed ad hoc and **not notarized by Apple**. If macOS blocks its first launch, find the blocked app in **System Settings > Privacy & Security**, choose **Open Anyway**, and confirm only if you trust the download. Keep macOS security protections on.
+<details><summary>Android and dark mode</summary>
 
-**Windows:** Choose the installer matching **System > About > System type**. Run the `Setup.exe` to install for your Windows account. Portable alternatives are `Google-Photos-Backup-0.4.0-Windows-arm64.zip` and `Google-Photos-Backup-0.4.0-Windows-x64.zip`; extract the whole folder and run **GooglePhotosBackup.exe**, keeping the adjacent runtime files together. These remain unsigned development previews. See [Windows requirements, verification scope, and source builds](Windows/README.md). Real Google sign-in and uploads remain unverified on Windows.
+<img src="docs/android-overview-dark.png" width="280" alt="Android backup screen in dark mode">
 
-## Windows preview
-
-[![Google Photos Backup running in Windows 11 on Parallels](docs/windows-parallels.png)](Windows/README.md)
-
-An earlier x64 Windows preview running in Parallels on Windows 11 ARM64 through x64 emulation. This capture uses synthetic backup data and an opaque background; it does not show a real account or upload. See the [Windows setup guide](Windows/README.md).
-
-## Android preview
-
-A native Android app backs up only the on-device photos and videos you explicitly select. It uses Android's private photo picker, a cancellable upload notification, encrypted credentials, and matching light/dark themes. iCloud transfer is not included in Android v1.
-
-See [Android installation, build instructions and verification scope](Android/README.md). The APK supports Android 8 or later on ARM64 and x86_64 devices. Google sign-in uses the same unofficial provider as the desktop app.
-
-<img src="docs/android-overview-dark.png" alt="Android backup overview with the finalized F icon" width="300">
-
-## Set up on macOS
-
-1. Open **Photos Backup.app** and follow the welcome guide. Grant Photos access so the app can read the library and albums you want to back up.
-2. Choose **Sign In with Google**. Sign in on Google's page inside the app and complete the consent step. Photos Backup stores the resulting credential in your macOS login Keychain.
-3. Choose **All Photos** for the whole library, or select albums in **Albums**. You can change the selection later. Photos kept only in iCloud are downloaded by Photos when the app exports them.
-4. Choose **Back Up Now** in the window or menu bar panel. The menu bar shows progress, and **Activity** shows recent runs and failed items. Leave the app running for automatic backups; **Settings > General > Open at login** can start it when you sign in to your Mac.
-
-Automatic backups are on by default after the welcome guide. They run when the library changes, at launch, after wake, and periodically. You can pause, stop, or retry failed items. The app reads Apple Photos and uploads copies; it never deletes media from your Mac or Google Photos. Edited photos can be uploaded again, so Google Photos may contain both versions.
-
-## iCloud Photos backup
-
-The macOS app and Windows preview include an iCloud Photos source. You do not need to be signed in to iCloud in macOS System Settings or have iCloud for Windows installed.
-
-1. Connect your destination Google account in the app.
-2. Open **iCloud Photos**, enter your Apple Account, and follow the sign-in prompts. Enter your password in the app and complete Apple's verification code prompt when requested. Use a trusted-device code, or select a masked trusted phone number and choose **Send Text Message** for SMS verification.
-3. Once connected, start the iCloud backup. Keep the app open while it downloads originals and uploads them to Google Photos. Use the source's pause/resume controls to continue an interrupted transfer. iCloud backups are started manually; the existing automatic Photos Library schedule does not run this source.
-4. If the session expires, return to **iCloud Photos** and sign in again. A previous desktop iCloud or `icloudpd` sign-in does not guarantee that this app has a usable session.
-
-The sign-in flow supports Apple two-factor authentication. Legacy two-step verification accounts are not supported; the app explains this instead of repeatedly asking for a code.
-
-Direct iCloud access depends on Apple's web access being available. Accounts with Advanced Data Protection may not support this provider. The app does not change your account's protection settings. If web access is unavailable, use the macOS Photos Library source or download originals using Apple's tools and back up a local folder on Windows.
-
-The macOS menu bar has a separate **iCloud Photos** card with progress and start/pause/resume controls. **Back Up Mac** remains the action for local Mac sources.
-
-Apple session material is stored in macOS Keychain or encrypted with Windows DPAPI. Passwords and verification codes are passed to the bundled helper through a pipe and are not saved by the form. The helper uses a private temporary cookie directory while running; a forced termination can leave it until the next helper launch cleans it up.
-
-This integration currently copies media and retains the iCloud originals. Automatic iCloud deletion is unavailable until the destination can be independently verified. Upload completion alone is not a safe basis for reclaiming iCloud storage. [Issue #7](https://github.com/ayush5harma/google-photos-backup/issues/7) tracks that remaining work.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/icloud-setup-dark.png">
-  <img src="docs/icloud-setup-light.png" alt="iCloud Photos setup with Apple Account sign-in and backup-only guidance, using synthetic data">
-</picture>
-
-The shared provider replaces the earlier iCloud-to-Google-Photos pipeline, using [iCloud Photos Downloader](https://github.com/icloud-photos-downloader/icloud_photos_downloader) for iCloud access and this app's existing Google uploader.
-
-## A look at the app
-
-[![The menu bar panel](docs/menu-bar-panel-light.png)](docs/menu-bar-panel-light.png)
-[![A backup in progress in dark mode](docs/menu-bar-panel-backing-up-dark.png)](docs/menu-bar-panel-backing-up-dark.png)
-
-<details><summary>See the welcome guide</summary>
-
-[![The welcome guide](docs/welcome-guide-light.png)](docs/welcome-guide-light.png)
+![macOS dark mode](docs/menu-bar-panel-backing-up-dark.png)
 
 </details>
 
-These screenshots use [made-up fixture data](docs/SCREENSHOTS.md), not a real library, account, or conversation.
+## Know before backing up
 
-## What gets backed up
+- **Copies, not offloading:** the apps retain your source media. iCloud automatic deletion and storage reclaim are not implemented.
+- **Albums:** macOS can recreate selected Apple Photos albums; Windows can mirror folder names. Android currently selects individual files, not albums.
+- **Live Photos:** the macOS Photos-library source currently uploads the still image. Edited versions may create additional uploads.
+- **Privacy:** selected media and associated metadata go to your Google account. Credentials are protected by macOS Keychain, Windows DPAPI or Android Keystore. Local history stays on your device. Optional Mac Messages archiving stays in the folder you choose; a cloud-synced folder also shares it with that provider.
 
-- **Photos and albums.** A photo selected through several albums uploads once. Photos Backup can recreate your own album names in Google Photos. Live Photos currently upload as still images.
-- **Messages media, optional.** Turn on **Back up photos and videos from Messages** in Settings to upload locally available attachments. Message text, chat names, and contacts are not uploaded.
-- **Messages archive, optional.** Turn on **Keep an archive of my messages** for browsable conversations, attachments, and dated database copies. The default folder is `~/Messages Archive`; you can choose another. If it syncs through a cloud service, the archive is stored there too. Later edits and unsends replace the displayed text; the archive can also retain text it saw before the change. Messages deleted from the Mac remain in the archive.
-
-Both Messages features are off by default and need **Full Disk Access** for Photos Backup under **System Settings > Privacy & Security > Full Disk Access**. Contacts access is optional and only helps show names in the local archive.
-
-## Privacy
-
-On Windows, selected files and mirrored folder names go to Google Photos. Settings, run history, and resume state stay in `%LOCALAPPDATA%\GooglePhotosBackup`; the credential is encrypted using Windows DPAPI for your Windows account. See the [Windows guide](Windows/README.md) for preview limitations.
-
-
-Selected media, capture dates, and album names go to your connected Google Photos account. Backup state and logs stay under the app's Application Support folder; temporary upload copies are removed after each batch. Your Google credential stays in the login Keychain and is passed to the uploader through a pipe. A Messages archive stays in its chosen folder, with owner-only file permissions. If you choose a cloud-synced folder, that provider can receive the archive. The app does not modify your Photos library or Messages database.
-
-The uploader uses a reverse-engineered Google API. Upload availability, quality handling, and storage accounting may change without notice. The Pixel XL profile does not guarantee unlimited storage for your account. See [limitations and operational details](docs/REFERENCE.md#not-done-yet) and [security reporting](SECURITY.md).
-
-## Automate it
-
-Use a `photosbackup://` link in a macOS Shortcut's **Open URLs** action, or open one from a terminal. The links run the same actions as the app's buttons.
-
-| Link | Action |
-| --- | --- |
-| `photosbackup://backup` | Back Up Now, including Messages media when enabled |
-| `photosbackup://backup/photos` | Back up Photos only |
-| `photosbackup://backup/messages-media` | Back up Messages media only |
-| `photosbackup://archive` | Archive Messages now, when enabled |
-| `photosbackup://pause`, `resume`, `stop` | Control the current run |
-| `photosbackup://retry-failed` | Retry failed items |
-| `photosbackup://open` | Open the window |
-| `photosbackup://settings` | Open Settings |
-
-The [technical reference](docs/REFERENCE.md#links) lists the section-specific links and their requirements.
+[Settings and limitations](docs/REFERENCE.md) · [Windows guide](Windows/README.md) · [Android guide](Android/README.md) · [Security](SECURITY.md)
 
 ## Build and contribute
 
-The release DMG is the easiest way to use the macOS app. To build from source, use macOS 14 or later, Xcode 26 or later, and [uv](https://docs.astral.sh/uv/):
+See [CONTRIBUTING.md](CONTRIBUTING.md) for macOS development, and the [Windows](Windows/README.md#build-on-windows) / [Android](Android/README.md#build) guides for those platforms. [Dependency monitoring](docs/dependency-updates.md) checks the core uploader daily.
 
-```sh
-git clone https://github.com/ayush5harma/google-photos-backup.git
-cd google-photos-backup
-scripts/build-app.sh
-open "build/Photos Backup.app"
-```
+## Credits
 
-See the [technical reference](docs/REFERENCE.md#build-and-run), [architecture](docs/ARCHITECTURE.md), and [contribution guide](CONTRIBUTING.md). Licensed under [MIT](LICENSE); uploads use [gpmc](https://github.com/xob0t/gpmc), and the sign-in flow follows [gotohp](https://github.com/xob0t/gotohp).
+Made possible by [gpmc](https://github.com/xob0t/gpmc) and [gotohp](https://github.com/xob0t/gotohp) by **xob0t**, [iCloud Photos Downloader](https://github.com/icloud-photos-downloader/icloud_photos_downloader), and the platform/runtime projects listed in [Acknowledgements](ACKNOWLEDGEMENTS.md). This app is [MIT licensed](LICENSE); upstream projects retain their own licenses.

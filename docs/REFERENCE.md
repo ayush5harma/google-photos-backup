@@ -8,9 +8,9 @@ readable archive of your Messages on this Mac. A menu bar panel keeps backups
 visible and running after the window is closed.
 
 The uploading is done by [gpmc](https://github.com/xob0t/gpmc) (xob0t, MIT),
-a client for Google Photos' reverse-engineered mobile API. The default upload
-mode uses a Pixel XL profile; Google determines storage accounting, which may
-change. The app also offers Storage saver and quota-counted original quality.
+a client for Google Photos' reverse-engineered mobile API. Google determines
+storage accounting and can change it. See [ACKNOWLEDGEMENTS.md](../ACKNOWLEDGEMENTS.md)
+for all upstream projects.
 
 <p align="center">
   <img src="menu-bar-panel-light.png" width="32%" alt="The menu bar panel: everything backed up, Photos and Messages archive status, Back Up Now">
@@ -146,8 +146,9 @@ For most users, download the macOS arm64 or x86_64 DMG from the
 [latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest).
 The prebuilt app requires macOS 14 or later and needs no developer tools.
 Open the DMG, drag **Photos Backup.app** to Applications, eject the image, and
-open the app. ZIP alternatives are also provided. The v0.4.0 app
-is signed ad hoc and is not notarized. If macOS blocks it, use **System Settings
+open the app. v0.4.0 publishes Apple silicon and Intel DMGs, two Windows
+installers, an Android APK, and `SHA256SUMS.txt`; source builds also create ZIP
+archives. The macOS app is signed ad hoc and is not notarized. If macOS blocks it, use **System Settings
 > Privacy & Security > Open Anyway** after checking that you trust the download.
 
 Building from source requires macOS 14 or later, Xcode 26 or later (Xcode or
@@ -377,10 +378,9 @@ shortcuts.
   until Messages has downloaded them to this Mac.
 - Google caps an album at 20,000 items. gpmc splits a larger new album into
   "Name 1", "Name 2" and so on, but the app only remembers the first.
-- macOS release builds are signed ad hoc and are not notarized. Version 0.4.0
-  has separate Apple silicon and Intel DMGs and ZIPs. Windows WinUI 3 remains
-  an unsigned development preview, with ARM64 and x64 installers and portable ZIPs;
-  real Google sign-in and uploads remain unverified on Windows.
+- macOS release builds are signed ad hoc and are not notarized. v0.4.0 has
+  Apple silicon and Intel DMGs, Windows ARM64/x64 installers, an Android APK,
+  and `SHA256SUMS.txt`. Windows remains an unsigned preview.
 - If the response to creating a Google album is lost (a timeout, a crash, or
   a quit that outlasts the 15-second stop), the album exists but the app never
   learned its id, and the next run creates another. gpmc cannot list albums,
@@ -395,8 +395,11 @@ shortcuts.
 - The in-app conversation preview reads a conversation's whole `messages.json`
   before showing its last 200 messages. Very large conversations may use
   substantial memory; the browser page remains available for the full archive.
-- A real sign-in and a real upload are not covered by automated tests; the
-  end-to-end run uses a fake Google.
+- Automated tests do not cover real Google services. A 2026-10-16 live check
+  on macOS, Windows, and Android confirmed selected fixtures as Original
+  quality, no account-storage use in Google Photos, and matching downloaded
+  SHA-256 hashes. This finite check does not promise unlimited storage; see the
+  [live validation report](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/live-validation.md).
 
 ## Development
 
@@ -425,5 +428,6 @@ end-to-end run needs.
 
 ## Credits
 
-[gpmc](https://github.com/xob0t/gpmc) by xob0t does the actual talking to
-Google, under the MIT license. This app is MIT too; see [LICENSE](../LICENSE).
+This project is possible because of [gpmc](https://github.com/xob0t/gpmc) and
+the other projects listed in [ACKNOWLEDGEMENTS.md](../ACKNOWLEDGEMENTS.md).
+This app is MIT too; see [LICENSE](../LICENSE).

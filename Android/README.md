@@ -2,6 +2,8 @@
 
 A native Kotlin / Compose app for explicitly selected photos and videos. Connect Google Photos, select media using Android's private photo picker, review the list, and tap **Start backup**. No broad photo-library/storage permission, automatic camera roll scan, iCloud integration, or implicit upload occurs. Backup, Activity and Settings support light/dark appearance and use the shared app artwork.
 
+Download `Photos-Backup-0.4.0-Android.apk` and verify it with `SHA256SUMS.txt` from the [v0.4.0 release](https://github.com/ayush5harma/google-photos-backup/releases/tag/v0.4.0). The app uses the unofficial [gpmc](https://github.com/xob0t/gpmc) API; Google can change authentication, upload behavior, or storage accounting at any time.
+
 ## Preview
 
 <img src="../docs/android-overview-dark.png" alt="Android backup overview in dark mode with no account connected" width="320">
@@ -29,7 +31,7 @@ The durable atomic queue stores selected URI grants and confirmed Google media k
 
 Cancel prevents later items from starting and propagates into the bridge on progress/event callbacks. A request already in flight can finish at Google before the next callback or timeout; its confirmation is saved before cancellation is observed. Android foreground service/time quotas and OEM power controls still apply; this is not an unlimited background uploader. Only user-selected media is uploaded.
 
-Quality profiles expose the shared gpmc engine's original/Pixel XL, saver/Pixel 2 and original-with-quota options. Google alone decides storage charging; the app does not promise free storage.
+Quality profiles expose the shared gpmc engine's original/Pixel XL, saver/Pixel 2 and original-with-quota options. Google alone decides storage charging. On 2026-10-16, a real selected photo and video appeared in Google Photos as Original quality without account-storage use, and downloaded originals matched their source SHA-256 hashes. That validates those fixtures only; it does not promise unlimited storage. See the [live validation report](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/live-validation.md).
 
 ## Verification
 
@@ -43,4 +45,8 @@ Host unit tests check navigation boundaries, confirmation requirements and malfo
 
 Run that command only on an explicitly authorized test device: the tests clear this app's local account/queue and never use owner media or Google credentials. Real Google sign-in and one explicitly selected photo/video still require an owner-assisted live acceptance test.
 
-On 2026-10-16, the release APK installed and launched on a connected Pixel 9 Pro (Android API 37). Eight device tests passed, including the real bundled engine import, synthetic upload/failure/cancellation, account isolation, interrupted persistence, and cancelled sign-in validation. The adaptive launcher icon was visually checked on-device. The release signature verifies; live Google authentication/upload acceptance is tracked separately.
+On 2026-10-16, the release APK installed and launched on a Pixel 9 Pro (Android API 37). Eight device tests passed, including the real bundled engine import, synthetic upload/failure/cancellation, account isolation, interrupted persistence, and cancelled sign-in validation. The adaptive launcher icon and a real Google sign-in/upload were checked on-device.
+
+## Credits
+
+See [ACKNOWLEDGEMENTS.md](../ACKNOWLEDGEMENTS.md) for the open-source projects that make this app possible, including gpmc.
