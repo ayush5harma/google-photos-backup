@@ -53,7 +53,7 @@
         <div class="platform-grid">
           <article class="platform platform-mac">
             <div class="platform-heading"><span class="platform-mark" aria-hidden="true">⌘</span><h3>macOS</h3></div>
-            <p>Apple Photos albums and library, iCloud Photos, and optional Messages media. v0.5.0 preview adds connected iPhone and camera file import.</p>
+            <p>Apple Photos albums and library, iCloud Photos, and optional Messages media. Includes connected iPhone and camera file import.</p>
             <div class="download-links">
               <a href="https://github.com/ayush5harma/google-photos-backup/releases/download/v__VERSION__/Photos-Backup-__VERSION__-macOS-arm64.dmg">Apple silicon <span>DMG</span></a>
               <a href="https://github.com/ayush5harma/google-photos-backup/releases/download/v__VERSION__/Photos-Backup-__VERSION__-macOS-x86_64.dmg">Intel <span>DMG</span></a>
@@ -62,7 +62,7 @@
           </article>
           <article class="platform platform-windows">
             <div class="platform-heading"><span class="platform-mark windows-mark" aria-hidden="true">⊞</span><h3>Windows</h3></div>
-            <p>Selected photo and video folders, with an optional iCloud Photos source. v0.5.0 preview adds portable-device/DCIM import and optional wireless ADB import.</p>
+            <p>Selected photo and video folders, with an optional iCloud Photos source. Includes portable-device/DCIM import and optional wireless ADB import.</p>
             <div class="download-links">
               <a href="https://github.com/ayush5harma/google-photos-backup/releases/download/v__VERSION__/Google-Photos-Backup-__VERSION__-Windows-x64-Setup.exe">Intel / AMD <span>x64 EXE</span></a>
               <a href="https://github.com/ayush5harma/google-photos-backup/releases/download/v__VERSION__/Google-Photos-Backup-__VERSION__-Windows-arm64-Setup.exe">ARM64 <span>EXE</span></a>
@@ -71,7 +71,7 @@
           </article>
           <article class="platform platform-android">
             <div class="platform-heading"><span class="platform-mark android-mark" aria-hidden="true">●</span><h3>Android</h3></div>
-            <p>Selected on-device photos and videos. v0.5.0 preview adds accessible MediaStore device folders, which can be mirrored as Google Photos albums.</p>
+            <p>Selected on-device photos and videos. Includes accessible MediaStore device folders, which can be mirrored as Google Photos albums.</p>
             <div class="download-links">
               <a href="https://github.com/ayush5harma/google-photos-backup/releases/download/v__VERSION__/Photos-Backup-__VERSION__-Android.apk">Universal APK <span>ARM64 / x86_64</span></a>
             </div>
@@ -114,7 +114,7 @@
         <div>
           <p class="eyebrow">Android</p>
           <h2 id="android-heading">Choose the files to back up.</h2>
-          <p>The current release backs up selected media. The upcoming v0.5.0 preview adds accessible MediaStore folders, not logical Google albums; partial permission shows only media you granted the app.</p>
+          <p>Select individual media or accessible MediaStore folders, not logical Google albums; partial permission shows only media you granted the app.</p>
           <a class="text-link" href="https://github.com/ayush5harma/google-photos-backup/blob/main/Android/README.md">Read the Android guide <span aria-hidden="true">↗</span></a>
         </div>
       </section>
@@ -123,8 +123,8 @@
         <div class="section-intro"><p class="eyebrow">Details</p><h2 id="faq-heading">Good to know.</h2></div>
         <div class="faq-list">
           <details><summary>Does this free up storage on my device?</summary><p>No. It creates copies in Google Photos and leaves your original files where they are.</p></details>
-          <details><summary>Are album names kept?</summary><p>macOS can recreate selected Apple Photos albums and Windows can mirror folder names. The upcoming Android v0.5.0 preview mirrors accessible device-folder names; those folders are not logical Google albums.</p></details>
-          <details><summary>Can it reclaim iCloud storage?</summary><p>iCloud backup is copy-only by default. The upcoming v0.5.0 preview requires a reviewed manual preview or explicit automatic confirmation of up to 100 items, then fresh Google original readback and SHA-256 verification for every component before moving an item to Recently Deleted. It does not promise immediate free space or a permanent purge.</p></details>
+          <details><summary>Are album names kept?</summary><p>macOS can recreate selected Apple Photos albums and Windows can mirror folder names. Android mirrors accessible device-folder names; those folders are not logical Google albums.</p></details>
+          <details><summary>Can it reclaim iCloud storage?</summary><p>iCloud backup is copy-only by default. Experimental reclaim requires a reviewed manual preview or explicit automatic confirmation of up to 100 items, then fresh Google original readback and SHA-256 verification for every component before moving an item to Recently Deleted. It does not promise immediate free space or a permanent purge. Live deletion/recovery validation is still pending.</p></details>
           <details><summary>Is it an official Google app?</summary><p>No. It uses the unofficial <a href="https://github.com/xob0t/gpmc">gpmc</a> client. Google may change authentication, upload behaviour, or storage accounting.</p></details>
         </div>
       </section>

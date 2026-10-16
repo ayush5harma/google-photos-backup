@@ -7,21 +7,21 @@
 
 Back up selected photos and videos to Google Photos from **macOS, Windows, or Android**. The apps keep your originals by default and include a **currently working unlimited original-quality mode** through the unofficial gpmc client. [Validation and limits](#upload-mode-and-its-limits).
 
-[Website](https://ayush5harma.github.io/google-photos-backup/) · [Download v0.4.0](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Setup](docs/SETUP.md) · [Reference](docs/REFERENCE.md) · [Credits](ACKNOWLEDGEMENTS.md)
+[Website](https://ayush5harma.github.io/google-photos-backup/) · [Download v0.5.0](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Setup](docs/SETUP.md) · [Reference](docs/REFERENCE.md) · [Credits](ACKNOWLEDGEMENTS.md)
 
 ## Start here
 
-1. Install the current v0.4.0 release for your platform below.
+1. Install the current v0.5.0 release for your platform below.
 2. Pick a small source and review automatic backup settings (on by default on Mac), then connect Google Photos and run a backup.
 3. Check the uploaded item in Google Photos, including its quality and storage details, before trusting a larger backup.
 
-| Platform | v0.4.0 download |
+| Platform | v0.5.0 download |
 | --- | --- |
-| macOS 14+ | [Apple silicon DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/Photos-Backup-0.4.0-macOS-arm64.dmg) · [Intel DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/Photos-Backup-0.4.0-macOS-x86_64.dmg) |
-| Windows 10 1809+ (x64) / Windows 11 (ARM64) | [ARM64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/Google-Photos-Backup-0.4.0-Windows-arm64-Setup.exe) · [Intel/AMD x64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/Google-Photos-Backup-0.4.0-Windows-x64-Setup.exe) |
-| Android 8+ | [APK — ARM64 and x86_64](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/Photos-Backup-0.4.0-Android.apk) |
+| macOS 14+ | [Apple silicon DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Photos-Backup-0.5.0-macOS-arm64.dmg) · [Intel DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Photos-Backup-0.5.0-macOS-x86_64.dmg) |
+| Windows 10 1809+ (x64) / Windows 11 (ARM64) | [ARM64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Google-Photos-Backup-0.5.0-Windows-arm64-Setup.exe) · [Intel/AMD x64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Google-Photos-Backup-0.5.0-Windows-x64-Setup.exe) |
+| Android 8+ | [APK — ARM64 and x86_64](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Photos-Backup-0.5.0-Android.apk) |
 
-`SHA256SUMS.txt` in the [v0.4.0 release](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/SHA256SUMS.txt) covers every package. The Mac app is ad-hoc signed and not notarized; Windows installers are unsigned previews.
+`SHA256SUMS.txt` in the [v0.5.0 release](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/SHA256SUMS.txt) covers every package. The Mac app is ad-hoc signed and not notarized; Windows installers are unsigned previews.
 
 ## Upload mode and its limits
 
@@ -29,18 +29,18 @@ Photos Backup uses [xob0t's gpmc](https://github.com/xob0t/gpmc), an unofficial 
 
 On 16 October 2026, a photo and video from each supported platform were read back from Google Photos with SHA-256 hashes matching the originals. The tested Mac albums and Windows folders also had their expected names and contents. See the [validation report](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/live-validation.md).
 
-## Upcoming v0.5.0 preview
+## What’s new in v0.5.0
 
-These capabilities are being prepared for v0.5.0 and are not part of the v0.4.0 downloads above. Disposable files passed import and byte-for-byte Google original readback: iPhone on Mac, and iPhone and Pixel through Windows production components. Android folder backup and album creation passed the owner’s on-device check, and its responsive layout passed device tests and scrcpy inspection. Live iCloud reclaim validation remains pending. [Preview validation](docs/VALIDATION-v0.5.0.md).
+Disposable files passed import and byte-for-byte Google original readback: iPhone on Mac, and iPhone and Pixel through Windows production components. Android folder backup and album creation passed the owner’s on-device check, and its responsive layout passed device tests and scrcpy inspection. Live iCloud reclaim validation remains pending. [Validation](docs/VALIDATION-v0.5.0.md).
 
 - **Android:** select accessible MediaStore folders and mirror them as Google Photos albums. These are device folders, not logical Google albums. Android's partial-media permission means only media you granted the app can appear.
 - **macOS:** import selected originals from a connected, unlocked and trusted iPhone or camera through DCIM/Image Capture. This is file import, not PhotoKit album access or cloud-only media.
 - **Windows:** import selected media from devices exposed through Windows portable storage/DCIM. An optional, explicitly configured ADB source can import from a wireless Android connection.
-- **iCloud reclaim:** iCloud backup remains copy-only by default. A manual preview, or an explicitly confirmed automatic run of at most 100 items, may move verified source assets to Recently Deleted only after fresh original readback and SHA-256 verification of every component. Recently Deleted changes propagate to iCloud devices; it does not promise immediate free space or purge the items.
+- **iCloud reclaim (experimental):** iCloud backup remains copy-only by default. A manual preview, or an explicitly confirmed automatic run of at most 100 items, may move verified source assets to Recently Deleted only after fresh original readback and SHA-256 verification of every component. Recently Deleted changes propagate to iCloud devices; it does not promise immediate free space or purge the items.
 
 ## Know before backing up
 
-- macOS can recreate selected Apple Photos albums. Windows mirrors selected folder names. Android's current release selects individual files; its v0.5.0 preview adds accessible device folders.
+- macOS can recreate selected Apple Photos albums. Windows mirrors selected folder names. Android selects individual files or accessible device folders.
 - Live Photos and other paired components need special care. The Mac Photos-library source currently uploads the still image; connected-device reclaim requires every identified paired component.
 - Selected media and associated metadata go to your Google account. Credentials stay in macOS Keychain, Windows DPAPI, or Android Keystore; local history stays on your device.
 
@@ -54,9 +54,9 @@ Screenshots use synthetic data; they are not live-upload evidence.
 
 <details><summary>Android and dark mode</summary>
 
-<img src="docs/android-overview-dark.png" width="280" alt="Android preview with full-width backup action and synthetic media">
+<img src="docs/android-overview-dark.png" width="280" alt="Android app with full-width backup action and synthetic media">
 
-Android image shows the v0.5.0 preview with synthetic account and media data.
+Android image shows v0.5.0 with synthetic account and media data.
 
 ![macOS dark mode](docs/menu-bar-panel-backing-up-dark.png)
 
@@ -64,7 +64,7 @@ Android image shows the v0.5.0 preview with synthetic account and media data.
 
 See [detailed setup](docs/SETUP.md), the [technical reference](docs/REFERENCE.md), [Windows guide](Windows/README.md), and [Android guide](Android/README.md). Developers can start with [CONTRIBUTING.md](CONTRIBUTING.md).
 
-<details><summary>Connected iPhone import — v0.5.0 preview</summary>
+<details><summary>Connected iPhone import — v0.5.0</summary>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/macos-connected-device-dark.png">
@@ -73,7 +73,7 @@ See [detailed setup](docs/SETUP.md), the [technical reference](docs/REFERENCE.md
 
 </details>
 
-<details><summary>Connected-device import on Windows — v0.5.0 preview</summary>
+<details><summary>Connected-device import on Windows — v0.5.0</summary>
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/windows-connected-device-dark.png">
