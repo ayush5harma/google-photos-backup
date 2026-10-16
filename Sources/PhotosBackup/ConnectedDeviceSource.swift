@@ -8,6 +8,12 @@ import PhotosBackupCore
 @MainActor
 @Observable
 final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDelegate, @preconcurrency ICCameraDeviceDelegate, ICCameraDeviceDownloadDelegate {
+    struct Device: Identifiable, Equatable {
+        let id: String
+        let name: String
+        let model: String
+        var isConnected: Bool
+    }
     enum Status: Equatable {
         case searching
         case unavailable(String)
@@ -27,13 +33,23 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
 
     private let browser = ICDeviceBrowser()
     private var camera: ICCameraDevice?
+    private var cameras: [String: ICCameraDevice] = [:]
+    private var deviceIDs: [ObjectIdentifier: String] = [:]
     private var files: [String: ICCameraFile] = [:]
     private var continuation: CheckedContinuation<URL, Error>?
     private var importingID: String?
     private var downloadFolder: URL?
+    private var selection = ConnectedDeviceSelection()
+    /// We may choose the first device while the browser is initially
+    /// discovering hardware. Once that initial choice has happened, a later
+    /// connection must never replace a disconnected selection implicitly.
+    private var hasMadeInitialSelection = false
 
     private(set) var status: Status = .searching
     private(set) var items: [DeviceMediaItem] = []
+    private(set) var devices: [Device] = []
+    var selectedDeviceID: String? { selection.selectedID }
+    var deviceSelectionLocked: Bool { selection.lockedID != nil }
     /// Image Capture must advertise deletion support before reclaim is offered.
     private(set) var supportsDeviceDeletion = false
 
@@ -102,48 +118,101 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
         #endif
         items = []
         files = [:]
-        camera = nil
         status = .searching
-        browser.stop()
-        browser.start()
+        if !deviceSelectionLocked, let selectedDeviceID {
+            camera = cameras[selectedDeviceID]
+        }
+        if let camera {
+            if camera.hasOpenSession {
+                load(camera)
+            } else {
+                camera.requestOpenSession()
+            }
+        }
+    }
+
+    func selectDevice(_ id: String) {
+        guard !deviceSelectionLocked, let camera = cameras[id] else { return }
+        guard selection.select(id) else { return }
+        self.camera = camera
+        items = []
+        files = [:]
+        if camera.hasOpenSession {
+            load(camera)
+        } else {
+            camera.requestOpenSession()
+        }
+    }
+
+    func lockSelectedDeviceForImport() -> Bool {
+        selection.beginImport(available: Set(cameras.keys))
+    }
+
+    func releaseSelectedDeviceAfterImport() {
+        selection.endImport()
     }
 
     func deviceBrowser(_ browser: ICDeviceBrowser, didAdd device: ICDevice, moreComing: Bool) {
-        guard camera == nil, let camera = device as? ICCameraDevice else { return }
-        self.camera = camera
+        guard let camera = device as? ICCameraDevice else { return }
+        let id = Self.deviceID(for: camera)
+        cameras[id] = camera
+        deviceIDs[ObjectIdentifier(camera)] = id
+        upsertDevice(camera, id: id, connected: true)
         camera.delegate = self
         camera.requestOpenSession()
+        if !hasMadeInitialSelection {
+            hasMadeInitialSelection = true
+            selectDevice(id)
+        }
     }
 
     func deviceBrowser(_ browser: ICDeviceBrowser, didRemove device: ICDevice, moreGoing: Bool) {
-        guard device === camera else { return }
-        disconnected("The connected device was removed.")
+        let key = ObjectIdentifier(device)
+        guard let id = deviceIDs.removeValue(forKey: key) else { return }
+        cameras[id] = nil
+        if let index = devices.firstIndex(where: { $0.id == id }) { devices[index].isConnected = false }
+        if selectedDeviceID == id {
+            disconnected("The selected device was removed.")
+            selection.disconnected(id)
+        }
     }
 
     func device(_ device: ICDevice, didOpenSessionWithError error: Error?) {
-        if let error { disconnected("Could not open the device: \(error.localizedDescription)") }
+        guard deviceIDs[ObjectIdentifier(device)] == selectedDeviceID else { return }
+        if error != nil { status = .locked("Unlock and trust the selected device, then keep it connected.") }
     }
 
     func device(_ device: ICDevice, didCloseSessionWithError error: Error?) {
-        disconnected(error.map { "The device connection closed: \($0.localizedDescription)" } ?? "The device connection closed.")
+        guard deviceIDs[ObjectIdentifier(device)] == selectedDeviceID else { return }
+        disconnected("The selected device connection closed.")
     }
 
-    func didRemove(_ device: ICDevice) { disconnected("The connected device was removed.") }
+    func didRemove(_ device: ICDevice) {
+        guard deviceIDs[ObjectIdentifier(device)] == selectedDeviceID else { return }
+        disconnected("The selected device was removed.")
+    }
 
-    func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) { load(device) }
+    func deviceDidBecomeReady(withCompleteContentCatalog device: ICCameraDevice) {
+        if deviceIDs[ObjectIdentifier(device)] == selectedDeviceID { load(device) }
+    }
 
     func cameraDeviceDidRemoveAccessRestriction(_ device: ICDevice) {
-        if let camera = device as? ICCameraDevice { load(camera) }
+        if let camera = device as? ICCameraDevice, deviceIDs[ObjectIdentifier(camera)] == selectedDeviceID { load(camera) }
     }
 
     func cameraDeviceDidEnableAccessRestriction(_ device: ICDevice) {
+        guard deviceIDs[ObjectIdentifier(device)] == selectedDeviceID else { return }
         items = []
         files = [:]
         status = .locked("Unlock and trust the iPhone, then keep it connected.")
     }
 
-    func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) { load(camera) }
-    func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) { load(camera) }
+    func cameraDevice(_ camera: ICCameraDevice, didAdd items: [ICCameraItem]) {
+        if deviceIDs[ObjectIdentifier(camera)] == selectedDeviceID { load(camera) }
+    }
+    func cameraDevice(_ camera: ICCameraDevice, didRemove items: [ICCameraItem]) {
+        if deviceIDs[ObjectIdentifier(camera)] == selectedDeviceID { load(camera) }
+    }
     func cameraDevice(_ camera: ICCameraDevice, didReceiveThumbnail thumbnail: CGImage?, for item: ICCameraItem, error: Error?) {}
     func cameraDevice(_ camera: ICCameraDevice, didReceiveMetadata metadata: [AnyHashable: Any]?, for item: ICCameraItem, error: Error?) {}
     func cameraDevice(_ camera: ICCameraDevice, didRenameItems items: [ICCameraItem]) { load(camera) }
@@ -231,6 +300,12 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
     }
 
     private func load(_ camera: ICCameraDevice) {
+        // Delegate notifications may arrive from an unselected device after a
+        // picker change. They must not overwrite the active catalog.
+        guard let selectedDeviceID,
+              deviceIDs[ObjectIdentifier(camera)] == selectedDeviceID,
+              camera === self.camera
+        else { return }
         guard !camera.isLocked, !camera.isAccessRestrictedAppleDevice else {
             items = []
             files = [:]
@@ -243,7 +318,7 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
         supportsDeviceDeletion = camera.capabilities.contains(ICDeviceCapability.cameraDeviceCanDeleteOneFile.rawValue)
         let cameraFiles = (camera.mediaFiles ?? []).compactMap { $0 as? ICCameraFile }
         let descriptors = cameraFiles.compactMap { file -> (DeviceMediaItem, ICCameraFile)? in
-            let deviceID = camera.uuidString ?? "usb:\(camera.usbVendorID):\(camera.usbProductID):\(camera.usbLocationID)"
+            let deviceID = Self.deviceID(for: camera)
             let id = DeviceImportPlan.stableIdentifier(deviceID: deviceID, fingerprint: file.fingerprint,
                                                        objectHandle: file.ptpObjectHandle,
                                                        filename: file.originalFilename ?? file.name ?? "file")
@@ -255,6 +330,20 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
         items = DeviceImportPlan.unique(descriptors.map(\.0))
         files = Dictionary(uniqueKeysWithValues: descriptors.map { ($0.0.id, $0.1) })
         status = currentReadyStatus()
+    }
+
+    private static func deviceID(for camera: ICCameraDevice) -> String {
+        camera.uuidString ?? "usb:\(camera.usbVendorID):\(camera.usbProductID):\(camera.usbLocationID)"
+    }
+
+    private func upsertDevice(_ camera: ICCameraDevice, id: String, connected: Bool) {
+        let value = Device(id: id, name: camera.name ?? "Connected device", model: camera.productKind ?? "Camera", isConnected: connected)
+        if let index = devices.firstIndex(where: { $0.id == id }) {
+            devices[index] = value
+        } else {
+            devices.append(value)
+            devices.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        }
     }
 
     private func currentReadyStatus() -> Status {
