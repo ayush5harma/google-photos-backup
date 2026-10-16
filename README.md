@@ -31,7 +31,7 @@ On 16 October 2026, a photo and video from each supported platform were read bac
 
 ## Upcoming v0.5.0 preview
 
-These capabilities are being prepared for v0.5.0 and are not part of the v0.4.0 downloads above. Disposable files passed import and byte-for-byte Google original readback: iPhone on Mac, and iPhone and Pixel through Windows production components. Android folder-backup UI and synthetic iCloud reclaim checks remain pending. [Preview validation](docs/VALIDATION-v0.5.0.md).
+These capabilities are being prepared for v0.5.0 and are not part of the v0.4.0 downloads above. Disposable files passed import and byte-for-byte Google original readback: iPhone on Mac, and iPhone and Pixel through Windows production components. Android folder backup and album creation passed the owner’s on-device check, and its responsive layout passed device tests and scrcpy inspection. Live iCloud reclaim validation remains pending. [Preview validation](docs/VALIDATION-v0.5.0.md).
 
 - **Android:** select accessible MediaStore folders and mirror them as Google Photos albums. These are device folders, not logical Google albums. Android's partial-media permission means only media you granted the app can appear.
 - **macOS:** import selected originals from a connected, unlocked and trusted iPhone or camera through DCIM/Image Capture. This is file import, not PhotoKit album access or cloud-only media.
@@ -54,7 +54,9 @@ Screenshots use synthetic data; they are not live-upload evidence.
 
 <details><summary>Android and dark mode</summary>
 
-<img src="docs/android-overview-dark.png" width="280" alt="Android backup screen in dark mode">
+<img src="docs/android-overview-dark.png" width="280" alt="Android preview with full-width backup action and synthetic media">
+
+Android image shows the v0.5.0 preview with synthetic account and media data.
 
 ![macOS dark mode](docs/menu-bar-panel-backing-up-dark.png)
 
