@@ -9,7 +9,7 @@ from urllib.parse import urlsplit
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / 'build' / 'site'
 ASSETS = ('app-icon.png', 'app-icon-dark.png', 'menu-bar-panel-light.png',
-          'windows-parallels.png', 'android-overview-dark.png')
+          'windows-connected-device-light.png', 'android-overview-dark.png')
 
 
 class Links(HTMLParser):

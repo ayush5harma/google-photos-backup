@@ -46,11 +46,11 @@ Disposable files passed import and byte-for-byte Google original readback: iPhon
 
 ## Screenshots
 
-Screenshots use synthetic data; they are not live-upload evidence.
+Screenshots show v0.5.0 with synthetic data; they are not live-upload evidence.
 
 | macOS | Windows |
 | --- | --- |
-| ![macOS menu bar](docs/menu-bar-panel-light.png) | ![Windows app in Parallels](docs/windows-parallels.png) |
+| ![macOS menu bar](docs/menu-bar-panel-light.png) | ![Windows connected-device import](docs/windows-connected-device-light.png) |
 
 <details><summary>Android and dark mode</summary>
 

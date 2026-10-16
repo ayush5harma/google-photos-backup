@@ -52,3 +52,20 @@ Images narrower than that, such as the menu bar panel, are used as rendered.
 The finalized F aperture-and-infinity icon uses translucent mint and violet blades with matching light and dark assets. macOS screenshots were regenerated from fixtures on 2026-10-16. See [icon source and appearance behavior](ICON.md).
 
 The `icloud-setup-light.png` and `icloud-setup-dark.png` images show the signed-out iCloud form with synthetic state. Generate them through the fixture `sections` group; the form-only render forces active control styling without activating the application.
+
+## v0.5.0 refresh — 2026-10-17
+
+The README and GitHub Pages site share the current macOS menu-bar and Windows
+connected-device images. macOS menu-bar and welcome images were rendered from
+`3d1b3c6` (v0.5.0 main) with the `menubar,onboarding` fixture groups above.
+
+The Windows light and dark connected-device images are `ui-smoke.png` and
+`ui-smoke-dark.png` from `verification/installed` in the
+`Windows-x64-verification` artifact of successful
+[run 38890780067](https://github.com/ayush5harma/google-photos-backup/actions/runs/38890780067),
+also built from `3d1b3c6`. Despite their generic output names, these captures
+show Connected devices, not Overview. The website no longer uses the older
+Parallels overview capture.
+
+The Android image is retained from the v0.5.0 device validation in `0f7fd37`;
+it already shows the current release's full-width backup action.
