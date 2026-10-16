@@ -38,6 +38,33 @@ public struct BridgeItem: Codable, Equatable, Sendable {
     }
 }
 
+/// The source bytes kept in private staging while Google is asked for a
+/// fresh original readback. This proof is deliberately separate from an
+/// upload acknowledgement: it is the minimum needed before a connected
+/// device may offer reclaim.
+public struct OriginalVerificationItem: Codable, Equatable, Sendable {
+    public let id: String
+    public let path: String
+    public let mediaKey: String
+    public let expectedSHA256: String?
+    public let expectedBytes: Int64?
+
+    public init(id: String, path: String, mediaKey: String, expectedSHA256: String? = nil, expectedBytes: Int64? = nil) {
+        self.id = id
+        self.path = path
+        self.mediaKey = mediaKey
+        self.expectedSHA256 = expectedSHA256
+        self.expectedBytes = expectedBytes
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, path
+        case mediaKey = "media_key"
+        case expectedSHA256 = "expected_sha256"
+        case expectedBytes = "expected_bytes"
+    }
+}
+
 /// A Google Photos album: an existing one by its media key, or a new one by
 /// name. When both are set the bridge appends to `id`.
 public struct AlbumTarget: Codable, Equatable, Sendable {
@@ -60,6 +87,7 @@ public struct BridgeRequest: Encodable, Equatable, Sendable {
     public var timeout: Int?
     public var album: AlbumTarget?
     public var mediaKeys: [String]?
+    public var verificationItems: [OriginalVerificationItem]?
 
     enum CodingKeys: String, CodingKey {
         case command, items, quality, threads, force, timeout, album
@@ -79,6 +107,29 @@ public struct BridgeRequest: Encodable, Equatable, Sendable {
 
     public static func addToAlbum(_ authData: String, mediaKeys: [String], album: AlbumTarget) -> BridgeRequest {
         BridgeRequest(command: "add-to-album", authData: authData, album: album, mediaKeys: mediaKeys)
+    }
+
+    public static func verifyOriginal(_ authData: String, items: [OriginalVerificationItem]) -> BridgeRequest {
+        var request = BridgeRequest(command: "verify-original", authData: authData)
+        request.verificationItems = items
+        return request
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(command, forKey: .command)
+        try values.encodeIfPresent(authData, forKey: .authData)
+        if let verificationItems {
+            try values.encode(verificationItems, forKey: .items)
+        } else {
+            try values.encodeIfPresent(items, forKey: .items)
+        }
+        try values.encodeIfPresent(quality, forKey: .quality)
+        try values.encodeIfPresent(threads, forKey: .threads)
+        try values.encodeIfPresent(force, forKey: .force)
+        try values.encodeIfPresent(timeout, forKey: .timeout)
+        try values.encodeIfPresent(album, forKey: .album)
+        try values.encodeIfPresent(mediaKeys, forKey: .mediaKeys)
     }
 
     public func encoded() throws -> Data {
@@ -106,6 +157,9 @@ public enum BridgeEvent: Equatable, Sendable {
     case auth(email: String?)
     case progress(id: String?, phase: UploadPhase, completed: Int64, total: Int64)
     case item(id: String, mediaKey: String, existing: Bool)
+    /// A new, independently downloaded Google original matched the still
+    /// staged local bytes. It does not itself authorize source deletion.
+    case verified(id: String, mediaKey: String, sha256: String, bytes: Int64)
     /// `retryable` is the bridge's own reading of the failure; nil from a
     /// bridge that predates the field.
     case itemFailed(id: String, message: String, retryable: Bool?)
@@ -141,6 +195,9 @@ public enum BridgeEvent: Equatable, Sendable {
         case "item":
             guard let id = string("id"), let key = string("media_key") else { break }
             return .item(id: id, mediaKey: key, existing: string("status") == "existing")
+        case "verified":
+            guard let id = string("id"), let key = string("media_key"), let sha256 = string("sha256") else { break }
+            return .verified(id: id, mediaKey: key, sha256: sha256, bytes: int64("bytes"))
         case "item_failed":
             guard let id = string("id") else { break }
             return .itemFailed(id: id, message: string("message") ?? "upload failed", retryable: object["retryable"] as? Bool)

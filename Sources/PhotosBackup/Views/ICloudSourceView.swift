@@ -6,6 +6,8 @@ struct ICloudSourceView: View {
     @State private var password = ""
     @State private var verificationCode = ""
     @State private var selectedPhoneID: Int?
+    @State private var confirmReclaim = false
+    @State private var confirmAutomaticReclaim = false
 
     private var source: ICloudSource { model.iCloud }
 
@@ -19,9 +21,20 @@ struct ICloudSourceView: View {
                     (source.phase == .failed && source.hasConfirmedSelection) {
                     transferPanel
                 }
+                if !source.reclaimFiles.isEmpty { reclaimPanel }
                 safetyPanel
             }
             .readablePage()
+        }
+        .confirmationDialog("Move verified originals to Recently Deleted?", isPresented: $confirmReclaim, titleVisibility: .visible) {
+            Button("Verify and Move to Recently Deleted", role: .destructive) { source.reclaimVerifiedCopies() }
+        } message: {
+            Text("This removes \(source.reclaimCount) selected iCloud items from all synced devices after Google original verification. Apple keeps them in Recently Deleted temporarily; space may not be freed immediately.")
+        }
+        .confirmationDialog("Automatically reclaim this backup batch?", isPresented: $confirmAutomaticReclaim, titleVisibility: .visible) {
+            Button("Back Up, Verify and Reclaim", role: .destructive) { source.backUp(reclaimAfterBackup: true) }
+        } message: {
+            Text("For this run only, process up to 100 iCloud items, then independently verify all original components in Google Photos and move verified sources to Recently Deleted across all synced devices. Unverified items stay. Space recovery may be delayed.")
         }
         .navigationTitle("iCloud Photos")
         .navigationSubtitle("Copy iCloud Photos to Google Photos")
@@ -218,8 +231,33 @@ struct ICloudSourceView: View {
                         .disabled(source.isRunning || !model.hasAuthData || !source.hasConfirmedSelection)
                     }
                 }
+                Button("Back Up and Automatically Reclaim…") { confirmAutomaticReclaim = true }
+                    .disabled(source.isRunning || !model.hasAuthData || !source.hasConfirmedSelection)
                 Text("A resumed run checks its account-bound progress. Items are counted as backed up only after Google confirms them.")
                     .font(.callout).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var reclaimPanel: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 12) {
+                Label("Reclaim selected iCloud originals", systemImage: "trash").font(.headline)
+                Text("Select up to 100 backed-up items from this run. Live Photo components must all pass a fresh byte-for-byte Google original check. Nothing is removed during preview.")
+                    .font(.callout).foregroundStyle(.secondary)
+                ForEach(source.reclaimFiles.keys.sorted(), id: \.self) { id in
+                    Toggle(source.reclaimFiles[id] ?? id, isOn: Binding(
+                        get: { source.reclaimSelection.contains(id) },
+                        set: { if $0 { source.reclaimSelection.insert(id) } else { source.reclaimSelection.remove(id) } }
+                    )).disabled(source.isRunning)
+                }
+                Button("Preview Selected Items") { source.previewReclaim() }
+                    .disabled(source.isRunning || source.reclaimSelection.isEmpty)
+                if source.reclaimToken != nil {
+                    Text("\(source.reclaimCount) eligible items · \(ByteCountFormatter.string(fromByteCount: Int64(source.reclaimBytes), countStyle: .file)). Preview expires after 15 minutes.")
+                    Button("Verify and Reclaim…", role: .destructive) { confirmReclaim = true }
+                        .disabled(source.isRunning || source.reclaimCount == 0)
+                }
             }
         }
     }
@@ -227,9 +265,9 @@ struct ICloudSourceView: View {
     private var safetyPanel: some View {
         Card {
             VStack(alignment: .leading, spacing: 10) {
-                Label("Copies only", systemImage: "checkmark.shield")
+                Label("You control source removal", systemImage: "checkmark.shield")
                     .font(.headline)
-                Text("This source does not delete photos from iCloud. Keep your originals there until you independently confirm the destination copy meets your needs.")
+                Text("Backup keeps iCloud originals. Optional reclaim verifies each Google original before moving selected items to Recently Deleted across synced devices. It never empties Recently Deleted or promises immediate space recovery.")
                 Text("If sign-in is unavailable, check whether iCloud web data access is enabled for this Apple Account. Accounts using Advanced Data Protection may not work with this source. You can use the Mac Photos library and the Albums backup instead.")
                     .foregroundStyle(.secondary)
                 Link("Open iCloud account settings", destination: URL(string: "https://www.icloud.com/settings/")!)

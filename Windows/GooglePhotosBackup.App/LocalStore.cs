@@ -26,6 +26,7 @@ internal sealed class LocalStore
     public string Root { get; }
 
     public string StateDirectory => Path.Combine(Root, "State");
+    public string DeviceStagingDirectory => Path.Combine(Root, "Device staging");
 
     private string PreferencesFile => Path.Combine(Root, "settings.json");
     private string HistoryFile => Path.Combine(Root, "history.json");

@@ -15,7 +15,8 @@ accepted on the command line or written to protocol output. Version 1 commands:
 Every event has type and v=1. Auth emits status signed_in, signed_out or
 needs_2fa. Backup emits item, item_failed, progress and finally done. Each
 confirmed component is committed to an account-bound SQLite ledger before its
-staging file is removed. Reclaim deliberately has no mutating command.
+staging file is removed. Reclaim requires an account-bound preview and fresh
+original readback before conditional soft deletion to Recently Deleted.
 """
 
 from __future__ import annotations
@@ -32,9 +33,11 @@ import signal
 import sqlite3
 import sys
 import tempfile
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable, Iterator
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlencode
 
 # 2026-10-15: The packaged -I smoke omitted the script directory, so insert
 # the bundle paths explicitly before importing the provider or gpmc bridge.
@@ -411,6 +414,10 @@ def _backup(request: dict[str, Any], state: Path, emit: Callable[[dict[str, Any]
             upload: Callable[[str, dict[str, str]], tuple[str, str]]) -> int:
     account = required(request, "account")
     auth_data = required(request, "auth_data")
+    automatic_reclaim = request.get("reclaim_after_backup", False)
+    if type(automatic_reclaim) is not bool or (automatic_reclaim and request.get("confirm_recently_deleted") is not True):
+        raise RequestError("automatic reclaim requires explicit Recently Deleted confirmation")
+    reclaim_ids: list[str] = []
     google_account = dict(parse_qsl(auth_data)).get("Email", "").strip()
     if not google_account or "@" not in google_account:
         raise RequestError("Google auth_data must identify an Email account")
@@ -421,7 +428,9 @@ def _backup(request: dict[str, Any], state: Path, emit: Callable[[dict[str, Any]
     for orphan in staging.glob("asset-*"):
         if orphan.is_dir():
             shutil.rmtree(orphan)
-    max_items = request.get("max_items")
+    max_items = request.get("max_items", 100 if automatic_reclaim else None)
+    if automatic_reclaim and (type(max_items) is not int or not 1 <= max_items <= 100):
+        raise RequestError("automatic reclaim is limited to 100 items per confirmed run")
     if max_items is not None and (type(max_items) is not int or max_items < 1):
         raise RequestError("max_items must be a positive integer")
     max_bytes = request.get("max_staging_bytes", DEFAULT_MAX_BYTES)
@@ -477,6 +486,8 @@ def _backup(request: dict[str, Any], state: Path, emit: Callable[[dict[str, Any]
                     status = "uploaded" if "uploaded" in component_results else "existing"
                     counts[status] += 1
                     emit(event("item", id=asset.id, status=status, media_key=original_media_key))
+                    emit(event("source_asset", id=asset.id, filename=str(asset.filename)))
+                    reclaim_ids.append(asset.id)
                 except (StopRequested, KeyboardInterrupt):
                     raise
                 except Exception as error:
@@ -485,8 +496,167 @@ def _backup(request: dict[str, Any], state: Path, emit: Callable[[dict[str, Any]
                 completed += 1
                 emit(event("progress", completed=completed, total=total, **counts))
             emit(event("done", **counts, pending=max(0, total - completed) + counts["failed"]))
+    if automatic_reclaim and reclaim_ids:
+        preview_events: list[dict[str, Any]] = []
+        code = _reclaim(dict(request, command="reclaim-preview", asset_ids=reclaim_ids), state, preview_events.append, factory)
+        preview = next((e for e in preview_events if e["type"] == "reclaim_preview"), None)
+        if code or not preview or preview["count"] != len(reclaim_ids):
+            emit(event("reclaim_done", soft_deleted=0, retained=len(reclaim_ids), uncertain=0, immediate_space_recovery=False))
+            return 1
+        return _reclaim(dict(request, command="reclaim", preview_token=preview["token"]), state, emit, factory)
     return 0
 
+
+
+def google_verify(auth_data: str, item: dict[str, Any]) -> dict[str, Any]:
+    import gpmc_bridge
+    results: list[dict[str, Any]] = []
+    code = gpmc_bridge.run({"command": "verify-original", "auth_data": auth_data, "items": [item]}, results.append)
+    proof = next((e for e in results if e["type"] == "verified"), None)
+    if code or proof is None:
+        raise ValueError("original verification failed")
+    return proof
+
+
+def _reclaim_snapshot(asset: Any, ledger: sqlite3.Connection) -> dict[str, Any]:
+    # A previous interrupted delete cannot be made safe merely by minting a
+    # new preview token. Keep it blocked until the Apple outcome is reconciled.
+    if ledger.execute("SELECT 1 FROM reclaim_actions WHERE asset_id=? AND status='delete_requested' LIMIT 1", (asset.id,)).fetchone():
+        raise ValueError("previous deletion outcome requires review")
+    record = asset._asset_record
+    tag, name = record.get("recordChangeTag"), record.get("recordName")
+    if not isinstance(tag, str) or not tag or not isinstance(name, str) or not name:
+        raise ValueError("source revision unavailable")
+    components = []
+    for kind, version, filename in _components(asset):
+        checksum = str(version.checksum)
+        row = ledger.execute("SELECT media_key FROM confirmed WHERE asset_id=? AND version=? AND checksum=?",
+                             (asset.id, kind, checksum)).fetchone()
+        if not row or not row[0] or type(version.size) is not int or version.size <= 0:
+            raise ValueError("component not backed up")
+        components.append(dict(kind=kind, checksum=checksum, bytes=version.size, media_key=row[0]))
+    return dict(id=asset.id, record_name=name, change_tag=tag, components=components)
+
+
+def _soft_delete(library: Any, snapshot: dict[str, Any]) -> None:
+    # Same conditional CloudKit update used by icloudpd, but unlike its helper
+    # validate both HTTP and record-level success before reporting deletion.
+    body = {"atomic": True, "desiredKeys": ["isDeleted"], "operations": [{
+        "operationType": "update", "record": {"fields": {"isDeleted": {"value": 1}},
+        "recordChangeTag": snapshot["change_tag"], "recordName": snapshot["record_name"],
+        "recordType": "CPLAsset"}}], "zoneID": library.zone_id}
+    response = library.session.post(library.service_endpoint + "/records/modify?" + urlencode(library.params),
+                                    data=json.dumps(body), headers={"Content-type": "application/json"})
+    try:
+        response.raise_for_status()
+        records = response.json().get("records", [])
+        if len(records) != 1:
+            raise ValueError("deletion not confirmed")
+        record = records[0]
+        if (record.get("recordName") != snapshot["record_name"] or record.get("serverErrorCode") or
+                record.get("fields", {}).get("isDeleted", {}).get("value") != 1):
+            raise ValueError("deletion not confirmed")
+    finally:
+        response.close()
+
+
+def _reclaim(request: dict[str, Any], state: Path, emit: Callable[[dict[str, Any]], None],
+             factory: Callable, verify: Callable = google_verify, delete: Callable = _soft_delete) -> int:
+    account, auth_data = required(request, "account"), required(request, "auth_data")
+    google_account = dict(parse_qsl(auth_data)).get("Email", "").strip()
+    if not google_account or "@" not in google_account:
+        raise RequestError("Google auth_data must identify an Email account")
+    command = request["command"]
+    if command == "reclaim" and request.get("confirm_recently_deleted") is not True:
+        raise RequestError("confirm_recently_deleted must be true after reviewing the preview")
+    if verify is google_verify:
+        check_google(auth_data)
+    with session_directory(state, account) as cookies, contextlib.closing(_ledger(state, account, google_account)) as ledger:
+        ledger.execute("CREATE TABLE IF NOT EXISTS reclaim_batches (token TEXT PRIMARY KEY, created REAL NOT NULL, snapshot TEXT NOT NULL)")
+        ledger.execute("CREATE TABLE IF NOT EXISTS reclaim_actions (token TEXT NOT NULL, asset_id TEXT NOT NULL, status TEXT NOT NULL, PRIMARY KEY(token,asset_id))")
+        service = factory(account, None, cookies)
+        if auth_status(service) != "signed_in":
+            emit(event("auth", status="signed_out", account=account))
+            return 2
+        if command == "reclaim-preview":
+            ids = request.get("asset_ids")
+            if not isinstance(ids, list) or not ids or len(ids) > 100 or not all(isinstance(i, str) and i for i in ids):
+                raise RequestError("select 1-100 asset_ids for a reclaim preview")
+            wanted, snapshots = set(ids), []
+            for asset in service.photos.all:
+                if asset.id not in wanted:
+                    continue
+                try:
+                    snapshot = _reclaim_snapshot(asset, ledger)
+                    snapshots.append(snapshot)
+                    emit(event("reclaim_candidate", id=asset.id, components=len(snapshot["components"]),
+                               bytes=sum(c["bytes"] for c in snapshot["components"])))
+                except Exception:
+                    emit(event("item_failed", id=asset.id, code="not_reclaimable", retryable=False))
+                wanted.remove(asset.id)
+                if not wanted:
+                    break
+            for missing in wanted:
+                emit(event("item_failed", id=missing, code="source_unavailable", retryable=True))
+            token = uuid.uuid4().hex
+            with ledger:
+                ledger.execute("INSERT INTO reclaim_batches VALUES (?,?,?)", (token, time.time(), json.dumps(snapshots, sort_keys=True)))
+            emit(event("reclaim_preview", token=token, count=len(snapshots),
+                       bytes=sum(c["bytes"] for a in snapshots for c in a["components"]),
+                       expires_in=900, destination="recently_deleted", immediate_space_recovery=False))
+            return 0
+        token = required(request, "preview_token")
+        row = ledger.execute("SELECT created,snapshot FROM reclaim_batches WHERE token=?", (token,)).fetchone()
+        if not row or not 0 <= time.time() - row[0] <= 900:
+            raise RequestError("preview expired or belongs to another account; preview again")
+        snapshots = {a["id"]: a for a in json.loads(row[1])}
+        staging = private_dir(str(private_dir(required(request, "staging_dir")) / account_key(account)))
+        max_bytes = request.get("max_staging_bytes", DEFAULT_MAX_BYTES)
+        if type(max_bytes) is not int or not 0 < max_bytes <= DEFAULT_MAX_BYTES:
+            raise RequestError("invalid staging limit")
+        counts = dict(soft_deleted=0, retained=0, uncertain=0)
+        seen = set()
+        for asset in service.photos.all:
+            if asset.id not in snapshots:
+                continue
+            seen.add(asset.id)
+            snapshot = snapshots[asset.id]
+            prior = ledger.execute("SELECT status FROM reclaim_actions WHERE token=? AND asset_id=?", (token, asset.id)).fetchone()
+            if prior:
+                # An interrupted request may have reached Apple. Never replay a
+                # possibly committed deletion, even if a stale listing returns it.
+                counts["uncertain" if prior[0] == "delete_requested" else "soft_deleted"] += 1
+                continue
+            requested = False
+            try:
+                if _reclaim_snapshot(asset, ledger) != snapshot:
+                    raise ValueError("source changed since preview")
+                for (kind, version, filename), expected in zip(_components(asset), snapshot["components"]):
+                    with tempfile.TemporaryDirectory(prefix="reclaim-", dir=staging) as folder:
+                        destination = Path(folder) / "original"
+                        _download(asset, service.session, version, destination, max_bytes)
+                        proof = verify(auth_data, dict(id=asset.id + ":" + kind, path=str(destination),
+                                                       media_key=expected["media_key"], expected_bytes=expected["bytes"]))
+                        if proof.get("bytes") != expected["bytes"] or proof.get("media_key") != expected["media_key"]:
+                            raise ValueError("original verification incomplete")
+                with ledger:
+                    ledger.execute("INSERT INTO reclaim_actions VALUES (?,?,?)", (token, asset.id, "delete_requested"))
+                requested = True
+                delete(service.photos, snapshot)
+                with ledger:
+                    ledger.execute("UPDATE reclaim_actions SET status='soft_deleted' WHERE token=? AND asset_id=?", (token, asset.id))
+                counts["soft_deleted"] += 1
+                emit(event("reclaimed", id=asset.id, destination="recently_deleted"))
+            except (StopRequested, KeyboardInterrupt):
+                raise
+            except Exception:
+                counts["uncertain" if requested else "retained"] += 1
+                emit(event("item_failed", id=asset.id, code="deletion_unconfirmed" if requested else "verification_failed", retryable=False))
+        for missing in snapshots.keys() - seen:
+            prior = ledger.execute("SELECT status FROM reclaim_actions WHERE token=? AND asset_id=?", (token, missing)).fetchone()
+            counts["soft_deleted" if prior and prior[0] == "soft_deleted" else "uncertain" if prior else "retained"] += 1
+        emit(event("reclaim_done", **counts, immediate_space_recovery=False))
+        return 0 if not counts["retained"] and not counts["uncertain"] else 1
 
 def _failure_code(error: Exception) -> str:
     message = str(error)
@@ -503,18 +673,21 @@ def _failure_code(error: Exception) -> str:
 
 def run(request: Any, emit: Callable[[dict[str, Any]], None],
         factory: Callable[[str, str | None, Path], Any] = make_service,
-        upload: Callable[[str, dict[str, str]], tuple[str, str]] = google_upload) -> int:
+        upload: Callable[[str, dict[str, str]], tuple[str, str]] = google_upload,
+        verify: Callable = google_verify, delete: Callable = _soft_delete) -> int:
     try:
         if not isinstance(request, dict):
             raise RequestError("request must be an object")
         command = required(request, "command")
         if command == "reclaim-status":
-            emit(event("reclaim", enabled=False, reason="destination proof unavailable"))
+            emit(event("reclaim", enabled=True, requires_preview=True, destination="recently_deleted", immediate_space_recovery=False))
             return 0
-        if command not in ("status", "sign-in", "send-code", "verify-2fa", "backup"):
+        if command not in ("status", "sign-in", "send-code", "verify-2fa", "backup", "reclaim-preview", "reclaim"):
             raise RequestError("unknown command")
         state = private_dir(required(request, "state_dir"))
         with state_lock(state):
+            if command in ("reclaim-preview", "reclaim"):
+                return _reclaim(request, state, emit, factory, verify, delete)
             if command == "backup":
                 return _backup(request, state, emit, factory, upload)
             return _auth_command(request, state, emit, factory)

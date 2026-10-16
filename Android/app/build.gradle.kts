@@ -13,9 +13,9 @@ android {
         applicationId = "com.photosbackup"
         minSdk = 26
         targetSdk = 36
-        versionCode = 400
+        versionCode = 500
         versionName =
-            rootProject.file("../VERSION").takeIf { it.exists() }?.readText()?.trim() ?: "0.4.0"
+            rootProject.file("../VERSION").takeIf { it.exists() }?.readText()?.trim() ?: "0.5.0"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -29,6 +29,7 @@ android {
             }
     }
     buildTypes {
+        getByName("debug") { applicationIdSuffix = ".debug" }
         getByName("release") { signingConfig = signingConfigs.findByName("localRelease") }
     }
     buildFeatures {
@@ -78,4 +79,10 @@ dependencies {
     androidTestImplementation("androidx.work:work-testing:2.10.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation(platform("androidx.compose:compose-bom:2025.04.01"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    // 3.5.0 (Compose's transitive default) reflects InputManager.getInstance,
+    // which is absent on Android 17. 3.7.0 uses getSystemService instead.
+    androidTestImplementation("androidx.test.espresso:espresso-core:3.7.0")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

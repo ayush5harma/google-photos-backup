@@ -19,13 +19,14 @@ public partial class App : Application
         var smokeIndex = Array.IndexOf(arguments, "--smoke-test");
         if (smokeIndex >= 0)
         {
+            var deviceSmokeTest = Array.IndexOf(arguments, "--device-smoke") >= 0;
             var reportPath = smokeIndex + 1 < arguments.Length && !arguments[smokeIndex + 1].StartsWith("--", StringComparison.Ordinal)
                 ? arguments[smokeIndex + 1] : null;
             var stage = "construct-window";
             try
             {
                 // 2026-10-15: The CI launch check constructs real XAML without reading credentials or reaching Google.
-                var window = new MainWindow(smokeTest: true);
+                var window = new MainWindow(smokeTest: true, deviceSmokeTest: deviceSmokeTest);
                 _window = window;
                 window.Activate();
                 stage = "load-window";
@@ -51,10 +52,14 @@ public partial class App : Application
                 var screenshotIndex = Array.IndexOf(arguments, "--screenshot");
                 string? lightIconSource = null;
                 string? darkIconSource = null;
+                var devicePageRendered = false;
                 if (screenshotIndex >= 0 && screenshotIndex + 1 < arguments.Length)
                 {
                     stage = "capture-theme-screenshots";
-                    (lightIconSource, darkIconSource) = await window.SaveThemeScreenshotsAsync(arguments[screenshotIndex + 1]);
+                    (lightIconSource, darkIconSource) = deviceSmokeTest
+                        ? await window.SaveDeviceThemeScreenshotsAsync(arguments[screenshotIndex + 1])
+                        : await window.SaveThemeScreenshotsAsync(arguments[screenshotIndex + 1]);
+                    devicePageRendered = deviceSmokeTest;
                 }
                 stage = "navigation-collapse-reopen";
                 var collapsedScreenshot = screenshotIndex >= 0 && screenshotIndex + 1 < arguments.Length
@@ -66,7 +71,7 @@ public partial class App : Application
                     Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(reportPath))!);
                     File.WriteAllText(reportPath, JsonSerializer.Serialize(new
                     {
-                        status = "ok", encryptedCredentialRoundTrip, icloudPageRendered, lightIconSource, darkIconSource,
+                        status = "ok", encryptedCredentialRoundTrip, icloudPageRendered, devicePageRendered, lightIconSource, darkIconSource,
                         navigationCollapsed, navigationReopened, collapsedScreenshot
                     }));
                 }

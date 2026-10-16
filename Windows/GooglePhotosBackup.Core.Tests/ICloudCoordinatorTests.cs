@@ -6,6 +6,94 @@ namespace GooglePhotosBackup.Core.Tests;
 
 public sealed class ICloudCoordinatorTests
 {
+    [Fact]
+    public async Task ReclaimRequiresPreviewAndBindsTheSelectedIds()
+    {
+        JsonObject? captured = null;
+        var bridge = new FakeBridge((request, emit, _) =>
+        {
+            captured = request;
+            emit(new JsonObject { ["type"] = "reclaim_preview", ["token"] = "preview-token", ["count"] = 1, ["bytes"] = 42L, ["expires_in"] = 900 });
+            return Task.FromResult(0);
+        });
+        var coordinator = new ICloudCoordinator(bridge, "state", "stage");
+        var preview = await coordinator.PreviewReclaimAsync("first@example.com", Credential(), [new("asset-1", "one.jpg")], CancellationToken.None);
+        Assert.Equal("reclaim-preview", captured!["command"]!.GetValue<string>());
+        Assert.Equal("asset-1", captured["asset_ids"]!.AsArray()[0]!.GetValue<string>());
+        Assert.Equal("preview-token", preview.Token);
+        bridge.Run = (request, emit, _) => { captured = request; emit(new JsonObject { ["type"] = "reclaim_done", ["soft_deleted"] = 1, ["retained"] = 0, ["uncertain"] = 0 }); return Task.FromResult(0); };
+        Assert.Equal(new ICloudReclaimResult(1, 0, 0), await coordinator.ReclaimAsync("first@example.com", Credential(), preview.Token, CancellationToken.None));
+        Assert.True(captured!["confirm_recently_deleted"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task ReclaimRejectsPreviewCreatedForAnotherICloudAccount()
+    {
+        var calls = 0;
+        var bridge = new FakeBridge((_, emit, _) =>
+        {
+            calls++;
+            emit(new JsonObject { ["type"] = "reclaim_preview", ["token"] = "preview-token", ["count"] = 1, ["bytes"] = 42L, ["expires_in"] = 900 });
+            return Task.FromResult(0);
+        });
+        var coordinator = new ICloudCoordinator(bridge, "state", "stage");
+        var preview = await coordinator.PreviewReclaimAsync("first@example.com", Credential(), [new("asset-1", "one.jpg")], CancellationToken.None);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.ReclaimAsync("second@example.com", Credential(), preview.Token, CancellationToken.None));
+
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task ReclaimRejectsPreviewAfterGoogleCredentialChanges()
+    {
+        var calls = 0;
+        var bridge = new FakeBridge((_, emit, _) =>
+        {
+            calls++;
+            emit(new JsonObject { ["type"] = "reclaim_preview", ["token"] = "preview-token", ["count"] = 1, ["bytes"] = 42L, ["expires_in"] = 900 });
+            return Task.FromResult(0);
+        });
+        var coordinator = new ICloudCoordinator(bridge, "state", "stage");
+        var preview = await coordinator.PreviewReclaimAsync("first@example.com", Credential(), [new("asset-1", "one.jpg")], CancellationToken.None);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            coordinator.ReclaimAsync("first@example.com", Credential() + "-rotated", preview.Token, CancellationToken.None));
+
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public async Task ReclaimReturnsReportedOutcomeEvenWhenBridgeReturnsNonzero()
+    {
+        var bridge = new FakeBridge((_, emit, _) =>
+        {
+            emit(new JsonObject { ["type"] = "reclaim_preview", ["token"] = "preview-token", ["count"] = 1, ["bytes"] = 42L, ["expires_in"] = 900 });
+            return Task.FromResult(0);
+        });
+        var coordinator = new ICloudCoordinator(bridge, "state", "stage");
+        var preview = await coordinator.PreviewReclaimAsync("first@example.com", Credential(), [new("asset-1", "one.jpg")], CancellationToken.None);
+        bridge.Run = (_, emit, _) =>
+        {
+            emit(new JsonObject { ["type"] = "reclaim_done", ["soft_deleted"] = 1, ["retained"] = 2, ["uncertain"] = 3 });
+            return Task.FromResult(3);
+        };
+
+        Assert.Equal(new ICloudReclaimResult(1, 2, 3),
+            await coordinator.ReclaimAsync("first@example.com", Credential(), preview.Token, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AutomaticReclaimIsExplicitlyBoundAndLimited()
+    {
+        JsonObject? captured = null;
+        var bridge = new FakeBridge((request, emit, _) => { captured = request; emit(new JsonObject { ["type"] = "done", ["uploaded"] = 0, ["existing"] = 0, ["failed"] = 0, ["pending"] = 0 }); return Task.FromResult(0); });
+        await new ICloudCoordinator(bridge, "state", "stage").BackupAsync("first@example.com", Credential(), CancellationToken.None, reclaimAfterBackup: true);
+        Assert.True(captured!["reclaim_after_backup"]!.GetValue<bool>());
+        Assert.True(captured["confirm_recently_deleted"]!.GetValue<bool>());
+        Assert.Equal(100, captured["max_items"]!.GetValue<int>());
+    }
     [Theory]
     [InlineData("signed_out", ICloudAuthStatus.SignedOut)]
     [InlineData("signed_in", ICloudAuthStatus.SignedIn)]

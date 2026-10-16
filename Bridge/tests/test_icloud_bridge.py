@@ -312,11 +312,11 @@ class ICloudBridgeTests(unittest.TestCase):
             self.assertEqual(self.request("backup", lambda *_: FakeService(assets=[asset]), upload, **request), 0)
             self.assertEqual(self.events[-1]["uploaded"], 1)
 
-    def test_accounts_have_separate_ledgers_and_reclaim_has_no_delete(self):
+    def test_accounts_have_separate_ledgers_and_reclaim_requires_preview(self):
         self.assertNotIn("delete", dir(icloud_bridge))
         self.assertEqual(icloud_bridge.run({"command": "reclaim-status"}, self.events.append), 0)
-        self.assertEqual(self.events[-1], {"type": "reclaim", "v": 1, "enabled": False,
-                                          "reason": "destination proof unavailable"})
+        self.assertTrue(self.events[-1]["requires_preview"])
+        self.assertFalse(self.events[-1]["immediate_space_recovery"])
         self.assertNotEqual(icloud_bridge.account_key("one@example.com"),
                             icloud_bridge.account_key("two@example.com"))
 

@@ -8,11 +8,7 @@ import android.webkit.*
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.lifecycleScope
 import com.photosbackup.data.GoogleAuth
@@ -42,20 +38,7 @@ class SignInActivity : ComponentActivity() {
         CookieManager.getInstance().removeAllCookies(null)
         setContent {
             BackupTheme {
-                Surface {
-                    Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
-                        Text(
-                            "Connect Google Photos",
-                            style = MaterialTheme.typography.titleLarge,
-                            modifier = Modifier.padding(20.dp),
-                        )
-                        Text(message, modifier = Modifier.padding(horizontal = 20.dp))
-                        TextButton(
-                            onClick = { finish() },
-                            modifier = Modifier.padding(horizontal = 12.dp),
-                        ) {
-                            Text("Cancel sign-in")
-                        }
+                SignInLayout(message = message, onCancel = { finish() }) { webModifier ->
                         AndroidView(
                             factory = { context ->
                                 WebView(context).apply {
@@ -117,9 +100,8 @@ class SignInActivity : ComponentActivity() {
                                     loadUrl("https://accounts.google.com/EmbeddedSetup")
                                 }
                             },
-                            modifier = Modifier.weight(1f).fillMaxWidth(),
+                            modifier = webModifier,
                         )
-                    }
                 }
             }
         }
