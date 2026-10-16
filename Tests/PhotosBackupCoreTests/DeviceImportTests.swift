@@ -2,6 +2,12 @@ import XCTest
 @testable import PhotosBackupCore
 
 final class DeviceImportTests: XCTestCase {
+    func testReadAvailabilityUsesSessionAndAppleAccessRestrictionNotDeleteLock() {
+        XCTAssertTrue(DeviceImportPlan.canReadOriginals(hasOpenSession: true, accessRestricted: false))
+        XCTAssertFalse(DeviceImportPlan.canReadOriginals(hasOpenSession: false, accessRestricted: false))
+        XCTAssertFalse(DeviceImportPlan.canReadOriginals(hasOpenSession: true, accessRestricted: true))
+    }
+
     func testUniquePreservesFirstStableDeviceIdentity() {
         let first = DeviceMediaItem(id: "device:1", filename: "one.jpg", byteCount: 1, createdAt: nil, isMovie: false)
         let duplicate = DeviceMediaItem(id: "device:1", filename: "renamed.jpg", byteCount: 2, createdAt: nil, isMovie: false)

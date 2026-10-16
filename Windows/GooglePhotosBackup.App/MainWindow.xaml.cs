@@ -169,6 +169,8 @@ public sealed partial class MainWindow : Window
         _devices.Add(new DeviceDescriptor("fixture-camera", "Fixture camera", "Windows portable device", "Synthetic device"));
         _deviceMedia.Add(new DeviceMediaItem("fixture-pixel", "DCIM/Camera/IMG_1001.jpg", "IMG_1001.jpg", 2_400_000, "Camera"));
         _deviceMedia.Add(new DeviceMediaItem("fixture-pixel", "DCIM/Camera/VID_1002.mp4", "VID_1002.mp4", 18_700_000, "Camera"));
+        DevicesList.Height = 96;
+        DeviceMediaList.Height = 130;
         DeviceNotice.Message = "Synthetic fixture — no connected device was queried.";
         DeviceNotice.Severity = InfoBarSeverity.Informational;
         DeviceNotice.IsOpen = true;
