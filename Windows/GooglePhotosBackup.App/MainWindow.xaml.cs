@@ -18,6 +18,10 @@ public sealed partial class MainWindow : Window
 {
     private readonly ObservableCollection<string> _folders = [];
     private readonly ObservableCollection<string> _activity = [];
+    private readonly ObservableCollection<DeviceDescriptor> _devices = [];
+    private readonly ObservableCollection<DeviceMediaItem> _deviceMedia = [];
+    private readonly AndroidAdbMediaSource _adbMedia = new();
+    private readonly WindowsPortableMediaSource _portableMedia = new();
     private readonly LocalStore? _store;
     private readonly List<RunRecord> _history = [];
     private AppPreferences _preferences = new();
@@ -41,6 +45,8 @@ public sealed partial class MainWindow : Window
         UpdateWindowIcon();
         FoldersList.ItemsSource = _folders;
         ActivityList.ItemsSource = _activity;
+        DevicesList.ItemsSource = _devices;
+        DeviceMediaList.ItemsSource = _deviceMedia;
         Navigation.SelectedItem = Navigation.MenuItems[0];
 
         if (smokeTest)
@@ -96,10 +102,63 @@ public sealed partial class MainWindow : Window
         if (tag != "icloud") ClearICloudPendingSignIn();
         OverviewPage.Visibility = tag == "overview" ? Visibility.Visible : Visibility.Collapsed;
         FoldersPage.Visibility = tag == "folders" ? Visibility.Visible : Visibility.Collapsed;
+        DevicesPage.Visibility = tag == "devices" ? Visibility.Visible : Visibility.Collapsed;
         ICloudPage.Visibility = tag == "icloud" ? Visibility.Visible : Visibility.Collapsed;
         ActivityPage.Visibility = tag == "activity" ? Visibility.Visible : Visibility.Collapsed;
         SettingsPage.Visibility = tag == "settings" ? Visibility.Visible : Visibility.Collapsed;
         Navigation.Header = item.Content;
+    }
+
+    private async void RefreshDevices_Click(object sender, RoutedEventArgs args)
+    {
+        try
+        {
+            _devices.Clear(); _deviceMedia.Clear();
+            foreach (var device in await _portableMedia.GetDevicesAsync(CancellationToken.None)) _devices.Add(device);
+            foreach (var device in await _adbMedia.GetDevicesAsync(CancellationToken.None)) _devices.Add(device);
+            if (_devices.Count == 0) ShowDeviceNotice("No paired Android device found. Install Android Platform Tools, pair with adb, unlock the phone, then refresh.", InfoBarSeverity.Informational);
+        }
+        catch (Exception) { ShowDeviceNotice("The connected device could not be listed. Keep it unlocked and paired, then try again.", InfoBarSeverity.Warning); }
+    }
+
+    private async void DevicesList_SelectionChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (DevicesList.SelectedItem is not DeviceDescriptor device) return;
+        try
+        {
+            _deviceMedia.Clear();
+            var source = device.Kind == "Android (ADB)" ? (IDeviceMediaSource)_adbMedia : _portableMedia;
+            foreach (var media in await source.GetMediaAsync(device.Id, CancellationToken.None)) _deviceMedia.Add(media);
+            if (_deviceMedia.Count == 0) ShowDeviceNotice("No supported photos or videos were exposed by this device.", InfoBarSeverity.Informational);
+        }
+        catch (Exception) { ShowDeviceNotice("Media could not be read. Unlock the device and accept its pairing prompt, then refresh.", InfoBarSeverity.Warning); }
+    }
+
+    private async void StageDeviceMedia_Click(object sender, RoutedEventArgs args)
+    {
+        if (_store is null || _runCancellation is not null) return;
+        var selected = DeviceMediaList.SelectedItems.Cast<DeviceMediaItem>().ToArray();
+        if (selected.Length == 0) { ShowDeviceNotice("Select one or more media files first.", InfoBarSeverity.Informational); return; }
+        try
+        {
+            StageDeviceMediaButton.IsEnabled = false;
+            var staging = new DeviceMediaStager(Path.Combine(_store.Root, "Device staging"));
+            staging.CleanupIncomplete();
+            var source = DevicesList.SelectedItem is DeviceDescriptor { Kind: "Android (ADB)" } ? (IDeviceMediaSource)_adbMedia : _portableMedia;
+            var files = await staging.StageAsync(source, selected, CancellationToken.None);
+            foreach (var folder in files.Select(file => Path.GetDirectoryName(file.Path)!).Distinct(StringComparer.OrdinalIgnoreCase))
+                if (!_folders.Contains(folder, StringComparer.OrdinalIgnoreCase)) _folders.Add(folder);
+            SavePreferences(); RefreshControls();
+            ShowDeviceNotice($"{files.Count} file(s) added. Start backup from Overview when ready; originals stay on the device.", InfoBarSeverity.Success);
+        }
+        catch (OperationCanceledException) { ShowDeviceNotice("Device import canceled. Incomplete copies were removed.", InfoBarSeverity.Warning); }
+        catch (Exception) { ShowDeviceNotice("Media was not added. Keep the device connected and unlocked, then retry.", InfoBarSeverity.Error); }
+        finally { StageDeviceMediaButton.IsEnabled = true; }
+    }
+
+    private void ShowDeviceNotice(string message, InfoBarSeverity severity)
+    {
+        DeviceNotice.Message = message; DeviceNotice.Severity = severity; DeviceNotice.IsOpen = true;
     }
 
     private async void AddFolder_Click(object sender, RoutedEventArgs args)
@@ -132,6 +191,8 @@ public sealed partial class MainWindow : Window
     {
         if (_runCancellation is not null || FoldersList.SelectedItem is not string selected) return;
         _folders.Remove(selected);
+        if (_store is not null && selected.StartsWith(_store.DeviceStagingDirectory, StringComparison.OrdinalIgnoreCase))
+            new DeviceMediaStager(_store.DeviceStagingDirectory).ClearCompleted();
         SavePreferences();
         RefreshControls();
     }
@@ -161,6 +222,8 @@ public sealed partial class MainWindow : Window
             var options = new BackupOptions([.. _folders], _preferences.Quality,
                 _preferences.MirrorFolders, _preferences.Threads);
             summary = await _coordinator.RunAsync(options, _credential, _runCancellation.Token);
+            if (!summary.Canceled && summary.Failed == 0)
+                new DeviceMediaStager(_store.DeviceStagingDirectory).ClearCompleted();
             StatusText.Text = summary.Canceled ? "Backup canceled" : summary.Failed > 0 ? "Backup finished with failures" : "Backup complete";
             ProgressText.Text = $"{summary.Uploaded} uploaded · {summary.Existing} already backed up · {summary.Failed} failed";
         }
