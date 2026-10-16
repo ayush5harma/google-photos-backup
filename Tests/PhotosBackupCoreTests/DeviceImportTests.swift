@@ -34,4 +34,25 @@ final class DeviceImportTests: XCTestCase {
         XCTAssertFalse(members.isSubset(of: Set(batch.map(\.id))))
     }
 
+    func testSelectedDeviceNeverFallsThroughToAnotherDeviceDuringImport() {
+        var selection = ConnectedDeviceSelection()
+        XCTAssertTrue(selection.select("iphone"))
+        XCTAssertTrue(selection.beginImport(available: ["iphone", "ipad"]))
+        XCTAssertFalse(selection.select("ipad"))
+        selection.disconnected("iphone")
+        XCTAssertNil(selection.selectedID)
+        selection.endImport()
+        XCTAssertTrue(selection.select("ipad"))
+        XCTAssertEqual(selection.selectedID, "ipad")
+    }
+
+    func testEndingAnIdleImportReleasesDeviceSelection() {
+        var selection = ConnectedDeviceSelection()
+        XCTAssertTrue(selection.select("iphone"))
+        XCTAssertTrue(selection.beginImport(available: ["iphone", "ipad"]))
+        selection.endImport() // Mirrors stop before a queued task starts.
+        XCTAssertTrue(selection.select("ipad"))
+        XCTAssertEqual(selection.selectedID, "ipad")
+    }
+
 }

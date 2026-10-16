@@ -32,6 +32,25 @@ struct ConnectedDeviceView: View {
                     .padding(.top, 6)
             }
 
+            if !source.devices.isEmpty {
+                Picker("Device", selection: Binding(
+                    get: { source.selectedDeviceID ?? "" },
+                    set: { id in
+                        selected = []
+                        source.selectDevice(id)
+                    }
+                )) {
+                    Text("Choose a device").tag("")
+                    ForEach(source.devices.filter(\.isConnected)) { device in
+                        Text("\(device.name) · \(device.model)").tag(device.id)
+                    }
+                }
+                .disabled(source.deviceSelectionLocked || model.engine.isActive)
+                .help(source.deviceSelectionLocked
+                      ? "The selected device stays fixed until this import finishes."
+                      : "Choose the connected device to import from.")
+            }
+
             switch source.status {
             case .ready, .importing:
                 importList(source)

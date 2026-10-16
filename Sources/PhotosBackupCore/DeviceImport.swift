@@ -63,3 +63,33 @@ public enum DeviceImportPlan {
         return queued.filter { ids.contains($0.id) }
     }
 }
+
+/// Selection is independent of ImageCaptureCore so the no-switch rule can be
+/// tested without hardware. Losing the selected device leaves no selection;
+/// another attached phone/tablet is never selected as a fallback.
+public struct ConnectedDeviceSelection: Equatable, Sendable {
+    public private(set) var selectedID: String?
+    public private(set) var lockedID: String?
+
+    public init() {}
+
+    @discardableResult
+    public mutating func select(_ id: String) -> Bool {
+        guard lockedID == nil else { return false }
+        selectedID = id
+        return true
+    }
+
+    @discardableResult
+    public mutating func beginImport(available: Set<String>) -> Bool {
+        guard let selectedID, available.contains(selectedID) else { return false }
+        lockedID = selectedID
+        return true
+    }
+
+    public mutating func endImport() { lockedID = nil }
+
+    public mutating func disconnected(_ id: String) {
+        if selectedID == id { selectedID = nil }
+    }
+}

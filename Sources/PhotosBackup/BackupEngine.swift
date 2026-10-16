@@ -217,6 +217,10 @@ final class BackupEngine {
         let pending = DeviceImportPlan.selected(items, ids: Set(items.map(\.id)))
             .filter { model.state.uploaded[$0.id] == nil && !queued.contains($0.id) }
         guard !pending.isEmpty else { return }
+        guard source.lockSelectedDeviceForImport() else {
+            lastError = "Choose a connected device before starting this import."
+            return
+        }
         deviceItems.append(contentsOf: pending)
         deviceSource = source
         let trimmed = destinationAlbumName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -247,6 +251,12 @@ final class BackupEngine {
         deviceSource?.cancelDownload()
         verifier.terminate()
         guard task != nil else {
+            // A queued or paused run can hold the device selection without a
+            // task yet. Stopping it must release that lock before returning.
+            deviceSource?.releaseSelectedDeviceAfterImport()
+            deviceSource = nil
+            deviceAlbumName = nil
+            deviceReclaimRequested = false
             phase = .idle
             return
         }
@@ -455,6 +465,7 @@ final class BackupEngine {
         messages.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
         deviceItems.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
         if deviceItems.isEmpty {
+            deviceSource?.releaseSelectedDeviceAfterImport()
             deviceSource = nil
             deviceAlbumName = nil
             deviceReclaimRequested = false
