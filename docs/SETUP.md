@@ -38,7 +38,7 @@ A successful reclaim moves the item to **Recently Deleted**; it does not permane
 
 ### Upcoming v0.5.0: connected devices
 
-On macOS, an unlocked and trusted iPhone or camera can supply selected originals through Image Capture/DCIM. This imports files that the connected device exposes; it does not browse PhotoKit albums or cloud-only items. The import path copies originals and retains the device source. Connected-iPhone end-to-end validation remains pending.
+On macOS, an unlocked and trusted iPhone or camera can supply selected originals through Image Capture/DCIM. This imports files that the connected device exposes; it does not browse PhotoKit albums or cloud-only items. The import path copies originals and retains the device source. A disposable iPhone HEIC passed the complete import path and SHA-256 verification against a fresh Google original download on 16 October 2026. The source was retained; companion-file and device-deletion behavior were not validated.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="icloud-setup-dark.png">
