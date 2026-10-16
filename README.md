@@ -31,7 +31,7 @@ On 16 October 2026, a photo and video from each supported platform were read bac
 
 ## Upcoming v0.5.0 preview
 
-These capabilities are being prepared for v0.5.0 and are not part of the v0.4.0 downloads above. A disposable iPhone HEIC passed import and byte-for-byte Google original readback. Android Wi-Fi pairing, physical Windows device import, and synthetic iCloud reclaim checks remain pending.
+These capabilities are being prepared for v0.5.0 and are not part of the v0.4.0 downloads above. Disposable files passed import and byte-for-byte Google original readback: iPhone on Mac, and iPhone and Pixel through Windows production components. Android folder-backup UI and synthetic iCloud reclaim checks remain pending. [Preview validation](docs/VALIDATION-v0.5.0.md).
 
 - **Android:** select accessible MediaStore folders and mirror them as Google Photos albums. These are device folders, not logical Google albums. Android's partial-media permission means only media you granted the app can appear.
 - **macOS:** import selected originals from a connected, unlocked and trusted iPhone or camera through DCIM/Image Capture. This is file import, not PhotoKit album access or cloud-only media.
