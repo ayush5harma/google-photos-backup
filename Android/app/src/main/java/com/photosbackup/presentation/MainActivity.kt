@@ -15,10 +15,13 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
@@ -27,8 +30,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.work.WorkManager
@@ -90,11 +96,8 @@ class MainActivity : ComponentActivity() {
             WorkManager.getInstance(this)
                 .getWorkInfosForUniqueWorkLiveData("backup")
                 .observeAsStateCompat()
-        val busy =
-            state.running ||
-                state.connecting ||
-                validating ||
-                work?.any { !it.state.isFinished } == true
+        val backingUp = state.running || work?.any { !it.state.isFinished } == true
+        val busy = backingUp || state.connecting || validating
         val notificationPermission =
             rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
         fun refreshFolders() {
@@ -134,6 +137,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
         Scaffold(
+            modifier = Modifier.imePadding(),
+            contentWindowInsets = WindowInsets.safeDrawing,
             containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
                 NavigationBar {
@@ -154,7 +159,7 @@ class MainActivity : ComponentActivity() {
             },
         ) { padding ->
             LazyColumn(
-                Modifier.fillMaxSize().padding(padding),
+                Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding),
                 contentPadding = PaddingValues(24.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp),
             ) {
@@ -164,7 +169,7 @@ class MainActivity : ComponentActivity() {
                         horizontalArrangement = Arrangement.spacedBy(12.dp),
                     ) {
                         Image(painterResource(R.drawable.app_icon), null, Modifier.size(48.dp))
-                        Column {
+                        Column(Modifier.weight(1f)) {
                             Text(
                                 "PHOTOS BACKUP",
                                 style = MaterialTheme.typography.labelMedium,
@@ -185,6 +190,7 @@ class MainActivity : ComponentActivity() {
                 if (tab == 0) {
                     item {
                         Card(
+                            modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(28.dp),
                             colors =
                                 CardDefaults.cardColors(
@@ -238,62 +244,48 @@ class MainActivity : ComponentActivity() {
                         )
                     }
                     item {
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            OutlinedButton(
-                                onClick = {
-                                    picker.launch(
-                                        PickVisualMediaRequest(
-                                            ActivityResultContracts.PickVisualMedia.ImageAndVideo
-                                        )
+                        BackupActions(
+                            busy = busy,
+                            backingUp = backingUp,
+                            loadingFolders = loadingFolders,
+                            canStart = state.email != null && state.items.any {
+                                it.key.isEmpty() || (it.albumName.isNotBlank() && it.membership != "Added")
+                            },
+                            onSelect = {
+                                picker.launch(
+                                    PickVisualMediaRequest(
+                                        ActivityResultContracts.PickVisualMedia.ImageAndVideo
                                     )
-                                },
-                                enabled = !busy,
-                            ) {
-                                Icon(Icons.Rounded.Add, null)
-                                Text("Select media")
-                            }
-                            OutlinedButton(
-                                onClick = {
-                                    val permissions = when {
-                                        Build.VERSION.SDK_INT >= 34 -> arrayOf(
-                                            Manifest.permission.READ_MEDIA_IMAGES,
-                                            Manifest.permission.READ_MEDIA_VIDEO,
-                                            Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
-                                        )
-                                        Build.VERSION.SDK_INT >= 33 -> arrayOf(
-                                            Manifest.permission.READ_MEDIA_IMAGES,
-                                            Manifest.permission.READ_MEDIA_VIDEO,
-                                        )
-                                        else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-                                    }
-                                    libraryPermission.launch(permissions)
-                                },
-                                enabled = !busy && !loadingFolders,
-                            ) {
-                                Icon(Icons.Rounded.Folder, null)
-                                Text("Device folders")
-                            }
-                            Button(
-                                onClick = {
-                                    if (
-                                        Build.VERSION.SDK_INT >= 33 &&
-                                            checkSelfPermission(
-                                                Manifest.permission.POST_NOTIFICATIONS
-                                            ) != PackageManager.PERMISSION_GRANTED
+                                )
+                            },
+                            onFolders = {
+                                val permissions = when {
+                                    Build.VERSION.SDK_INT >= 34 -> arrayOf(
+                                        Manifest.permission.READ_MEDIA_IMAGES,
+                                        Manifest.permission.READ_MEDIA_VIDEO,
+                                        Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED,
                                     )
-                                        notificationPermission.launch(
+                                    Build.VERSION.SDK_INT >= 33 -> arrayOf(
+                                        Manifest.permission.READ_MEDIA_IMAGES,
+                                        Manifest.permission.READ_MEDIA_VIDEO,
+                                    )
+                                    else -> arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+                                }
+                                libraryPermission.launch(permissions)
+                            },
+                            onStart = {
+                                if (
+                                    Build.VERSION.SDK_INT >= 33 &&
+                                        checkSelfPermission(
                                             Manifest.permission.POST_NOTIFICATIONS
-                                        )
-                                    BackupWorker.start(this@MainActivity)
-                                },
-                                enabled =
-                                    !busy &&
-                                        state.email != null &&
-                                        state.items.any { it.key.isEmpty() || (it.albumName.isNotBlank() && it.membership != "Added") },
-                            ) {
-                                Text("Start backup")
-                            }
-                        }
+                                        ) != PackageManager.PERMISSION_GRANTED
+                                )
+                                    notificationPermission.launch(
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    )
+                                BackupWorker.start(this@MainActivity)
+                            },
+                        )
                     }
                     item {
                         Text(
@@ -302,21 +294,8 @@ class MainActivity : ComponentActivity() {
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    if (busy)
-                        item {
-                            Card {
-                                Column(Modifier.padding(20.dp)) {
-                                    LinearProgressIndicator(Modifier.fillMaxWidth())
-                                    Spacer(Modifier.height(12.dp))
-                                    Text("Backing up your selection…")
-                                    TextButton(
-                                        onClick = { BackupWorker.cancel(this@MainActivity) }
-                                    ) {
-                                        Text("Cancel backup")
-                                    }
-                                }
-                            }
-                        }
+                    if (backingUp)
+                        item { BackupProgress { BackupWorker.cancel(this@MainActivity) } }
                     if (state.notice.isNotBlank())
                         item { Text(state.notice, color = MaterialTheme.colorScheme.primary) }
                     if (state.items.isEmpty())
@@ -395,13 +374,21 @@ class MainActivity : ComponentActivity() {
                                     "quota" to "Original · uses account storage",
                                 )
                                 .forEach { (value, label) ->
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        RadioButton(
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().selectable(
                                             selected = state.quality == value,
                                             onClick = { store.update { it.copy(quality = value) } },
                                             enabled = !busy,
+                                            role = Role.RadioButton,
+                                        ),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        RadioButton(
+                                            selected = state.quality == value,
+                                            onClick = null,
+                                            enabled = !busy,
                                         )
-                                        Text(label)
+                                        Text(label, modifier = Modifier.weight(1f).padding(vertical = 12.dp))
                                     }
                                 }
                         }
@@ -488,11 +475,11 @@ class MainActivity : ComponentActivity() {
                 onDismissRequest = { showFolders = false },
                 title = { Text("Accessible device folders") },
                 text = {
-                    LazyColumn {
+                    LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp)) {
                         if (folders.isEmpty()) item { Text("No accessible photos or videos were found.") }
                         items(folders, key = { it.id }) { folder ->
                             ListItem(
-                                headlineContent = { Text(folder.name) },
+                                headlineContent = { Text(folder.name, maxLines = 2, overflow = TextOverflow.Ellipsis) },
                                 supportingContent = { Text("${folder.count} currently accessible items") },
                                 modifier = Modifier.fillMaxWidth().clickable {
                                     showFolders = false
@@ -518,7 +505,8 @@ class MainActivity : ComponentActivity() {
                 title = { Text("Retry album creation?") },
                 text = {
                     Text(
-                        "Check Google Photos first for an album named ${item.albumName}. The earlier request may have reached Google. Retrying can create another album with the same name; confirmed media will not be uploaded again."
+                        "Check Google Photos first for an album named ${item.albumName}. The earlier request may have reached Google. Retrying can create another album with the same name; confirmed media will not be uploaded again.",
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
                     )
                 },
                 confirmButton = {
@@ -546,19 +534,19 @@ private fun Empty(title: String, description: String) {
             Modifier.size(48.dp),
             tint = MaterialTheme.colorScheme.outline,
         )
-        Text(title, style = MaterialTheme.typography.titleMedium)
-        Text(description, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(title, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
+        Text(description, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
     }
 }
 
 @Composable
-private fun MediaRow(
+internal fun MediaRow(
     item: MediaItem,
     removable: Boolean,
     onRemove: () -> Unit,
     onRecoverAlbum: (MediaItem) -> Unit = {},
 ) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
         Row(
             Modifier.fillMaxWidth().padding(16.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -572,7 +560,7 @@ private fun MediaRow(
                     else MaterialTheme.colorScheme.primary,
             )
             Column(Modifier.weight(1f)) {
-                Text(item.name, maxLines = 1, style = MaterialTheme.typography.titleSmall)
+                Text(item.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.titleSmall)
                 Text(
                     item.status,
                     style = MaterialTheme.typography.bodySmall,
@@ -600,8 +588,8 @@ private fun MediaRow(
 
 @Composable
 private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Card {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text(title, style = MaterialTheme.typography.titleLarge)
             content()
         }
