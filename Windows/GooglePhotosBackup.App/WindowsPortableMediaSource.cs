@@ -10,6 +10,7 @@ internal sealed class WindowsPortableMediaSource : IDeviceMediaSource
 {
     private const int MaxItems = 2_000;
     private readonly Dictionary<string, StorageFile> _files = new(StringComparer.Ordinal);
+    public string? LastCatalogWarning { get; private set; }
 
     public async Task<IReadOnlyList<DeviceDescriptor>> GetDevicesAsync(CancellationToken ct)
     {
@@ -23,10 +24,19 @@ internal sealed class WindowsPortableMediaSource : IDeviceMediaSource
 
     public async Task<IReadOnlyList<DeviceMediaItem>> GetMediaAsync(string deviceId, CancellationToken ct)
     {
+        LastCatalogWarning = null;
         _files.Keys.Where(key => key.StartsWith(deviceId + "\n", StringComparison.Ordinal)).ToList().ForEach(key => _files.Remove(key));
         var root = StorageDevice.FromId(deviceId) ?? throw new IOException("Windows could not open the connected device.");
-        var items = new List<DeviceMediaItem>();
-        await WalkAsync(root, deviceId, "Connected device", items, ct).ConfigureAwait(false);
+        var catalog = await DeviceMediaCatalog.ReadAsync(new PortableFolder(root), MaxItems, IsMedia, ct).ConfigureAwait(false);
+        var items = new List<DeviceMediaItem>(catalog.Items.Count);
+        foreach (var entry in catalog.Items)
+        {
+            var file = ((PortableFile)entry.File).File;
+            _files[Key(deviceId, entry.File.ObjectId)] = file;
+            items.Add(new DeviceMediaItem(deviceId, entry.File.ObjectId, entry.File.Name, entry.Size, entry.AlbumName));
+        }
+        if (catalog.SkippedEntries > 0)
+            LastCatalogWarning = $"Some device folders or files could not be read ({catalog.SkippedEntries} skipped). The media list may be incomplete.";
         return items;
     }
 
@@ -38,25 +48,21 @@ internal sealed class WindowsPortableMediaSource : IDeviceMediaSource
         return stream.AsStreamForRead();
     }
 
-    private async Task WalkAsync(StorageFolder folder, string deviceId, string album, List<DeviceMediaItem> items, CancellationToken ct)
+    private sealed class PortableFolder(StorageFolder folder) : IDeviceMediaCatalogFolder
     {
-        if (items.Count >= MaxItems) return;
-        var files = await folder.GetFilesAsync().AsTask(ct).ConfigureAwait(false);
-        foreach (var file in files)
-        {
-            if (items.Count >= MaxItems) return;
-            if (!IsMedia(file.Name)) continue;
-            var objectId = file.FolderRelativeId;
-            var size = (await file.GetBasicPropertiesAsync().AsTask(ct).ConfigureAwait(false)).Size;
-            _files[Key(deviceId, objectId)] = file;
-            items.Add(new DeviceMediaItem(deviceId, objectId, file.Name, checked((long)size), album));
-        }
-        var folders = await folder.GetFoldersAsync().AsTask(ct).ConfigureAwait(false);
-        foreach (var child in folders)
-        {
-            if (items.Count >= MaxItems) return;
-            await WalkAsync(child, deviceId, child.Name, items, ct).ConfigureAwait(false);
-        }
+        public string Name => folder.Name;
+        public async Task<IReadOnlyList<IDeviceMediaCatalogFile>> GetFilesAsync(CancellationToken ct) =>
+            (await folder.GetFilesAsync().AsTask(ct).ConfigureAwait(false)).Select(file => (IDeviceMediaCatalogFile)new PortableFile(file)).ToArray();
+        public async Task<IReadOnlyList<IDeviceMediaCatalogFolder>> GetFoldersAsync(CancellationToken ct) =>
+            (await folder.GetFoldersAsync().AsTask(ct).ConfigureAwait(false)).Select(child => (IDeviceMediaCatalogFolder)new PortableFolder(child)).ToArray();
+    }
+
+    private sealed class PortableFile(StorageFile file) : IDeviceMediaCatalogFile
+    {
+        public StorageFile File => file;
+        public string ObjectId => file.FolderRelativeId;
+        public string Name => file.Name;
+        public async Task<long> GetSizeAsync(CancellationToken ct) => checked((long)(await file.GetBasicPropertiesAsync().AsTask(ct).ConfigureAwait(false)).Size);
     }
 
     private static string Key(string deviceId, string objectId) => deviceId + "\n" + objectId;
