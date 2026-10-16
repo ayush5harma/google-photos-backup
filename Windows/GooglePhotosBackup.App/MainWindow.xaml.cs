@@ -36,7 +36,7 @@ public sealed partial class MainWindow : Window
     private int _runGeneration;
     private Action<BackupProgress>? _progressSubscription;
 
-    public MainWindow(bool smokeTest = false)
+    public MainWindow(bool smokeTest = false, bool deviceSmokeTest = false)
     {
         InitializeComponent();
         AppWindow.Resize(new SizeInt32(1080, 760));
@@ -69,6 +69,7 @@ public sealed partial class MainWindow : Window
             StartButton.IsEnabled = false;
             PauseButton.IsEnabled = true;
             CancelButton.IsEnabled = true;
+            if (deviceSmokeTest) SeedDeviceSmokeFixture();
             return;
         }
 
@@ -159,6 +160,18 @@ public sealed partial class MainWindow : Window
     private void ShowDeviceNotice(string message, InfoBarSeverity severity)
     {
         DeviceNotice.Message = message; DeviceNotice.Severity = severity; DeviceNotice.IsOpen = true;
+    }
+
+    private void SeedDeviceSmokeFixture()
+    {
+        // Fixture data only: neither RefreshDevices_Click nor a device media source is called in this mode.
+        _devices.Add(new DeviceDescriptor("fixture-pixel", "Fixture Pixel", "Android (ADB)", "Synthetic device"));
+        _devices.Add(new DeviceDescriptor("fixture-camera", "Fixture camera", "Windows portable device", "Synthetic device"));
+        _deviceMedia.Add(new DeviceMediaItem("fixture-pixel", "DCIM/Camera/IMG_1001.jpg", "IMG_1001.jpg", 2_400_000, "Camera"));
+        _deviceMedia.Add(new DeviceMediaItem("fixture-pixel", "DCIM/Camera/VID_1002.mp4", "VID_1002.mp4", 18_700_000, "Camera"));
+        DeviceNotice.Message = "Synthetic fixture — no connected device was queried.";
+        DeviceNotice.Severity = InfoBarSeverity.Informational;
+        DeviceNotice.IsOpen = true;
     }
 
     private async void AddFolder_Click(object sender, RoutedEventArgs args)
@@ -476,6 +489,18 @@ public sealed partial class MainWindow : Window
         var light = await CaptureThemeAsync(ElementTheme.Light, "app-icon.png", fullPath);
         var dark = await CaptureThemeAsync(ElementTheme.Dark, "app-icon-dark.png", darkPath);
         return (light, dark);
+    }
+
+    public async Task<(string LightIconSource, string DarkIconSource)> SaveDeviceThemeScreenshotsAsync(string lightPath)
+    {
+        var deviceItem = Navigation.MenuItems.OfType<NavigationViewItem>()
+            .First(item => string.Equals(item.Tag?.ToString(), "devices", StringComparison.Ordinal));
+        Navigation.SelectedItem = deviceItem;
+        await Task.Delay(100);
+        Navigation.UpdateLayout();
+        if (DevicesPage.Visibility != Visibility.Visible || _devices.Count == 0 || _deviceMedia.Count == 0)
+            throw new InvalidOperationException("The synthetic connected-device fixture did not render.");
+        return await SaveThemeScreenshotsAsync(lightPath);
     }
 
     public async Task<(bool Collapsed, bool Reopened)> ValidateNavigationPaneAsync(string? collapsedScreenshotPath)
