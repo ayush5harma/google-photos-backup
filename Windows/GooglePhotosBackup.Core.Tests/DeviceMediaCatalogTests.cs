@@ -7,6 +7,22 @@ namespace GooglePhotosBackup.Core.Tests;
 public sealed class DeviceMediaCatalogTests
 {
     [Fact]
+    public async Task DuplicateObjectsDoNotHideDistinctFilesWithTheSameNameOrConsumeTheLimit()
+    {
+        var first = new FakeFolder("DCIM", files: _ => Task.FromResult<IReadOnlyList<IDeviceMediaCatalogFile>>([
+            new FakeFile("same-object", "IMG_6245.HEIC", 769010),
+            new FakeFile("same-object", "IMG_6245.HEIC", 769010)]));
+        var second = new FakeFolder("Other", files: _ => Task.FromResult<IReadOnlyList<IDeviceMediaCatalogFile>>([
+            new FakeFile("different-object", "IMG_6245.HEIC", 769010)]));
+        var root = new FakeFolder("device", folders: _ => Task.FromResult<IReadOnlyList<IDeviceMediaCatalogFolder>>([first, second]));
+
+        var result = await DeviceMediaCatalog.ReadAsync(root, 2, _ => true, CancellationToken.None);
+
+        Assert.Equal(new[] { "same-object", "different-object" }, result.Items.Select(item => item.File.ObjectId));
+        Assert.Equal(0, result.SkippedEntries);
+    }
+
+    [Fact]
     public async Task SkipsAnInaccessibleChildFolderAndKeepsItsSiblingMedia()
     {
         var inaccessible = new FakeFolder("unavailable", files: _ => Task.FromException<IReadOnlyList<IDeviceMediaCatalogFile>>(new COMException("not found", unchecked((int)0x80070490))));

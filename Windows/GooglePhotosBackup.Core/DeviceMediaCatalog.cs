@@ -36,6 +36,7 @@ public static class DeviceMediaCatalog
     {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maximumItems);
         var items = new List<DeviceMediaCatalogEntry>();
+        var seenObjects = new HashSet<string>(StringComparer.Ordinal);
         var skipped = 0;
         await WalkAsync(root, root.Name, isRoot: true).ConfigureAwait(false);
         return new DeviceMediaCatalogResult(items, skipped);
@@ -49,11 +50,12 @@ public static class DeviceMediaCatalog
                 foreach (var file in files)
                 {
                     if (items.Count >= maximumItems) return;
-                    if (!isMedia(file.Name)) continue;
+                    if (!isMedia(file.Name) || seenObjects.Contains(file.ObjectId)) continue;
                     try
                     {
                         var size = await file.GetSizeAsync(cancellationToken).ConfigureAwait(false);
                         items.Add(new DeviceMediaCatalogEntry(file, album, size));
+                        seenObjects.Add(file.ObjectId);
                     }
                     catch (Exception ex) when (!cancellationToken.IsCancellationRequested && IsSkippable(ex))
                     {
