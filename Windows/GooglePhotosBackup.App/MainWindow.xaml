@@ -95,7 +95,7 @@
                     <TextBlock Text="Choose specific media from an unlocked Android phone paired with adb or a Windows portable-storage device that exposes DCIM. Copies are staged privately before upload; source media is always kept. Listings show at most 2,000 files."
                                TextWrapping="Wrap" Opacity="0.75" />
                     <InfoBar x:Name="DeviceNotice" IsOpen="False" IsClosable="True" Severity="Informational" />
-                    <ListView x:Name="DevicesList" Height="120" SelectionMode="Single" SelectionChanged="DevicesList_SelectionChanged"
+                    <ListView x:Name="DevicesList" Height="120" SelectionMode="Single" DisplayMemberPath="Name" SelectionChanged="DevicesList_SelectionChanged"
                               AutomationProperties.Name="Connected media devices" />
                     <Button x:Name="RefreshDevicesButton" Content="Refresh devices" Click="RefreshDevices_Click" />
                     <TextBlock Text="MEDIA" Style="{ThemeResource CaptionTextBlockStyle}" />

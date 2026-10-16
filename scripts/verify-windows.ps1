@@ -97,6 +97,7 @@ try {
         $Start.UseShellExecute = $false
         $Start.ArgumentList.Add('--smoke-test')
         $Start.ArgumentList.Add($SmokeReport)
+        $Start.ArgumentList.Add('--device-smoke')
         $Screenshot = Join-Path $ReportDirectory 'ui-smoke.png'
         $Start.ArgumentList.Add('--screenshot')
         $Start.ArgumentList.Add($Screenshot)
@@ -128,6 +129,7 @@ try {
             $UIReport = Get-Content -Raw $SmokeReport | ConvertFrom-Json
             if ($UIReport.status -ne 'ok') { throw 'Synthetic WinUI initialization was not successful.' }
             if ($UIReport.icloudPageRendered -ne $true) { throw 'The iCloud sign-in page failed its native UI check.' }
+            if ($UIReport.devicePageRendered -ne $true) { throw 'The synthetic connected-device page failed its native UI check.' }
             if ($UIReport.encryptedCredentialRoundTrip -ne $true) { throw 'Synthetic DPAPI credential round-trip failed.' }
             if ($UIReport.navigationCollapsed -ne $true -or $UIReport.navigationReopened -ne $true) {
                 throw 'Navigation pane collapse and reopen failed its rendered UI check.'
