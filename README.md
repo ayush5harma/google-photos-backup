@@ -71,6 +71,17 @@ See [detailed setup](docs/SETUP.md), the [technical reference](docs/REFERENCE.md
 
 </details>
 
+<details><summary>Connected-device import on Windows — v0.5.0 preview</summary>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/windows-connected-device-dark.png">
+  <img src="docs/windows-connected-device-light.png" alt="Windows Connected devices page with synthetic Android and portable-device media">
+</picture>
+
+The `--device-smoke` fixture supplies synthetic media and does not query connected devices.
+
+</details>
+
 ## Credits
 
 Made possible by [gpmc](https://github.com/xob0t/gpmc) and [gotohp](https://github.com/xob0t/gotohp) by **xob0t**, [iCloud Photos Downloader](https://github.com/icloud-photos-downloader/icloud_photos_downloader), and the projects listed in [Acknowledgements](ACKNOWLEDGEMENTS.md). Photos Backup is [MIT licensed](LICENSE); upstream projects retain their own licenses.
