@@ -98,6 +98,34 @@ class FakeGpmcEndToEndTests(unittest.TestCase):
         self.assertEqual({e["id"]: e["status"] for e in self.of_type(events, "item")}, {"asset-a.jpg": "existing", "asset-b.heic": "existing"})
         self.assertEqual(len(self.ledger_data()["media"]), 2)
 
+    @unittest.skipUnless(os.name == "nt", "requires native Windows filesystem")
+    def test_long_windows_source_uploads_then_maps_existing_result_to_original_id(self):
+        self.given()
+        normal = self.staging.joinpath(*(["long-device-folder" * 3] * 5), "camera-original.jpg")
+        self.assertGreater(len(str(normal)), 260)
+        extended = Path("\\\\?\\" + str(normal))
+        extended.parent.mkdir(parents=True)
+        # Remove the deep fixture through the same extended namespace before
+        # TemporaryDirectory cleanup (also works with long paths disabled).
+        try:
+            payload = b"fixture camera bytes beyond MAX_PATH"
+            extended.write_bytes(payload)
+            self.assertEqual(extended.read_bytes(), payload)
+            item = dict(id="persisted-device-key", path=str(normal), filename="camera-original.jpg")
+            for status in ("uploaded", "existing"):
+                code, events, err = self.upload([item], album=dict(name="Device import"))
+                self.assertEqual(code, 0, err)
+                self.assertEqual([(e["id"], e["status"]) for e in self.of_type(events, "item")],
+                                 [(item["id"], status)])
+                self.assertTrue(self.of_type(events, "progress"))
+                self.assertTrue(all(e["id"] == item["id"] for e in self.of_type(events, "progress")))
+                self.assertEqual(self.of_type(events, "item_failed"), [])
+            self.assertEqual(len(self.ledger_data()["media"]), 1)
+            self.assertEqual({u["filename"] for u in self.ledger_data()["uploads"]}, {item["filename"]})
+            self.assertEqual(item["path"], str(normal))
+        finally:
+            shutil.rmtree("\\\\?\\" + str(self.staging / ("long-device-folder" * 3)))
+
     def test_rate_limited_and_flaky_files_are_retryable_and_then_go_through(self):
         self.given(rate_limit_first=1, flaky={"b.jpg": {"times": 1, "error": "reset"}},
                    fail={"c.jpg": "413 Client Error: Request Entity Too Large for url: https://x"})
