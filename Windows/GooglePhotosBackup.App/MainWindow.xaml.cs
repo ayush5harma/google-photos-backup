@@ -130,7 +130,8 @@ public sealed partial class MainWindow : Window
             _deviceMedia.Clear();
             var source = device.Kind == "Android (ADB)" ? (IDeviceMediaSource)_adbMedia : _portableMedia;
             foreach (var media in await source.GetMediaAsync(device.Id, CancellationToken.None)) _deviceMedia.Add(media);
-            if (_deviceMedia.Count == 0) ShowDeviceNotice("No supported photos or videos were exposed by this device.", InfoBarSeverity.Informational);
+            if (source is WindowsPortableMediaSource { LastCatalogWarning: { } warning }) ShowDeviceNotice(warning, InfoBarSeverity.Warning);
+            else if (_deviceMedia.Count == 0) ShowDeviceNotice("No supported photos or videos were exposed by this device.", InfoBarSeverity.Informational);
         }
         catch (Exception) { ShowDeviceNotice("Media could not be read. Unlock the device and accept its pairing prompt, then refresh.", InfoBarSeverity.Warning); }
     }
