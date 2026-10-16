@@ -21,6 +21,13 @@ public struct DeviceMediaItem: Codable, Equatable, Identifiable, Sendable {
 
 /// Pure selection rules shared by the connected-device UI and its tests.
 public enum DeviceImportPlan {
+    /// Image Capture's `locked` flag specifically prohibits deletion. Reading
+    /// an Apple device becomes available when its session is open and it is
+    /// no longer access-restricted (trusted/unlocked at connection time).
+    public static func canReadOriginals(hasOpenSession: Bool, accessRestricted: Bool) -> Bool {
+        hasOpenSession && !accessRestricted
+    }
+
     /// File fingerprints and PTP handles are only unique within one camera.
     /// The device UUID keeps two cameras with identical names/handles from
     /// sharing backup state, while remaining stable across reconnects.

@@ -227,7 +227,12 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
             throw ImportError.disconnected
         }
         guard continuation == nil else { throw ImportError.busy }
-        guard !camera.isLocked, !camera.isAccessRestrictedAppleDevice else {
+        guard camera.hasOpenSession else {
+            throw ImportError.disconnected
+        }
+        guard DeviceImportPlan.canReadOriginals(hasOpenSession: camera.hasOpenSession,
+                                                accessRestricted: camera.isAccessRestrictedAppleDevice)
+        else {
             throw ImportError.locked
         }
         let destination = Self.safeName(item.filename, id: item.id)
@@ -306,7 +311,15 @@ final class ConnectedDeviceSource: NSObject, @preconcurrency ICDeviceBrowserDele
               deviceIDs[ObjectIdentifier(camera)] == selectedDeviceID,
               camera === self.camera
         else { return }
-        guard !camera.isLocked, !camera.isAccessRestrictedAppleDevice else {
+        guard camera.hasOpenSession else {
+            items = []
+            files = [:]
+            status = .searching
+            return
+        }
+        guard DeviceImportPlan.canReadOriginals(hasOpenSession: camera.hasOpenSession,
+                                                accessRestricted: camera.isAccessRestrictedAppleDevice)
+        else {
             items = []
             files = [:]
             status = .locked("Unlock and trust the iPhone, then keep it connected.")
