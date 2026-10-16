@@ -149,7 +149,7 @@ class UploadTests(unittest.TestCase):
         run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg")}, client)
 
         target = client.upload_kwargs["target"]
-        self.assertEqual(target, {Path("/tmp/stage/a.jpg"): {"hash": None, "filename": "a.jpg"}})
+        self.assertEqual(target, {Path(gpmc_bridge._filesystem_path("/tmp/stage/a.jpg")): {"hash": None, "filename": "a.jpg"}})
         self.assertEqual(client.upload_kwargs["saver"], False)
         self.assertEqual(client.upload_kwargs["use_quota"], False)
         self.assertEqual(client.upload_kwargs["force_upload"], False)
@@ -416,7 +416,7 @@ class FailureLogPathTests(unittest.TestCase):
         record = logging.LogRecord("gpmc", logging.ERROR, "", 0,
                                    f"Error uploading file {path}: 429 Client Error", (), None)
         handler.emit(record)
-        self.assertEqual(handler.reasons[path.absolute().as_posix()], "429 Client Error")
+        self.assertEqual(handler.reasons[gpmc_bridge._path_key(str(path))], "429 Client Error")
 
 
 if __name__ == "__main__":

@@ -47,6 +47,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import ntpath
 import os
 import platform
 import re
@@ -127,6 +128,29 @@ class StopSignal:
             raise StopRequested
 
 
+def _filesystem_path(path: str) -> str:
+    """Use Win32 extended paths for I/O without changing serialized item IDs."""
+    if sys.platform != "win32":
+        return path
+    # Normalize separators/dot components before adding the extended prefix:
+    # the extended Win32 namespace does not perform ordinary path parsing.
+    absolute = ntpath.abspath(path)
+    if absolute.startswith("\\\\.\\"):
+        raise RequestError("Windows device namespace paths are not supported")
+    if absolute.startswith("\\\\?\\"):
+        return absolute
+    if absolute.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + absolute[2:]
+    return "\\\\?\\" + absolute
+
+
+def _path_key(path: str) -> str:
+    """Match gpmc's native log paths and POSIX progress/result paths alike."""
+    if sys.platform == "win32":
+        return ntpath.normcase(_filesystem_path(path)).replace("\\", "/")
+    return Path(path).absolute().as_posix()
+
+
 class FailureLog(logging.Handler):
     """Collects the per-file failure reasons gpmc logs, keyed by path."""
 
@@ -140,7 +164,7 @@ class FailureLog(logging.Handler):
         if match:
             with self._lock:
                 # 2026-10-15: gpmc logs native Windows separators but returns POSIX result keys.
-                self.reasons[Path(match["path"]).absolute().as_posix()] = match["reason"]
+                self.reasons[_path_key(match["path"])] = match["reason"]
 
 
 def _vendored_site_packages() -> None:
@@ -304,12 +328,12 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
         raise RequestError(f"`threads` must be 1-{MAX_THREADS}")
     album = _album(request, required=False)
 
-    by_path = {Path(item["path"]).absolute().as_posix(): item["id"] for item in items}
+    by_path = {_path_key(item["path"]): item["id"] for item in items}
     skipped: set[str] = set()
     lock = threading.Lock()
 
     def on_progress(event: Event) -> None:
-        path = event.get("path", "")
+        path = _path_key(event.get("path", ""))
         phase = event.get("phase")
         if phase == "skipped":
             with lock:
@@ -321,7 +345,7 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
         # Google confirms it: a stop or a crash then loses at most the files
         # in flight, never a whole batch's results.
         return client.upload(
-            target={Path(item["path"]): {"hash": None, "filename": item["filename"]}},
+            target={Path(_filesystem_path(item["path"])): {"hash": None, "filename": item["filename"]}},
             use_quota=use_quota,
             saver=saver,
             threads=1,
@@ -337,9 +361,9 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
         futures = {executor.submit(upload_one, item): item for item in items}
         for future in as_completed(futures):
             item = futures[future]
-            path = Path(item["path"]).absolute().as_posix()
+            path = _path_key(item["path"])
             try:
-                media_key = future.result().get(path)
+                media_key = {_path_key(key): value for key, value in future.result().items()}.get(path)
             except Exception as error:
                 # gpmc catches per-file errors itself; this only guards
                 # against one escaping and taking the other files with it.
@@ -424,7 +448,7 @@ def verify_original(client: Any, item: Event, stop: StopSignal | None = None) ->
         if time.monotonic() > deadline:
             raise TimeoutError("original verification timed out")
 
-    path = Path(item["path"])
+    path = Path(_filesystem_path(item["path"]))
     with path.open("rb", buffering=0) as source:
         before = os.fstat(source.fileno())
         if before.st_size <= 0 or before.st_size > 20 * 1024**3:
