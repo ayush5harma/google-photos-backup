@@ -11,17 +11,17 @@ Back up selected photos and videos to Google Photos from **macOS, Windows, or An
 
 ## Start here
 
-1. Install the current release for your platform below (v0.5.1 on Apple silicon Macs, v0.5.0 elsewhere).
+1. Install the current release for your platform below (v0.5.1 on Mac and Windows, v0.5.0 on Android).
 2. Pick a small source and review automatic backup settings (on by default on Mac), then connect Google Photos and run a backup.
 3. Check the uploaded item in Google Photos, including its quality and storage details, before trusting a larger backup.
 
 | Platform | Download |
 | --- | --- |
-| macOS 14+ | [Apple silicon DMG (v0.5.1)](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.1/Photos-Backup-0.5.1-macOS-arm64.dmg) · [Intel DMG (v0.5.0)](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Photos-Backup-0.5.0-macOS-x86_64.dmg) |
-| Windows 10 1809+ (x64) / Windows 11 (ARM64) | [ARM64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Google-Photos-Backup-0.5.0-Windows-arm64-Setup.exe) · [Intel/AMD x64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Google-Photos-Backup-0.5.0-Windows-x64-Setup.exe) |
-| Android 8+ | [APK — ARM64 and x86_64](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Photos-Backup-0.5.0-Android.apk) |
+| macOS 14+ (v0.5.1) | [Apple silicon DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.1/Photos-Backup-0.5.1-macOS-arm64.dmg) · [Intel DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.1/Photos-Backup-0.5.1-macOS-x86_64.dmg) |
+| Windows 10 1809+ (x64) / Windows 11 (ARM64) (v0.5.1) | [ARM64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.1/Google-Photos-Backup-0.5.1-Windows-arm64-Setup.exe) · [Intel/AMD x64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.1/Google-Photos-Backup-0.5.1-Windows-x64-Setup.exe) |
+| Android 8+ (v0.5.0) | [APK — ARM64 and x86_64](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Photos-Backup-0.5.0-Android.apk) |
 
-`SHA256SUMS.txt` in the [v0.5.1](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.1/SHA256SUMS.txt) and [v0.5.0](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/SHA256SUMS.txt) releases covers each package. The Mac app is ad-hoc signed and not notarized; Windows installers are unsigned previews.
+`SHA256SUMS.txt` in the [v0.5.1](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.1/SHA256SUMS.txt) and [v0.5.0](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/SHA256SUMS.txt) releases cover their packages. The Mac app is ad-hoc signed and not notarized; Windows installers are unsigned previews.
 
 ## Upload mode and its limits
 
@@ -31,7 +31,7 @@ On 16 October 2026, a photo and video from each supported platform were read bac
 
 ## What’s new in v0.5.1
 
-On macOS, choosing **Connected device** (or launching with it as the saved section) no longer leaves the main window blank, with no sidebar and no page ([#36](https://github.com/ayush5harma/google-photos-backup/issues/36)). The Apple silicon DMG is the only 0.5.1 package; the Intel DMG, Windows installers and Android APK are unchanged at 0.5.0.
+On macOS, choosing **Connected device** (or launching with it as the saved section) no longer leaves the main window blank, with no sidebar and no page ([#36](https://github.com/ayush5harma/google-photos-backup/issues/36)). Mac and Windows packages are 0.5.1; the Android APK stays at 0.5.0, since it is signed with the release key outside CI and Android code did not change.
 
 ## What’s new in v0.5.0
 

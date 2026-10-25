@@ -6,7 +6,7 @@ import XCTest
 /// The connected-device page has no ScrollView, so the guidance card's
 /// minimum height is part of the window's. Measured 2026-10-26: with the
 /// paragraph pinned by fixedSize alone, the card's minimum at a zero width --
-/// the proposal AppKit uses for a window's minimum size -- was 4,254 points on
+/// the proposal AppKit uses for a window's minimum size -- was 2,574 points on
 /// a 1,409-point screen, and the whole window drew blank: no sidebar rows, no
 /// page. Without fixedSize the paragraph was squeezed to one truncated line.
 @MainActor

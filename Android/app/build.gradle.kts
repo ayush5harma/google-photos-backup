@@ -15,7 +15,7 @@ android {
         targetSdk = 36
         versionCode = 500
         versionName =
-            rootProject.file("../VERSION").takeIf { it.exists() }?.readText()?.trim() ?: "0.5.0"
+            rootProject.file("VERSION").takeIf { it.exists() }?.readText()?.trim() ?: "0.5.0"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

@@ -1,9 +1,9 @@
 name: Android
 on:
   push:
-    paths: ['Android/**', 'Bridge/**', 'VERSION', '.github/workflows/android.yml']
+    paths: ['Android/**', 'Bridge/**', '.github/workflows/android.yml']
   pull_request:
-    paths: ['Android/**', 'Bridge/**', 'VERSION', '.github/workflows/android.yml']
+    paths: ['Android/**', 'Bridge/**', '.github/workflows/android.yml']
 permissions:
   contents: read
 jobs:
