@@ -279,9 +279,9 @@ struct RootView: View {
                 Label(section.title, systemImage: section.symbol).tag(section)
             }
             // A ceiling keeps the detail column at least as wide as the connected-
-                // device page needs (its guidance card has a minimum width) at the
-                // smallest window (2026-10-26, #36).
-                .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 300)
+            // device page needs (its guidance card has a minimum width) at the
+            // smallest window (2026-10-26, #36).
+            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 300)
         } detail: {
             switch section {
             case .home: HomeView(section: $section)
