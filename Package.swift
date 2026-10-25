@@ -19,5 +19,12 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(name: "PhotosBackupCoreTests", dependencies: ["PhotosBackupCore"]),
+        // Views measured the way AppKit sizes a window, against the app
+        // module itself.
+        .testTarget(
+            name: "PhotosBackupViewTests",
+            dependencies: ["PhotosBackup"],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )

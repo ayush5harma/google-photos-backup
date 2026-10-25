@@ -29,16 +29,20 @@ class Links(HTMLParser):
 
 def main():
     version = (ROOT / 'VERSION').read_text().strip()
-    if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', version):
-        raise ValueError('VERSION must be a release version')
+    # The APK is signed outside CI, so Android can lag the desktop release.
+    android_version = (ROOT / 'Android' / 'VERSION').read_text().strip()
+    for value in (version, android_version):
+        if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?', value):
+            raise ValueError('VERSION must be a release version')
     if OUTPUT.is_symlink() or (ROOT / 'build').is_symlink():
         raise ValueError('Build output must not be a symbolic link')
     if OUTPUT.exists():
         shutil.rmtree(OUTPUT)
     (OUTPUT / 'assets').mkdir(parents=True)
     for name in ('index.html', 'styles.css'):
-        content = (ROOT / 'site' / name).read_text().replace('__VERSION__', version)
-        if '__VERSION__' in content:
+        content = (ROOT / 'site' / name).read_text().replace('__ANDROID_VERSION__', android_version)
+        content = content.replace('__VERSION__', version)
+        if '__VERSION__' in content or '__ANDROID_VERSION__' in content:
             raise ValueError('Unresolved release version')
         (OUTPUT / name).write_text(content)
     for name in ASSETS:
