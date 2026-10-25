@@ -23,14 +23,7 @@ struct ConnectedDeviceView: View {
                 Button { source.refresh(); selected = [] } label: { Label("Refresh", systemImage: "arrow.clockwise") }
             }
 
-            Card {
-                Label("Choose individual photos and videos exposed by the connected device. Device albums are not available through Image Capture.", systemImage: "info.circle")
-                    .foregroundStyle(.secondary)
-                Text("The app copies originals into private temporary storage for upload, then removes those copies. Reclaim stays off unless every selected source original is independently read back from Google first.")
-                    .font(.callout).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.top, 6)
-            }
+            ConnectedDeviceGuidance()
 
             if !source.devices.isEmpty {
                 Picker("Device", selection: Binding(
@@ -139,5 +132,26 @@ struct ConnectedDeviceView: View {
         let chosen = DeviceImportPlan.selected(source.items, ids: selected)
         model.engine.backUp(device: chosen, source: source, destinationAlbumName: destinationAlbum,
                             reclaimOriginals: reclaimAfterVerification)
+    }
+}
+
+/// What the page can and cannot do, above the device picker.
+struct ConnectedDeviceGuidance: View {
+    var body: some View {
+        Card {
+            Label("Choose individual photos and videos exposed by the connected device. Device albums are not available through Image Capture.", systemImage: "info.circle")
+                .foregroundStyle(.secondary)
+            Text("The app copies originals into private temporary storage for upload, then removes those copies. Reclaim stays off unless every selected source original is independently read back from Google first.")
+                .font(.callout).foregroundStyle(.secondary)
+                // fixedSize keeps every wrapped line (without it the page
+                // squeezed this to one truncated line), and the minimum width
+                // bounds what fixedSize asks for: this page has no ScrollView,
+                // and AppKit sizes a window's minimum at a zero width, where
+                // the paragraph alone wanted 2,574 points and the whole window
+                // drew blank (2026-10-26, ConnectedDeviceGuidanceTests).
+                .frame(minWidth: 320, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+        }
     }
 }
