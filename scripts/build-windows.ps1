@@ -43,6 +43,9 @@ if (-not (Test-Path $Python)) { throw 'Managed runtime has no root python.exe.' 
 & uv pip install --python $Python --target (Join-Path $BridgeRoot 'site-packages') -r (Join-Path $Root 'Bridge/requirements.txt')
 if ($LASTEXITCODE -ne 0) { throw 'Pinned bridge dependency installation failed.' }
 Copy-Item (Join-Path $Root 'Bridge/*.py') $BridgeRoot
+# Every gpmc call the bridge makes must exist in the gpmc just bundled.
+& $Python -I -B (Join-Path $Root 'scripts/check-gpmc-surface.py') (Join-Path $BridgeRoot 'site-packages') $BridgeRoot
+if ($LASTEXITCODE -ne 0) { throw 'The bundled gpmc lacks a call the bridge makes.' }
 Copy-Item (Join-Path $Root 'LICENSE') $Bundle
 # The 20261009 CPython 3.13.16 ARM64 distribution includes an unused x64
 # vcruntime140_1.dll. Keep the shipped runtime strictly native; never remove

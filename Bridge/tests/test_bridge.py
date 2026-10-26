@@ -42,6 +42,14 @@ class FakeApi:
             raise self.fail_with
         return "token"
 
+    def add_media_to_album(self, album_media_key, media_keys):
+        # gpmc 0.9.0 appends to an existing album here; its Client has no
+        # add_to_existing_album (that is on gpmc's main branch only).
+        self.client.album_calls.append(("id", album_media_key, list(media_keys)))
+        if self.client.album_error:
+            raise self.client.album_error
+        return {}
+
     def find_remote_media_by_hash(self, sha1_hash):
         self.hash_lookups.append(sha1_hash)
         if self.photos_error:
@@ -54,6 +62,7 @@ class FakeClient:
 
     def __init__(self, existing=(), failing=(), auth_error=None, album_error=None, on_album=None):
         self.api = FakeApi(auth_error)
+        self.api.client = self
         self.existing = set(existing)
         self.failing = dict(failing) if isinstance(failing, dict) else set(failing)
         self.album_error = album_error
@@ -98,11 +107,6 @@ class FakeClient:
             raise self.album_error
         return ["album-new"]
 
-    def add_to_existing_album(self, media_keys, album_id, show_progress=False):
-        self.album_calls.append(("id", album_id, list(media_keys)))
-        if self.album_error:
-            raise self.album_error
-        return album_id
 
 
 def run(request, client=None, factory_error=None, stop=None, on_event=None):
@@ -259,6 +263,17 @@ class UploadTests(unittest.TestCase):
 
         self.assertEqual(client.album_calls, [("id", "album-1", ["key-a.jpg"])])
         self.assertEqual(of_type(events, "album")[0]["album_id"], "album-1")
+
+    def test_known_album_is_appended_to_in_batches_of_500(self):
+        client = FakeClient()
+        keys = [f"k{i}" for i in range(1200)]
+        code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": keys, "album": {"id": "album-1"}}, client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual([len(call[2]) for call in client.album_calls], [500, 500, 200])
+        self.assertEqual({call[1] for call in client.album_calls}, {"album-1"})
+        self.assertEqual(sum((call[2] for call in client.album_calls), []), keys)
+        self.assertEqual(of_type(events, "album"), [{"type": "album", "v": 1, "album_id": "album-1", "added": 1200}])
 
     def test_album_failure_does_not_undo_the_uploads(self):
         client = FakeClient(album_error=RuntimeError("500 backend"))

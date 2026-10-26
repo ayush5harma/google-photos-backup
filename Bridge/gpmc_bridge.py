@@ -167,6 +167,25 @@ class FailureLog(logging.Handler):
                 self.reasons[_path_key(match["path"])] = match["reason"]
 
 
+# Google takes at most 500 media keys per add-to-album call (gpmc's batch).
+ALBUM_BATCH = 500
+
+# Every gpmc name the bridge calls, held against the fakes by
+# tests/test_gpmc_surface.py and against the bundled gpmc by
+# scripts/build-app.sh. Measured 2026-10-26: a call to a method that exists
+# only on gpmc's main branch shipped from v0.2.0 through 0.5.1 because both
+# fakes had it, and every album append after the first batch failed.
+GPMC_SURFACE: dict[str, tuple[str, ...]] = {
+    "Client": ("upload", "add_to_album"),
+    "Api": ("bearer_token", "find_remote_media_by_hash", "get_download_urls", "_new_session", "add_media_to_album"),
+}
+
+
+def missing_gpmc_surface(client_type: Any, api_type: Any) -> list[str]:
+    owners = {"Client": client_type, "Api": api_type}
+    return [f"{owner}.{name}" for owner, names in GPMC_SURFACE.items() for name in names if not hasattr(owners[owner], name)]
+
+
 def _vendored_site_packages() -> None:
     """The app bundle ships gpmc and its dependencies beside this file."""
     vendored = Path(__file__).resolve().parent / "site-packages"
@@ -311,7 +330,12 @@ def _connect(request: Event, factory: ClientFactory) -> Any:
 
 def _add_to_album(client: Any, media_keys: list[str], album: Event) -> str:
     if album.get("id"):
-        return client.add_to_existing_album(media_keys, album["id"], show_progress=False)
+        # gpmc 0.9.0, the release the app pins, has no
+        # Client.add_to_existing_album (only gpmc's main branch does): append
+        # the way 0.9.0's own add_to_album does, 500 keys per call.
+        for start in range(0, len(media_keys), ALBUM_BATCH):
+            client.api.add_media_to_album(album_media_key=album["id"], media_keys=media_keys[start:start + ALBUM_BATCH])
+        return album["id"]
     # add_to_album splits past 20,000 items into "<name> 1", "<name> 2"...;
     # the first is the one the app remembers and appends to next time.
     return client.add_to_album(media_keys, album["name"], False)[0]

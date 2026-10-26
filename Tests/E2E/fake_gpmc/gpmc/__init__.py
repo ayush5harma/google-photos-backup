@@ -169,6 +169,11 @@ class Api:
             raise RuntimeError("Auth response does not contain bearer token")
         return "fake-bearer"
 
+    def add_media_to_album(self, album_media_key: str, media_keys: list[str]) -> dict:
+        # gpmc 0.9.0 appends to an existing album here, not on Client.
+        _album(media_keys, album_id=album_media_key)
+        return {}
+
     def find_remote_media_by_hash(self, sha1_hash: bytes) -> str | None:
         with _ledger(_scenario()) as data:
             return data["media"].get(sha1_hash.hex())
@@ -256,19 +261,17 @@ class Client:
                 "filename": filename, "bytes_completed": done, "bytes_total": total}
 
     def add_to_album(self, media_keys: list[str], album_name: str, show_progress: bool) -> list[str]:
-        return [self._album(media_keys, name=album_name)]
+        return [_album(media_keys, name=album_name)]
 
-    def add_to_existing_album(self, media_keys: list[str], album_media_key: str, show_progress: bool = False) -> str:
-        return self._album(media_keys, album_id=album_media_key)
 
-    def _album(self, media_keys: list[str], name: str | None = None, album_id: str | None = None) -> str:
-        scenario = _scenario()
-        if scenario.get("album_error"):
-            raise RuntimeError(scenario["album_error"])
-        with _ledger(scenario) as data:
-            if album_id is None:
-                album_id = f"fake-album-{len(data['albums']) + 1}"
-                data["albums"][album_id] = {"name": name, "media_keys": []}
-            album = data["albums"].setdefault(album_id, {"name": name, "media_keys": []})
-            album["media_keys"] += [key for key in media_keys if key not in album["media_keys"]]
-        return album_id
+def _album(media_keys: list[str], name: str | None = None, album_id: str | None = None) -> str:
+    scenario = _scenario()
+    if scenario.get("album_error"):
+        raise RuntimeError(scenario["album_error"])
+    with _ledger(scenario) as data:
+        if album_id is None:
+            album_id = f"fake-album-{len(data['albums']) + 1}"
+            data["albums"][album_id] = {"name": name, "media_keys": []}
+        album = data["albums"].setdefault(album_id, {"name": name, "media_keys": []})
+        album["media_keys"] += [key for key in media_keys if key not in album["media_keys"]]
+    return album_id
