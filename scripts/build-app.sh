@@ -81,6 +81,8 @@ echo '{"command":"version"}' | "$PY" -I -B "$RESOURCES/bridge/gpmc_bridge.py" | 
 # a dependency with a broken compiled module fails the build, not a backup.
 "$PY" -I -B -c 'import sys; sys.path.insert(0, sys.argv[1]); from gpmc import Client; from pyicloud_ipd import PyiCloudService' "$RESOURCES/bridge/site-packages" \
   || { echo "the bundled bridge cannot import gpmc" >&2; exit 1; }
+# Every gpmc call the bridge makes must exist in the gpmc just bundled.
+"$PY" -I -B "$ROOT/scripts/check-gpmc-surface.py" "$RESOURCES/bridge/site-packages" "$RESOURCES/bridge" || exit 1
 
 "$PY" -I -B "$ROOT/scripts/verify-icloud.py" "$PY" "$RESOURCES/bridge/icloud_bridge.py"
 
