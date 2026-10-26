@@ -31,7 +31,7 @@ On 16 October 2026, a photo and video from each supported platform were read bac
 
 ## What’s new in v0.5.2
 
-Albums fill completely again: from the second batch on, adding items to an existing Google Photos album failed with "'Client' object has no attribute 'add_to_existing_album'", so an album got only its first batch ([#38](https://github.com/ayush5harma/google-photos-backup/issues/38)). Items that were backed up but left out are added to their album on the next backup. The Android APK stays at 0.5.0, which still has this problem, until a signed 0.5.2 APK is published.
+Albums now fill completely: since v0.2.0, adding items to an existing Google Photos album, from its second batch on, failed with "'Client' object has no attribute 'add_to_existing_album'", so an album got only its first batch ([#38](https://github.com/ayush5harma/google-photos-backup/issues/38)). Items that were backed up but left out are added to their album on the next backup. The Android APK stays at 0.5.0, which still has this problem, until a signed 0.5.2 APK is published.
 
 ## What’s new in v0.5.1
 

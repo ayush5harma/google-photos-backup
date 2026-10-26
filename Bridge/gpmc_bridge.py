@@ -173,8 +173,8 @@ ALBUM_BATCH = 500
 # Every gpmc name the bridge calls, held against the fakes by
 # tests/test_gpmc_surface.py and against the bundled gpmc by
 # scripts/build-app.sh. Measured 2026-10-26: a call to a method that exists
-# only on gpmc's main branch shipped in 0.5.1 because both fakes had it, and
-# every album append after the first batch failed.
+# only on gpmc's main branch shipped from v0.2.0 through 0.5.1 because both
+# fakes had it, and every album append after the first batch failed.
 GPMC_SURFACE: dict[str, tuple[str, ...]] = {
     "Client": ("upload", "add_to_album"),
     "Api": ("bearer_token", "find_remote_media_by_hash", "get_download_urls", "_new_session", "add_media_to_album"),

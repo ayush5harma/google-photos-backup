@@ -2,7 +2,7 @@
 
     check-gpmc-surface.py <site-packages> <bridge-dir>
 
-Measured 2026-10-26: Photos Backup 0.5.1 appended to existing albums with
+Measured 2026-10-26: Photos Backup 0.2.0 to 0.5.1 appended to existing albums with
 Client.add_to_existing_album, which exists only on gpmc's main branch; the
 pinned 0.9.0 release lacks it, the test fakes had it, and the shipped app added
 only each album's first batch. GPMC_SURFACE in the bridge lists every call.
