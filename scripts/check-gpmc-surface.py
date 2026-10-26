@@ -20,3 +20,12 @@ from gpmc.api import Api  # noqa: E402
 missing = gpmc_bridge.missing_gpmc_surface(Client, Api)
 if missing:
     sys.exit("the bundled gpmc lacks " + ", ".join(missing))
+
+# The media-key schemas the bridge pins onto gpmc 0.9.0 must still apply.
+if gpmc_bridge._gpmc_version() == "0.9.0":
+    import gpmc.api  # noqa: E402
+
+    try:
+        gpmc_bridge.pin_media_key_types(gpmc.api)
+    except AttributeError as error:
+        sys.exit(f"the bundled gpmc cannot take the media-key schemas: {error}")
