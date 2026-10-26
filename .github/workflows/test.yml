@@ -20,5 +20,13 @@ jobs:
         run: swift test
       - name: Python bridge tests
         run: python3 -m unittest discover -s Bridge/tests
+      # The same suite against the gpmc the apps bundle, so the tests that need
+      # the real package (test_gpmc_surface, test_media_key_types) run here too.
+      - uses: astral-sh/setup-uv@v6
+      - name: Python bridge tests against the pinned gpmc
+        run: |
+          uv python install 3.13
+          uv pip install --python 3.13 --target "$RUNNER_TEMP/gpmc" -r Bridge/requirements.txt
+          GPMC_SITE_PACKAGES="$RUNNER_TEMP/gpmc" uv run --python 3.13 --no-project python -m unittest discover -s Bridge/tests
       - name: Build app executable
         run: swift build

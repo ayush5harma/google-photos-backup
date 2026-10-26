@@ -80,7 +80,14 @@ final class BridgeProcess {
             let chunk = handle.availableData
             let lines = chunk.isEmpty ? splitter.finish() : splitter.append(chunk)
             for line in lines {
-                if let event = try? BridgeEvent.decode(line) { sink.yield(event) }
+                if let event = try? BridgeEvent.decode(line) {
+                    sink.yield(event)
+                } else {
+                    // 2026-10-26: a line the app could not read used to vanish,
+                    // and its item surfaced three retries later as "stopped
+                    // unexpectedly (exit 0)"; the log now names the line.
+                    logHandle.write(Data("undecodable bridge line: \(String(decoding: line.prefix(500), as: UTF8.self))\n".utf8))
+                }
             }
             if chunk.isEmpty {
                 handle.readabilityHandler = nil

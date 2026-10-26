@@ -44,6 +44,7 @@ progress is allowed to finish and report first.
 from __future__ import annotations
 
 import contextlib
+import functools
 import hashlib
 import json
 import logging
@@ -181,6 +182,56 @@ GPMC_SURFACE: dict[str, tuple[str, ...]] = {
 }
 
 
+# gpmc 0.9.0 decodes Google's replies without a schema, and blackboxprotobuf
+# then reads a media key whose bytes happen to parse as protobuf as a nested
+# message: a dict instead of the key. Measured 2026-10-26: about one random
+# "AF1Qip..." key in 14,000; the dict broke the item's line in the app ("The
+# uploader stopped unexpectedly (exit 0)") and the album add for its batch.
+# gpmc fixed this on main after 0.9.0 by pinning the key fields to strings
+# (github.com/xob0t/gpmc issue #80, MIT); these are those three schemas.
+KEY_RESPONSE_TYPES: dict[str, dict[str, Any]] = {
+    "find_remote_media_by_hash": {"1": {"type": "message", "message_typedef": {"2": {"type": "message", "message_typedef": {
+        "2": {"type": "message", "message_typedef": {"1": {"type": "string"}}}}}}}},
+    "commit_upload": {"1": {"type": "message", "message_typedef": {"3": {"type": "message", "message_typedef": {
+        "1": {"type": "string"}}}}}},
+    "create_album": {"1": {"type": "message", "message_typedef": {"1": {"type": "string"}}}},
+}
+_decode_hint = threading.local()
+
+
+def pin_media_key_types(api_module: Any) -> None:
+    """Make 0.9.0's three key-returning calls decode with upstream's schemas.
+
+    Each of them decodes exactly one reply, through the decode_message name
+    gpmc.api imported; the schema travels in a thread-local, so parallel
+    uploads keep their own. A gpmc that passes a schema itself is unaffected.
+    """
+    if getattr(api_module, "_photos_backup_key_types", False):
+        return
+    original = api_module.decode_message
+
+    def decode_message(buf: Any, message_type: Any = None, *args: Any, **kwargs: Any) -> Any:
+        if message_type is None:
+            message_type = getattr(_decode_hint, "typedef", None)
+        return original(buf, message_type, *args, **kwargs)
+
+    def pinned(method: Callable[..., Any], typedef: dict[str, Any]) -> Callable[..., Any]:
+        @functools.wraps(method)
+        def call(self: Any, *args: Any, **kwargs: Any) -> Any:
+            _decode_hint.typedef = typedef
+            try:
+                return method(self, *args, **kwargs)
+            finally:
+                _decode_hint.typedef = None
+
+        return call
+
+    api_module.decode_message = decode_message
+    for name, typedef in KEY_RESPONSE_TYPES.items():
+        setattr(api_module.Api, name, pinned(getattr(api_module.Api, name), typedef))
+    api_module._photos_backup_key_types = True
+
+
 def missing_gpmc_surface(client_type: Any, api_type: Any) -> list[str]:
     owners = {"Client": client_type, "Api": api_type}
     return [f"{owner}.{name}" for owner, names in GPMC_SURFACE.items() for name in names if not hasattr(owners[owner], name)]
@@ -197,6 +248,10 @@ def default_client_factory(auth_data: str, timeout: int) -> Any:
     _vendored_site_packages()
     from gpmc import Client
 
+    if _gpmc_version() == "0.9.0":
+        import gpmc.api
+
+        pin_media_key_types(gpmc.api)
     # Given explicitly: left to itself gpmc takes the first auth_data field
     # whose text contains "lang", which an address like langdon@... wins.
     language = dict(parse_qsl(auth_data)).get("lang", "")
@@ -395,6 +450,11 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
                 failures.reasons.setdefault(path, str(error))
                 if _classify(error)[0] in ("network", "rate_limit"):
                     escaped_retryable.add(path)
+                media_key = None
+            if media_key is not None and not isinstance(media_key, str):
+                # A key gpmc could not decode as a string would break this
+                # item's line in the app and the album add for the batch.
+                failures.reasons[path] = f"gpmc returned a media key of type {type(media_key).__name__}, not a string"
                 media_key = None
             if media_key:
                 status = "existing" if path in skipped else "uploaded"

@@ -60,8 +60,11 @@ class FakeApi:
 class FakeClient:
     """Behaves like gpmc.Client for the calls the bridge makes."""
 
-    def __init__(self, existing=(), failing=(), auth_error=None, album_error=None, on_album=None):
+    def __init__(self, existing=(), failing=(), auth_error=None, album_error=None, on_album=None, odd_keys=None):
         self.api = FakeApi(auth_error)
+        # filename -> a non-string media key, as gpmc 0.9.0 returns when its
+        # schema-less decode reads a key's bytes as a nested message.
+        self.odd_keys = dict(odd_keys or {})
         self.api.client = self
         self.existing = set(existing)
         self.failing = dict(failing) if isinstance(failing, dict) else set(failing)
@@ -96,7 +99,7 @@ class FakeClient:
                 continue
             event("uploading", 5)
             event("complete", 10)
-            results[path] = f"key-{name}"
+            results[path] = self.odd_keys.get(name, f"key-{name}")
         return results
 
     def add_to_album(self, media_keys, album_name, show_progress):
@@ -137,6 +140,20 @@ def of_type(events, kind):
 
 
 class UploadTests(unittest.TestCase):
+    def test_a_non_string_media_key_fails_the_item_instead_of_breaking_the_line(self):
+        client = FakeClient(odd_keys={"b.jpg": {"6": {"1": 0x51}}})
+        code, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg", "b.jpg"), "album": {"id": "album-1"}}, client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual([e["id"] for e in of_type(events, "item")], ["asset-a.jpg"])
+        failed = of_type(events, "item_failed")
+        self.assertEqual([e["id"] for e in failed], ["asset-b.jpg"])
+        self.assertIn("media key", failed[0]["message"])
+        # Only real keys reach the album, so one odd key cannot fail the batch.
+        self.assertEqual(client.album_calls, [("id", "album-1", ["key-a.jpg"])])
+        for event in events:
+            self.assertIsInstance(json.dumps(event), str)
+
     def test_new_and_existing_items_are_reported_by_asset_id(self):
         client = FakeClient(existing={"b.heic"})
         code, events, calls = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg", "b.heic")}, client)
