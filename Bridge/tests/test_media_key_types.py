@@ -87,6 +87,23 @@ class MediaKeyTypeTests(unittest.TestCase):
             with self.subTest(shape):
                 self.assertEqual(self.call(shape, self.api(self.reply(shape))), ODD_KEY)
 
+    def test_the_hint_is_cleared_when_a_pinned_call_raises(self):
+        gpmc_bridge.pin_media_key_types(self.api_module)
+        with self.assertRaises(Exception):
+            self.api(b"\xff\xff\xff").commit_upload({"1": 1}, "a.jpg", b"\x00" * 20)
+        self.assertIsNone(getattr(gpmc_bridge._decode_hint, "typedef", None))
+        decoded, _ = self.api_module.decode_message(self.reply("commit_upload"))
+        self.assertIsInstance(decoded["1"]["3"]["1"], dict)
+
+    def test_a_schema_gpmc_passes_itself_wins_over_the_hint(self):
+        gpmc_bridge.pin_media_key_types(self.api_module)
+        gpmc_bridge._decode_hint.typedef = gpmc_bridge.KEY_RESPONSE_TYPES["create_album"]
+        try:
+            decoded, _ = self.api_module.decode_message(self.reply("commit_upload"), gpmc_bridge.KEY_RESPONSE_TYPES["commit_upload"])
+        finally:
+            gpmc_bridge._decode_hint.typedef = None
+        self.assertEqual(decoded["1"]["3"]["1"], ODD_KEY)
+
     def test_pinning_twice_wraps_once(self):
         gpmc_bridge.pin_media_key_types(self.api_module)
         gpmc_bridge.pin_media_key_types(self.api_module)
