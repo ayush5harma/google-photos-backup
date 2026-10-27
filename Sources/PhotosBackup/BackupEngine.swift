@@ -113,6 +113,8 @@ final class BackupEngine {
     @ObservationIgnored private let verifier = BridgeProcess()
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var picked: [String] = []
+    /// Picker files for picks PhotoKit cannot see, until Google has them.
+    @ObservationIgnored private var pickedFiles: [String: URL] = [:]
     @ObservationIgnored private var messages: [MessagesMediaItem] = []
     @ObservationIgnored private var deviceItems: [DeviceMediaItem] = []
     /// Kept only while a connected-device run is queued. The device is the
@@ -185,7 +187,13 @@ final class BackupEngine {
     }
 
     /// A hand-picked selection, uploaded ahead of the albums.
-    func backUp(picked ids: [String]) {
+    /// - Parameter files: files the picker handed over for picks PhotoKit
+    ///   cannot see (hidden photos when the Hidden album is locked).
+    func backUp(picked ids: [String], files: [String: URL] = [:]) {
+        for (id, url) in files {
+            if let old = pickedFiles[id], old != url { PickedFile.discard(old) }
+            pickedFiles[id] = url
+        }
         picked.append(contentsOf: ids.filter { !picked.contains($0) })
         start(trigger: .picker)
     }
@@ -246,6 +254,7 @@ final class BackupEngine {
     func stop() {
         reclaimGeneration &+= 1
         picked = []
+        discardPickedFiles()
         messages = []
         deviceItems = []
         deviceSource?.cancelDownload()
@@ -462,6 +471,7 @@ final class BackupEngine {
     /// Messages queue.
     private func endQueues() {
         picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
+        discardPickedFiles()
         messages.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
         deviceItems.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
         if deviceItems.isEmpty {
@@ -545,7 +555,7 @@ final class BackupEngine {
             let title = failedAlbums.contains(albumID) ? nil : albumTitle
             return await upload(assetIDs, album: title.map { (albumID, $0) }, includingHidden: albumID == BackupPlanner.pickedAlbumID,
                                 auth: auth, runtime: runtime, settings: settings)
-        case let .addToAlbum(albumID, albumTitle, assetIDs, mediaKeys):
+        case let .addToAlbum(albumID, albumTitle, assetIDs, _):
             if failedAlbums.contains(albumID) { return .nothing }
             return await addToAlbum(assetIDs, albumID: albumID, albumTitle: albumTitle, auth: auth, runtime: runtime)
         case let .reupload(assetIDs):
@@ -607,7 +617,8 @@ final class BackupEngine {
         }
 
         var items: [BatchItem] = []
-        await AssetExporter().export(assetIDs, includingHidden: includingHidden, into: batch, shouldStop: { self.phase == .stopping }, started: { id, filename in
+        await AssetExporter().export(assetIDs, includingHidden: includingHidden,
+                                     pickedFiles: includingHidden ? pickedFiles : [:], into: batch, shouldStop: { self.phase == .stopping }, started: { id, filename in
             self.show(id, filename: filename, status: .exporting)
         }, finished: { id, result in
             switch result {
@@ -1170,6 +1181,7 @@ final class BackupEngine {
 
     private func confirm(_ id: String, mediaKey: String, existing: Bool, item: BatchItem?) {
         model.state.recordUpload(assetID: id, mediaKey: mediaKey, existing: existing, stamp: item?.stamp)
+        if let file = pickedFiles.removeValue(forKey: id) { PickedFile.discard(file) }
         // A confirmation overrides an earlier failure of the same item.
         tally.confirmed(id, existing: existing, bytes: item?.size ?? 0)
         syncRunCounts()
@@ -1210,6 +1222,15 @@ final class BackupEngine {
         model.log(.photos, "Google Photos no longer had \(forgotten.count) backed-up \(forgotten.count == 1 ? "photo" : "photos"): "
                   + parts.joined(separator: ", ") + ".")
         return forgotten.count
+    }
+
+    /// Picker files are hidden photos: keep one only while its pick is still
+    /// queued or waiting in Activity for Retry.
+    private func discardPickedFiles() {
+        for (id, url) in pickedFiles where !picked.contains(id) && failures[id] == nil {
+            PickedFile.discard(url)
+            pickedFiles[id] = nil
+        }
     }
 
     /// The item has failed for this run; Retry or the next run releases it.

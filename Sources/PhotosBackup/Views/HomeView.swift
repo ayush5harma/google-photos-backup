@@ -371,14 +371,36 @@ struct PickPhotosButton<Label: View>: View {
     @State private var selection: [PhotosPickerItem] = []
 
     var body: some View {
-        styled(PhotosPicker(selection: $selection, matching: .any(of: [.images, .videos]), photoLibrary: .shared()) { label })
+        // .current: a pick that goes up from the picker's own file keeps its
+        // format instead of becoming a JPEG.
+        styled(PhotosPicker(selection: $selection, matching: .any(of: [.images, .videos]), preferredItemEncoding: .current,
+                            photoLibrary: .shared()) { label })
             .disabled(!model.hasAuthData || !model.canReadPhotos)
             .onChange(of: selection) { _, items in
                 // itemIdentifier is the PHAsset local identifier because the
                 // picker was given the shared library.
-                let ids = items.compactMap(\.itemIdentifier)
+                let picks = items.compactMap { item in item.itemIdentifier.map { ($0, item) } }
                 selection = []
-                if !ids.isEmpty { model.engine.backUp(picked: ids) }
+                guard !picks.isEmpty else { return }
+                // Only what PhotoKit cannot see, and Google does not have yet,
+                // is copied out of the picker, while its access is fresh; the
+                // rest exports from the library as before and starts at once.
+                let ids = picks.map(\.0)
+                let unseen = Set(AssetExporter.unseen(ids)).subtracting(ids.filter { model.state.uploaded[$0] != nil })
+                let visible = ids.filter { !unseen.contains($0) }
+                if !visible.isEmpty { model.engine.backUp(picked: visible) }
+                guard !unseen.isEmpty else { return }
+                Task {
+                    var files: [String: URL] = [:]
+                    for (id, item) in picks where unseen.contains(id) {
+                        do {
+                            if let file = try await item.loadTransferable(type: PickedFile.self) { files[id] = file.url }
+                        } catch {
+                            model.log(.photos, "Photos did not hand over a picked item: \(error.localizedDescription)", problem: true)
+                        }
+                    }
+                    model.engine.backUp(picked: ids.filter { unseen.contains($0) }, files: files)
+                }
             }
     }
 

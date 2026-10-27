@@ -255,8 +255,10 @@ final class AppModel {
             stateError = "The backup history could not be read (\(error.localizedDescription)); starting fresh."
             try? FileManager.default.moveItem(at: paths.state, to: paths.state.appendingPathExtension("unreadable"))
         }
-        // A crash mid-batch leaves exported copies behind.
+        // A crash mid-batch leaves exported copies behind, and picked hidden
+        // photos copied out of the picker by an earlier launch.
         try? FileManager.default.removeItem(at: paths.staging)
+        try? FileManager.default.removeItem(at: PickedFile.root)
         hasAuthData = Keychain.load() != nil
         if hasAuthData { account = .connected(email: nil) }
         // 2026-10-15: Version 0.1.0 saved settings only after a change. An
