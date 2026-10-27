@@ -59,12 +59,20 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         await Task.detached(priority: .utility) { readAlbums() }.value
     }
 
-    private static func readAlbums() -> [LibraryAlbum] {
+    /// How every album and All Photos are listed: the user's own library,
+    /// newest first, hidden photos left out (PhotoKit's default, which the
+    /// exporter relies on to upload a hidden photo only when it is picked).
+    static var listing: PHFetchOptions {
         let options = PHFetchOptions()
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         // Only the user's own library: shared-album items are someone
         // else's, and PhotoKit cannot hand out their originals anyway.
         options.includeAssetSourceTypes = [.typeUserLibrary]
+        return options
+    }
+
+    private static func readAlbums() -> [LibraryAlbum] {
+        let options = listing
 
         // The modification date comes with the asset row PhotoKit already
         // fetched, so edit detection costs no extra query; asset resources

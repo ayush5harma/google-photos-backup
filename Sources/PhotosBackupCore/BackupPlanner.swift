@@ -189,10 +189,14 @@ public enum BackupPlanner {
     }
 
     /// A manual pick: upload whatever Google does not have yet, no album.
+    /// The album id of a hand-picked upload step: the only steps whose
+    /// assets may include hidden photos, because the owner chose them.
+    public static let pickedAlbumID = "picked"
+
     public static func plan(picked assetIDs: [String], state: BackupState, batchSize: Int) -> [PlannedStep] {
         var seen = Set<String>()
         let toUpload = assetIDs.filter { state.uploaded[$0] == nil && seen.insert($0).inserted }
-        return toUpload.chunked(max(1, batchSize)).map { .upload(albumID: "picked", albumTitle: nil, assetIDs: $0) }
+        return toUpload.chunked(max(1, batchSize)).map { .upload(albumID: pickedAlbumID, albumTitle: nil, assetIDs: $0) }
     }
 
     public static func progress(of album: AlbumSnapshot, state: BackupState) -> AlbumProgress {
