@@ -24,6 +24,9 @@ Scenario keys (all optional):
   "flaky_first": {"times": N, "error": "503"}   the first N new files fail
                                  retryably, whatever their names
   "album_error": "500 Server Error: ..."   album calls raise this
+  "dead_media_keys": ["<key>"]   an album call carrying any of these keys
+                                 answers 404, as Google does for a key it
+                                 no longer has
   "delay": 0.2                   seconds each file takes (to test Stop)
 
 Ledger (JSON, written under an exclusive file lock):
@@ -49,6 +52,7 @@ from typing import Any
 SCENARIO_ENV = "FAKE_GPMC_SCENARIO"
 UPLOAD_URL = "https://photos.googleapis.com/data/upload/uploadmedia/interactive"
 COMMIT_URL = "https://photosdata-pa.googleapis.com/6439526531001121323/16538846908252377752"
+ALBUM_URL = "https://photosdata-pa.googleapis.com/6439526531001121323/484917746253879292"
 
 _logger = logging.getLogger("gpmc")
 _lock = threading.Lock()
@@ -145,7 +149,7 @@ def _error(kind: str, url: str) -> Exception:
     if kind == "timeout":
         return Timeout("HTTPSConnectionPool(host='photos.googleapis.com', port=443): Read timed out. (read timeout=60)")
     status = int(kind)
-    reasons = {403: "Forbidden", 408: "Request Timeout", 429: "Too Many Requests", 500: "Internal Server Error", 503: "Service Unavailable"}
+    reasons = {403: "Forbidden", 404: "Not Found", 408: "Request Timeout", 429: "Too Many Requests", 500: "Internal Server Error", 503: "Service Unavailable"}
     return HTTPError(status, reasons.get(status, "Error"), url)
 
 
@@ -173,6 +177,9 @@ class Api:
         # gpmc 0.9.0 appends to an existing album here, not on Client.
         _album(media_keys, album_id=album_media_key)
         return {}
+
+    def create_album(self, album_name: str, media_keys: list[str]) -> str:
+        return _album(media_keys, name=album_name)
 
     def find_remote_media_by_hash(self, sha1_hash: bytes) -> str | None:
         with _ledger(_scenario()) as data:
@@ -268,6 +275,8 @@ def _album(media_keys: list[str], name: str | None = None, album_id: str | None 
     scenario = _scenario()
     if scenario.get("album_error"):
         raise RuntimeError(scenario["album_error"])
+    if set(media_keys) & set(scenario.get("dead_media_keys", [])):
+        raise _error("404", ALBUM_URL)
     with _ledger(scenario) as data:
         if album_id is None:
             album_id = f"fake-album-{len(data['albums']) + 1}"

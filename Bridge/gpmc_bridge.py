@@ -177,8 +177,8 @@ ALBUM_BATCH = 500
 # only on gpmc's main branch shipped from v0.2.0 through 0.5.1 because both
 # fakes had it, and every album append after the first batch failed.
 GPMC_SURFACE: dict[str, tuple[str, ...]] = {
-    "Client": ("upload", "add_to_album"),
-    "Api": ("bearer_token", "find_remote_media_by_hash", "get_download_urls", "_new_session", "add_media_to_album"),
+    "Client": ("upload",),
+    "Api": ("bearer_token", "find_remote_media_by_hash", "get_download_urls", "_new_session", "add_media_to_album", "create_album"),
 }
 
 
@@ -383,17 +383,78 @@ def _connect(request: Event, factory: ClientFactory) -> Any:
     return client
 
 
-def _add_to_album(client: Any, media_keys: list[str], album: Event) -> str:
-    if album.get("id"):
-        # gpmc 0.9.0, the release the app pins, has no
-        # Client.add_to_existing_album (only gpmc's main branch does): append
-        # the way 0.9.0's own add_to_album does, 500 keys per call.
-        for start in range(0, len(media_keys), ALBUM_BATCH):
-            client.api.add_media_to_album(album_media_key=album["id"], media_keys=media_keys[start:start + ALBUM_BATCH])
-        return album["id"]
-    # add_to_album splits past 20,000 items into "<name> 1", "<name> 2"...;
-    # the first is the one the app remembers and appends to next time.
-    return client.add_to_album(media_keys, album["name"], False)[0]
+def _add_to_album(client: Any, media_keys: list[str], album: Event) -> tuple[str | None, list[str]]:
+    """Add the keys to the album, creating it first when it has no id yet.
+
+    Returns the album's id (None when no key was left to create it with) and
+    the keys Google no longer has. Measured 2026-10-27 after one 25,954-item
+    run: about one key in 70 that gpmc had reported for an upload no longer
+    opened in Google Photos (its photo page answered like a made-up key), and
+    Google refuses a whole create_album or add_media_to_album call carrying
+    one with a 404. Twelve albums stopped filling that way. A refused batch
+    is split in halves until each dead key stands alone, so every live key is
+    still added and the dead ones go back to the app to upload again.
+    """
+    missing: list[str] = []
+    refusals: list[BaseException] = []
+
+    def refused(error: BaseException) -> bool:
+        if _http_status(error) != 404:
+            return False
+        refusals.append(error)
+        return True
+
+    def append(album_id: str, keys: list[str]) -> None:
+        try:
+            client.api.add_media_to_album(album_media_key=album_id, media_keys=keys)
+        except Exception as error:
+            if not refused(error):
+                raise
+            if len(keys) == 1:
+                missing.append(keys[0])
+                return
+            half = len(keys) // 2
+            append(album_id, keys[:half])
+            append(album_id, keys[half:])
+
+    def create(keys: list[str]) -> str | None:
+        try:
+            return client.api.create_album(album_name=album["name"], media_keys=keys)
+        except Exception as error:
+            if not refused(error):
+                raise
+            if len(keys) == 1:
+                missing.append(keys[0])
+                return None
+            half = len(keys) // 2
+            album_id = create(keys[:half])
+            if album_id is None:
+                return create(keys[half:])
+            append(album_id, keys[half:])
+            return album_id
+
+    # gpmc 0.9.0, the release the app pins, has no
+    # Client.add_to_existing_album (only gpmc's main branch does): append the
+    # way 0.9.0's own add_to_album does, 500 keys per call. Creating through
+    # Api rather than Client.add_to_album keeps a refused first batch from
+    # leaving a half-made album behind; no request here comes near the
+    # 20,000 items Client.add_to_album would split an album at.
+    album_id = album.get("id") or None
+    for start in range(0, len(media_keys), ALBUM_BATCH):
+        batch = media_keys[start:start + ALBUM_BATCH]
+        if album_id is None:
+            album_id = create(batch)
+        else:
+            append(album_id, batch)
+    if album.get("id") and missing and len(missing) == len(media_keys):
+        # Refused key by key: a deleted album answers 404 the same way, so
+        # this stays the album's failure rather than a re-upload of every
+        # photo sent to it.
+        raise refusals[0]
+    if missing:
+        logging.getLogger(__name__).warning("Google Photos no longer has %d of the %d photos sent to an album: %s",
+                                            len(missing), len(media_keys), " ".join(missing))
+    return album_id, missing
 
 
 def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop: StopSignal) -> int:
@@ -476,8 +537,11 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
         # hearing its id, or the next run would create a second one.
         with stop.critical():
             try:
-                album_id = _add_to_album(client, confirmed, album)
-                emit(_event("album", album_id=album_id, added=len(confirmed)))
+                album_id, missing = _add_to_album(client, confirmed, album)
+                if missing:
+                    emit(_event("missing_media", media_keys=missing))
+                if album_id:
+                    emit(_event("album", album_id=album_id, added=len(confirmed) - len(missing)))
             except Exception as error:
                 logging.getLogger(__name__).exception("adding to album failed")
                 emit(_event("album_failed", message=str(error)))
@@ -666,8 +730,11 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
             return EXIT_OK
         if command == "add-to-album":
             with stop.critical():
-                album_id = _add_to_album(client, request["media_keys"], request["album"])
-                emit(_event("album", album_id=album_id, added=len(request["media_keys"])))
+                album_id, missing = _add_to_album(client, request["media_keys"], request["album"])
+                if missing:
+                    emit(_event("missing_media", media_keys=missing))
+                if album_id:
+                    emit(_event("album", album_id=album_id, added=len(request["media_keys"]) - len(missing)))
             return EXIT_OK
         return _upload(request, client, emit, failures, stop)
     except StopRequested:

@@ -46,9 +46,22 @@ class FakeApi:
         # gpmc 0.9.0 appends to an existing album here; its Client has no
         # add_to_existing_album (that is on gpmc's main branch only).
         self.client.album_calls.append(("id", album_media_key, list(media_keys)))
+        self._refuse(media_keys)
+        return {}
+
+    def create_album(self, album_name, media_keys):
+        self.client.album_calls.append(("name", album_name, list(media_keys)))
+        if self.client.on_album:
+            self.client.on_album()
+        self._refuse(media_keys)
+        return "album-new"
+
+    def _refuse(self, media_keys):
         if self.client.album_error:
             raise self.client.album_error
-        return {}
+        # Google answers 404 for the whole call when any key in it is gone.
+        if self.client.album_gone or set(media_keys) & self.client.dead_keys:
+            raise FakeHTTPError(404)
 
     def find_remote_media_by_hash(self, sha1_hash):
         self.hash_lookups.append(sha1_hash)
@@ -60,8 +73,11 @@ class FakeApi:
 class FakeClient:
     """Behaves like gpmc.Client for the calls the bridge makes."""
 
-    def __init__(self, existing=(), failing=(), auth_error=None, album_error=None, on_album=None, odd_keys=None):
+    def __init__(self, existing=(), failing=(), auth_error=None, album_error=None, on_album=None, odd_keys=None,
+                 dead_keys=(), album_gone=False):
         self.api = FakeApi(auth_error)
+        self.dead_keys = set(dead_keys)
+        self.album_gone = album_gone
         # filename -> a non-string media key, as gpmc 0.9.0 returns when its
         # schema-less decode reads a key's bytes as a nested message.
         self.odd_keys = dict(odd_keys or {})
@@ -101,14 +117,6 @@ class FakeClient:
             event("complete", 10)
             results[path] = self.odd_keys.get(name, f"key-{name}")
         return results
-
-    def add_to_album(self, media_keys, album_name, show_progress):
-        self.album_calls.append(("name", album_name, list(media_keys)))
-        if self.on_album:
-            self.on_album()
-        if self.album_error:
-            raise self.album_error
-        return ["album-new"]
 
 
 
@@ -291,6 +299,60 @@ class UploadTests(unittest.TestCase):
         self.assertEqual({call[1] for call in client.album_calls}, {"album-1"})
         self.assertEqual(sum((call[2] for call in client.album_calls), []), keys)
         self.assertEqual(of_type(events, "album"), [{"type": "album", "v": 1, "album_id": "album-1", "added": 1200}])
+
+    def test_dead_keys_are_split_out_and_every_live_key_is_still_added(self):
+        keys = [f"k{i}" for i in range(1200)]
+        client = FakeClient(dead_keys={"k7", "k900"})
+        code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": keys, "album": {"id": "album-1"}}, client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        accepted = sum((call[2] for call in client.album_calls if not set(call[2]) & client.dead_keys), [])
+        self.assertEqual(sorted(accepted), sorted(set(keys) - {"k7", "k900"}))
+        self.assertEqual(len(accepted), len(set(accepted)))
+        self.assertEqual(of_type(events, "missing_media"), [{"type": "missing_media", "v": 1, "media_keys": ["k7", "k900"]}])
+        self.assertEqual(of_type(events, "album"), [{"type": "album", "v": 1, "album_id": "album-1", "added": 1198}])
+        # Each dead key costs about two calls per halving, not one per key.
+        self.assertLess(len(client.album_calls), 3 + 2 * 2 * 10)
+
+    def test_a_new_album_is_created_from_the_first_live_keys(self):
+        client = FakeClient(dead_keys={"gone"})
+        _, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["gone", "k1", "k2", "k3"], "album": {"name": "Trip"}},
+                           client)
+
+        created = [call for call in client.album_calls if call[0] == "name" and "gone" not in call[2]]
+        self.assertEqual(created, [("name", "Trip", ["k1"])])
+        self.assertIn(("id", "album-new", ["k2", "k3"]), client.album_calls)
+        self.assertEqual(of_type(events, "missing_media")[0]["media_keys"], ["gone"])
+        self.assertEqual(of_type(events, "album"), [{"type": "album", "v": 1, "album_id": "album-new", "added": 3}])
+
+    def test_no_album_is_made_when_every_key_is_gone(self):
+        client = FakeClient(dead_keys={"k1", "k2"})
+        code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k1", "k2"], "album": {"name": "Trip"}}, client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual(of_type(events, "album"), [])
+        self.assertEqual(of_type(events, "missing_media")[0]["media_keys"], ["k1", "k2"])
+
+    def test_a_known_album_refusing_every_key_stays_the_albums_failure(self):
+        # A deleted album also answers 404: sending every photo back for
+        # upload would repeat the same refusal on each run.
+        client = FakeClient(album_gone=True)
+        code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k1", "k2"], "album": {"id": "album-1"}}, client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_INTERNAL)
+        self.assertEqual(of_type(events, "missing_media"), [])
+        self.assertEqual(events[-1]["type"], "fatal")
+        self.assertIn("404", events[-1]["message"])
+
+    def test_upload_album_step_hands_dead_keys_back(self):
+        client = FakeClient(dead_keys={"key-a.jpg"})
+        _, events, _ = run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg", "b.jpg"), "album": {"id": "album-1", "name": "Trip"}},
+                           client)
+
+        self.assertEqual(len(of_type(events, "item")), 2)
+        self.assertEqual(of_type(events, "missing_media")[0]["media_keys"], ["key-a.jpg"])
+        self.assertEqual(of_type(events, "album"), [{"type": "album", "v": 1, "album_id": "album-1", "added": 1}])
+        self.assertEqual(of_type(events, "album_failed"), [])
 
     def test_album_failure_does_not_undo_the_uploads(self):
         client = FakeClient(album_error=RuntimeError("500 backend"))
