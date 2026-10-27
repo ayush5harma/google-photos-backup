@@ -124,6 +124,24 @@ private let live = AlbumSnapshot(id: "live", title: "Live Photos", kind: .smart,
         #expect(state.forgetUploads(withMediaKeys: []) == [])
     }
 
+    @Test func photosGoogleLostGoUpAgainWithoutTheHashCheckOnce() {
+        var state = state(selected: ["trip"], uploaded: ["b", "d"])
+        state.forgetUploads(withMediaKeys: ["key-b"])
+        #expect(state.forcedUploads == ["b"])
+        state.recordUpload(assetID: "b", mediaKey: "key-b2", existing: false)
+        #expect(state.forcedUploads?.isEmpty == true)
+        #expect(state.clearingHistory().forcedUploads == state.forcedUploads)
+    }
+
+    @Test func splittingTargetChecksTheAlbumWithPhotosItHolds() {
+        var state = state(selected: ["trip"], uploaded: ["a", "b", "c", "d"])
+        #expect(state.splittingAlbumTarget(for: "trip", title: "Trip") == AlbumTarget(id: nil, name: "Trip", splitMissing: true))
+        state.recordAlbum("trip", googleAlbumID: "g1", added: ["d", "c", "b", "a"])
+        #expect(state.splittingAlbumTarget(for: "trip", title: "Trip")
+            == AlbumTarget(id: "g1", name: "Trip", splitMissing: true, probeMediaKeys: ["key-a", "key-b", "key-c"]))
+        #expect(state.assets(["a", "b", "x"], withMediaKeys: ["key-b", "key-x"]) == ["b"])
+    }
+
     @Test func storeRoundTripsAndStartsEmpty() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("state.json")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

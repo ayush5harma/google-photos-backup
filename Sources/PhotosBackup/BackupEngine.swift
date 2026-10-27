@@ -546,7 +546,7 @@ final class BackupEngine {
             return await upload(assetIDs, album: title.map { (albumID, $0) }, auth: auth, runtime: runtime, settings: settings)
         case let .addToAlbum(albumID, albumTitle, assetIDs, mediaKeys):
             if failedAlbums.contains(albumID) { return .nothing }
-            return await addToAlbum(assetIDs, mediaKeys: mediaKeys, albumID: albumID, albumTitle: albumTitle, auth: auth, runtime: runtime)
+            return await addToAlbum(assetIDs, albumID: albumID, albumTitle: albumTitle, auth: auth, runtime: runtime)
         case let .reupload(assetIDs):
             let changed = await checkEdits(assetIDs)
             guard !changed.isEmpty else { return .nothing }
@@ -611,7 +611,9 @@ final class BackupEngine {
         }, finished: { id, result in
             switch result {
             case let .success(file):
-                items.append(BatchItem(bridgeItem: BridgeItem(id: id, path: file.url.path, filename: file.filename), size: file.size, stamp: file.stamp, fingerprint: nil))
+                let force = self.model.state.forcedUploads?.contains(id) == true ? true : nil
+                items.append(BatchItem(bridgeItem: BridgeItem(id: id, path: file.url.path, filename: file.filename, force: force),
+                                       size: file.size, stamp: file.stamp, fingerprint: nil))
                 self.update(id) { $0.size = file.size; $0.status = .hashing }
             case let .failure(error):
                 // A missing asset or an unreadable original: sending it again
@@ -805,7 +807,7 @@ final class BackupEngine {
 
             // Resolved now, not at planning: an earlier batch of this run may
             // have just created the album.
-            let target = album.flatMap { failedAlbums.contains($0.id) ? nil : model.state.albumTarget(for: $0.id, title: $0.title) }
+            let target = album.flatMap { failedAlbums.contains($0.id) ? nil : model.state.splittingAlbumTarget(for: $0.id, title: $0.title) }
             let sending = Set(pending)
             var confirmed: [String] = []
             var answered = Set<String>()
@@ -830,17 +832,18 @@ final class BackupEngine {
                         failed.append((id, message, retryable))
                     case let .missingMedia(keys):
                         missingKeys += keys
-                    case let .album(googleID, _):
+                    case let .album(googleID, _, addedKeys):
                         if let album {
-                            self.model.state.recordAlbum(album.id, googleAlbumID: googleID,
-                                                         added: self.held(confirmed, outside: missingKeys))
+                            let added = addedKeys.map { self.model.state.assets(confirmed, withMediaKeys: $0) } ?? confirmed
+                            self.model.state.recordAlbum(album.id, googleAlbumID: googleID, added: added)
                         }
                     case let .albumFailed(message):
                         guard let album else { break }
                         if FailureClassifier.classify(message: message, bridgeRetryable: nil) == .rateLimited {
-                            // Google refused before doing anything: hold, and
-                            // the next pass adds these items with an album
-                            // step that waits for the hold (with its cap).
+                            // Google refused the call or a later part of it:
+                            // what went in is recorded above; hold, and the
+                            // next pass adds the rest with an album step that
+                            // waits for the hold (with its cap).
                             albumLimited = true
                         } else {
                             // The title stays out: it lands in the timeline
@@ -997,13 +1000,19 @@ final class BackupEngine {
         return false
     }
 
-    private func addToAlbum(_ assetIDs: [String], mediaKeys: [String], albumID: String, albumTitle: String,
+    private func addToAlbum(_ assetIDs: [String], albumID: String, albumTitle: String,
                             auth: String, runtime: BridgeRuntime) async -> Outcome {
+        var progressed = false
         while true {
             if let outcome = await clearance(retryAt: nil, holding: [], category: .photos) { return outcome }
             holdAwake()
-            let target = model.state.albumTarget(for: albumID, title: albumTitle)
-            var added = false
+            // Worked out again on every try: a call that stopped part-way has
+            // already filed some of these, and found others gone.
+            let filed = model.state.mirrors[albumID]?.addedAssetIDs ?? []
+            let pending = assetIDs.filter { model.state.uploaded[$0] != nil && !filed.contains($0) }
+            guard !pending.isEmpty else { return progressed ? .progressed : .nothing }
+            let mediaKeys = pending.compactMap { model.state.uploaded[$0]?.mediaKey }
+            let target = model.state.splittingAlbumTarget(for: albumID, title: albumTitle)
             var fatal: (FatalKind, String)?
             var missingKeys: [String] = []
             do {
@@ -1012,10 +1021,10 @@ final class BackupEngine {
                     switch event {
                     case let .missingMedia(keys):
                         missingKeys += keys
-                    case let .album(googleID, _):
-                        self.model.state.recordAlbum(albumID, googleAlbumID: googleID,
-                                                     added: self.held(assetIDs, outside: missingKeys))
-                        added = true
+                    case let .album(googleID, _, addedKeys):
+                        let added = addedKeys.map { self.model.state.assets(pending, withMediaKeys: $0) } ?? pending
+                        self.model.state.recordAlbum(albumID, googleAlbumID: googleID, added: added)
+                        progressed = progressed || !added.isEmpty
                     case let .fatal(kind, message):
                         fatal = (kind, message)
                     default:
@@ -1030,14 +1039,15 @@ final class BackupEngine {
             }
             // Forgotten photos are planned for upload on the next pass, so a
             // call that only found dead keys still moved the run on.
-            let forgotten = forgetMissing(missingKeys)
+            progressed = forgetMissing(missingKeys) > 0 || progressed
             model.saveState()
-            guard let (kind, message) = fatal else { return added || forgotten > 0 ? .progressed : .nothing }
+            guard let (kind, message) = fatal else { return progressed ? .progressed : .nothing }
             if phase == .stopping { return .halt }
             switch kind {
             case .rateLimit:
-                // Google refused before doing anything; the same call goes
-                // again once the hold is over.
+                // Google refused the call, or a later part of it: what went in
+                // is recorded above, and the rest goes again once the hold is
+                // over.
                 if holdForRateLimit() {
                     endRun(failing: Self.rateLimitGiveUp, category: .network, leaving: [])
                     return .halt
@@ -1051,7 +1061,7 @@ final class BackupEngine {
                 failedAlbums.insert(albumID)
                 lastError = "Could not add photos to a Google Photos album: \(message)"
                 model.log(.photos, lastError ?? message, problem: true)
-                return added ? .progressed : .nothing
+                return progressed ? .progressed : .nothing
             }
         }
     }
@@ -1182,28 +1192,22 @@ final class BackupEngine {
         change(&activity[index])
     }
 
-    /// The assets among `assetIDs` whose uploaded key is not in `missingKeys`:
-    /// what Google actually filed in the album.
-    private func held(_ assetIDs: [String], outside missingKeys: [String]) -> [String] {
-        guard !missingKeys.isEmpty else { return assetIDs }
-        let missing = Set(missingKeys)
-        return assetIDs.filter { model.state.uploaded[$0].map { !missing.contains($0.mediaKey) } ?? true }
-    }
-
     /// An album call found these keys gone from Google Photos (measured
-    /// 2026-10-27: about one upload in 70 a day later): forget those uploads
-    /// so the next pass sends the photos again. One this run already sent is
-    /// failed as well, so a photo Google loses again cannot cycle within the
-    /// run, and shows in Activity. Returns how many uploads were forgotten.
+    /// 2026-10-27: 1 of 72 sampled keys a day after upload): forget those
+    /// uploads so the photos go up again, without the hash check. A photo this
+    /// run already sent waits for the next backup, since the planner never
+    /// sends an asset twice in a run. Returns how many uploads were forgotten.
     @discardableResult
     private func forgetMissing(_ keys: [String]) -> Int {
         let forgotten = model.state.forgetUploads(withMediaKeys: keys)
         guard !forgotten.isEmpty else { return 0 }
-        for id in forgotten where tally.confirmedIDs.contains(id) {
-            fail(id, "Google Photos no longer has this photo right after it was uploaded", retryable: true)
-        }
-        model.log(.photos, "\(forgotten.count) backed-up \(forgotten.count == 1 ? "photo was" : "photos were") no longer in "
-                  + "Google Photos; uploading again.")
+        let later = forgotten.filter { tally.confirmedIDs.contains($0) }.count
+        let now = forgotten.count - later
+        var parts: [String] = []
+        if now > 0 { parts.append("\(now) uploading again now") }
+        if later > 0 { parts.append("\(later) on the next backup") }
+        model.log(.photos, "Google Photos no longer had \(forgotten.count) backed-up \(forgotten.count == 1 ? "photo" : "photos"): "
+                  + parts.joined(separator: ", ") + ".")
         return forgotten.count
     }
 

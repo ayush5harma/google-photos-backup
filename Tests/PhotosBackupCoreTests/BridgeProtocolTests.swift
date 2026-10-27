@@ -24,7 +24,9 @@ private func event(_ json: String) throws -> BridgeEvent {
             == .itemFailed(id: "A", message: "503", retryable: true))
         #expect(try event(#"{"type":"fatal","v":1,"kind":"rate_limit","message":"429"}"#) == .fatal(kind: .rateLimit, message: "429"))
         #expect(try event(#"{"type":"fatal","v":1,"kind":"storage_full","message":"full"}"#) == .fatal(kind: .storageFull, message: "full"))
-        #expect(try event(#"{"type":"album","v":1,"album_id":"g","added":2}"#) == .album(id: "g", added: 2))
+        #expect(try event(#"{"type":"album","v":1,"album_id":"g","added":2}"#) == .album(id: "g", added: 2, mediaKeys: nil))
+        #expect(try event(#"{"type":"album","v":1,"album_id":"g","added":1,"media_keys":["k1"]}"#)
+            == .album(id: "g", added: 1, mediaKeys: ["k1"]))
         #expect(try event(#"{"type":"album_failed","v":1,"message":"500"}"#) == .albumFailed(message: "500"))
         #expect(try event(#"{"type":"missing_media","v":1,"media_keys":["k1","k2"]}"#) == .missingMedia(mediaKeys: ["k1", "k2"]))
         #expect(try event(#"{"type":"done","v":1,"uploaded":1,"existing":1,"failed":0}"#) == .done(uploaded: 1, existing: 1, failed: 0))
@@ -71,6 +73,20 @@ private func event(_ json: String) throws -> BridgeEvent {
         #expect(json["command"] as? String == "add-to-album")
         #expect((json["media_keys"] as? [String]) == ["k1"])
         #expect(json["items"] == nil)
+    }
+
+    @Test func splittingAlbumAndForcedItemUseTheBridgeFieldNames() throws {
+        let album = AlbumTarget(id: "g", name: "Trip", splitMissing: true, probeMediaKeys: ["m1"])
+        let request = BridgeRequest.upload("auth", items: [BridgeItem(id: "A", path: "/s/A.HEIC", filename: "A.HEIC", force: true),
+                                                           BridgeItem(id: "B", path: "/s/B.HEIC", filename: "B.HEIC")],
+                                           quality: .original, threads: 1, album: album)
+        let json = try #require(JSONSerialization.jsonObject(with: request.encoded()) as? [String: Any])
+        let encodedAlbum = try #require(json["album"] as? [String: Any])
+        #expect(encodedAlbum["split_missing"] as? Bool == true)
+        #expect(encodedAlbum["probe_media_keys"] as? [String] == ["m1"])
+        let items = try #require(json["items"] as? [[String: Any]])
+        #expect(items[0]["force"] as? Bool == true)
+        #expect(items[1]["force"] == nil)
     }
 
     @Test func verificationRequestCarriesAnImmutableExpectedFingerprint() throws {

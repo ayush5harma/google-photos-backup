@@ -30,11 +30,15 @@ public struct BridgeItem: Codable, Equatable, Sendable {
     public let id: String
     public let path: String
     public let filename: String
+    /// Skip gpmc's hash check for this file alone: Google lost the key it
+    /// had for these bytes, and the check could hand that key back.
+    public var force: Bool?
 
-    public init(id: String, path: String, filename: String) {
+    public init(id: String, path: String, filename: String, force: Bool? = nil) {
         self.id = id
         self.path = path
         self.filename = filename
+        self.force = force
     }
 }
 
@@ -70,10 +74,24 @@ public struct OriginalVerificationItem: Codable, Equatable, Sendable {
 public struct AlbumTarget: Codable, Equatable, Sendable {
     public var id: String?
     public var name: String?
+    /// Ask the bridge to split out keys Google no longer has instead of
+    /// failing the album call; the album event then lists the keys added.
+    public var splitMissing: Bool?
+    /// Up to three keys the album already holds, which tell a live album
+    /// from a deleted one when Google refuses a call.
+    public var probeMediaKeys: [String]?
 
-    public init(id: String? = nil, name: String? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case id, name
+        case splitMissing = "split_missing"
+        case probeMediaKeys = "probe_media_keys"
+    }
+
+    public init(id: String? = nil, name: String? = nil, splitMissing: Bool? = nil, probeMediaKeys: [String]? = nil) {
         self.id = id
         self.name = name
+        self.splitMissing = splitMissing
+        self.probeMediaKeys = probeMediaKeys
     }
 }
 
@@ -163,7 +181,9 @@ public enum BridgeEvent: Equatable, Sendable {
     /// `retryable` is the bridge's own reading of the failure; nil from a
     /// bridge that predates the field.
     case itemFailed(id: String, message: String, retryable: Bool?)
-    case album(id: String, added: Int)
+    /// `mediaKeys`: the keys actually added, from a split-missing album
+    /// call; nil means every key sent went in.
+    case album(id: String, added: Int, mediaKeys: [String]?)
     case albumFailed(message: String)
     /// Media keys an album call found Google no longer has; sent before the
     /// album event, and those keys are not among its `added`.
@@ -206,7 +226,7 @@ public enum BridgeEvent: Equatable, Sendable {
             return .itemFailed(id: id, message: string("message") ?? "upload failed", retryable: object["retryable"] as? Bool)
         case "album":
             guard let id = string("album_id") else { break }
-            return .album(id: id, added: int("added"))
+            return .album(id: id, added: int("added"), mediaKeys: object["media_keys"] as? [String])
         case "album_failed":
             return .albumFailed(message: string("message") ?? "adding to album failed")
         case "missing_media":
