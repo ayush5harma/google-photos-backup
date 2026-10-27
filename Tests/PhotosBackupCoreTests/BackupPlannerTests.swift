@@ -111,6 +111,19 @@ private let live = AlbumSnapshot(id: "live", title: "Live Photos", kind: .smart,
         #expect(BackupPlanner.plan(albums: [trip], state: cleared, mirrorAlbums: true, batchSize: 10).isEmpty)
     }
 
+    @Test func keysGoogleNoLongerHasAreUploadedAgainIntoTheSameAlbum() {
+        var state = state(selected: ["trip"], uploaded: ["b", "d"],
+                          mirrors: ["trip": AlbumMirror(googleAlbumID: "g1", addedAssetIDs: ["b"])])
+
+        #expect(state.forgetUploads(withMediaKeys: ["key-b", "key-d", "key-unknown"]) == ["b", "d"])
+        #expect(state.uploaded.isEmpty)
+        #expect(state.mirrors["trip"]?.addedAssetIDs.isEmpty == true)
+        #expect(state.albumTarget(for: "trip", title: "Trip").id == "g1")
+        #expect(BackupPlanner.plan(albums: [trip], state: state, mirrorAlbums: true, batchSize: 10)
+            == [.upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["b", "d"])])
+        #expect(state.forgetUploads(withMediaKeys: []) == [])
+    }
+
     @Test func storeRoundTripsAndStartsEmpty() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("state.json")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

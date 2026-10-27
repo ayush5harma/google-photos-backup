@@ -165,6 +165,9 @@ public enum BridgeEvent: Equatable, Sendable {
     case itemFailed(id: String, message: String, retryable: Bool?)
     case album(id: String, added: Int)
     case albumFailed(message: String)
+    /// Media keys an album call found Google no longer has; sent before the
+    /// album event, and those keys are not among its `added`.
+    case missingMedia(mediaKeys: [String])
     case done(uploaded: Int, existing: Int, failed: Int)
     /// The bridge honoured a SIGTERM; files not yet reported were abandoned.
     case stopped
@@ -206,6 +209,9 @@ public enum BridgeEvent: Equatable, Sendable {
             return .album(id: id, added: int("added"))
         case "album_failed":
             return .albumFailed(message: string("message") ?? "adding to album failed")
+        case "missing_media":
+            guard let keys = object["media_keys"] as? [String] else { break }
+            return .missingMedia(mediaKeys: keys)
         case "done":
             return .done(uploaded: int("uploaded"), existing: int("existing"), failed: int("failed"))
         case "stopped":

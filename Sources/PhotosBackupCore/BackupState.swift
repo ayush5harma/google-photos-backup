@@ -80,6 +80,24 @@ public struct BackupState: Codable, Equatable, Sendable {
         uploaded[assetID]?.editStamp = stamp
     }
 
+    /// Google no longer has these media keys (an album call answered 404 for
+    /// them): forget the uploads they belong to, and their album membership,
+    /// so the planner sends those assets again and their new keys join the
+    /// albums. Returns the assets forgotten.
+    @discardableResult
+    public mutating func forgetUploads(withMediaKeys keys: some Sequence<String>) -> [String] {
+        let gone = Set(keys)
+        guard !gone.isEmpty else { return [] }
+        let assetIDs = uploaded.compactMap { gone.contains($0.value.mediaKey) ? $0.key : nil }.sorted()
+        for assetID in assetIDs {
+            uploaded[assetID] = nil
+            for (albumID, mirror) in mirrors where mirror.addedAssetIDs.contains(assetID) {
+                mirrors[albumID]?.addedAssetIDs.remove(assetID)
+            }
+        }
+        return assetIDs
+    }
+
     public mutating func recordAlbum(_ albumID: String, googleAlbumID: String, added assetIDs: some Sequence<String>) {
         var mirror = mirrors[albumID] ?? AlbumMirror()
         mirror.googleAlbumID = googleAlbumID
