@@ -86,9 +86,10 @@ struct PickedFile: Transferable {
         ISO8601DateFormatter().date(from: stamp)
     }
 
-    /// A capture time written into the file name by the camera or phone, in
-    /// local time: "Screenshot_2018-11-13-17-37-06", "2025-11-29_16-32-36",
-    /// "PXL_20230324_015637359", "IMG_20230101_123456".
+    /// A capture time written into the file name by the camera or phone:
+    /// "Screenshot_2018-11-13-17-37-06", "2025-11-29_16-32-36",
+    /// "IMG_20230101_123456" in local time, and Pixel's
+    /// "PXL_20230324_015637359" in UTC, as Pixel writes it.
     static func dateInName(_ name: String) -> Date? {
         let patterns = [#"(\d{4})-(\d{2})-(\d{2})[-_ ](\d{2})[-_.:](\d{2})[-_.:](\d{2})"#,
                         #"(?<!\d)(\d{4})(\d{2})(\d{2})[-_](\d{2})(\d{2})(\d{2})"#]
@@ -96,10 +97,10 @@ struct PickedFile: Transferable {
             guard let match = try? NSRegularExpression(pattern: pattern).firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) else { continue }
             let parts = (1...6).compactMap { Range(match.range(at: $0), in: name).flatMap { Int(name[$0]) } }
             guard parts.count == 6, (1990...2100).contains(parts[0]) else { continue }
-            var components = DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: parts[3], minute: parts[4], second: parts[5])
-            components.timeZone = .current
-            guard components.isValidDate(in: Calendar(identifier: .gregorian)),
-                  let date = Calendar(identifier: .gregorian).date(from: components) else { continue }
+            let components = DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: parts[3], minute: parts[4], second: parts[5])
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = name.hasPrefix("PXL_") ? TimeZone(identifier: "UTC") ?? .current : .current
+            guard components.isValidDate(in: calendar), let date = calendar.date(from: components) else { continue }
             return date
         }
         return nil

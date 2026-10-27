@@ -85,7 +85,9 @@ final class PickedFileTests: XCTestCase {
     func testCaptureTimesReadFromPhoneAndCameraFileNames() {
         XCTAssertEqual(PickedFile.dateInName("Screenshot_2018-11-13-17-37-06-131_com.google.a.png"), local(2018, 11, 13, 17, 37, 6))
         XCTAssertEqual(PickedFile.dateInName("2025-11-29_16-32-36.heic"), local(2025, 11, 29, 16, 32, 36))
-        XCTAssertEqual(PickedFile.dateInName("PXL_20230324_015637359.NIGHT.JPG"), local(2023, 3, 24, 1, 56, 37))
+        XCTAssertEqual(PickedFile.dateInName("IMG_20230324_015637.jpg"), local(2023, 3, 24, 1, 56, 37))
+        // Pixel names its files in UTC.
+        XCTAssertEqual(PickedFile.dateInName("PXL_20230324_015637359.NIGHT.JPG"), Date(timeIntervalSince1970: 1_679_622_997))
         XCTAssertNil(PickedFile.dateInName("IMG_4405.HEIC"))
         XCTAssertNil(PickedFile.dateInName("Screenshot_2018-13-45-17-37-06.png"))
     }
