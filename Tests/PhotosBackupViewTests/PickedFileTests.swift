@@ -77,6 +77,42 @@ final class PickedFileTests: XCTestCase {
         XCTAssertNil(PickedFile.exifDate("not a date", offset: nil))
     }
 
+    private func local(_ year: Int, _ month: Int, _ day: Int, _ hour: Int, _ minute: Int, _ second: Int) -> Date? {
+        Calendar(identifier: .gregorian).date(from: DateComponents(timeZone: .current, year: year, month: month, day: day,
+                                                                   hour: hour, minute: minute, second: second))
+    }
+
+    func testCaptureTimesReadFromPhoneAndCameraFileNames() {
+        XCTAssertEqual(PickedFile.dateInName("Screenshot_2018-11-13-17-37-06-131_com.google.a.png"), local(2018, 11, 13, 17, 37, 6))
+        XCTAssertEqual(PickedFile.dateInName("2025-11-29_16-32-36.heic"), local(2025, 11, 29, 16, 32, 36))
+        XCTAssertEqual(PickedFile.dateInName("PXL_20230324_015637359.NIGHT.JPG"), local(2023, 3, 24, 1, 56, 37))
+        XCTAssertNil(PickedFile.dateInName("IMG_4405.HEIC"))
+        XCTAssertNil(PickedFile.dateInName("Screenshot_2018-13-45-17-37-06.png"))
+    }
+
+    func testAnUnparseableOffsetFallsBackToLocalTime() {
+        XCTAssertEqual(PickedFile.exifDate("2025:11:29 16:32:36", offset: ""), local(2025, 11, 29, 16, 32, 36))
+        XCTAssertEqual(PickedFile.exifDate("2025:11:29 16:32:36", offset: "garbage"), local(2025, 11, 29, 16, 32, 36))
+    }
+
+    func testAScreenshotWithNoMetadataTakesItsDateFromItsName() async throws {
+        // The first hidden pick on 2026-10-28: a PNG with no EXIF whose mtime
+        // was its import into Photos, eight years after it was taken.
+        let url = scratch.appendingPathComponent("Screenshot_2018-11-13-17-37-06-131_com.google.a.png")
+        let context = try XCTUnwrap(CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, try XCTUnwrap(context.makeImage()), nil)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 1_791_000_000)], ofItemAtPath: url.path)
+
+        let (outcome, _) = await export("hidden-4/L0/001", file: url)
+        let exported = try XCTUnwrap(outcome).get()
+        let mtime = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: exported.url.path)[.modificationDate] as? Date)
+        XCTAssertEqual(mtime, local(2018, 11, 13, 17, 37, 6))
+        XCTAssertEqual(exported.filename, "Screenshot_2018-11-13-17-37-06-131_com.google.a.png")
+    }
+
     func testGeneratedOrRenditionNamesGiveWayToTheCaptureTime() {
         let taken = Date(timeIntervalSince1970: 1_764_414_156)
         XCTAssertEqual(PickedFile.uploadName("IMG_4405.HEIC", captured: taken), "IMG_4405.HEIC")

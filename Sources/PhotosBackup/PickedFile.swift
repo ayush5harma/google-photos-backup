@@ -40,30 +40,69 @@ struct PickedFile: Transferable {
     /// When the photo or video was taken, from the file itself: PhotoKit
     /// cannot say for a pick it cannot see, and gpmc sends the file's mtime,
     /// which Google Photos uses when the file carries no date of its own.
+    /// Measured 2026-10-28: the first hidden pick, a PNG screenshot taken
+    /// 2018-11-13, came out of the picker with no EXIF and an mtime of its
+    /// import into Photos (2026-10-09), so the name is the last resort.
     static func capturedDate(of url: URL) async -> Date? {
-        if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
-           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-           let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any],
-           let stamp = exif[kCGImagePropertyExifDateTimeOriginal] as? String {
-            return exifDate(stamp, offset: exif[kCGImagePropertyExifOffsetTimeOriginal] as? String)
-        }
+        if let date = metadataDate(of: url) { return date }
         let asset = AVURLAsset(url: url)
-        guard let item = try? await asset.load(.creationDate) else { return nil }
-        return try? await item.load(.dateValue)
+        if let item = try? await asset.load(.creationDate), let date = try? await item.load(.dateValue) { return date }
+        return dateInName(url.lastPathComponent)
+    }
+
+    /// EXIF capture or digitising time, then TIFF and PNG dates.
+    static func metadataDate(of url: URL) -> Date? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any] else { return nil }
+        let exif = properties[kCGImagePropertyExifDictionary] as? [CFString: Any] ?? [:]
+        if let stamp = exif[kCGImagePropertyExifDateTimeOriginal] as? String,
+           let date = exifDate(stamp, offset: exif[kCGImagePropertyExifOffsetTimeOriginal] as? String) { return date }
+        if let stamp = exif[kCGImagePropertyExifDateTimeDigitized] as? String,
+           let date = exifDate(stamp, offset: exif[kCGImagePropertyExifOffsetTimeDigitized] as? String) { return date }
+        let tiff = properties[kCGImagePropertyTIFFDictionary] as? [CFString: Any] ?? [:]
+        if let stamp = tiff[kCGImagePropertyTIFFDateTime] as? String,
+           let date = exifDate(stamp, offset: exif[kCGImagePropertyExifOffsetTime] as? String) { return date }
+        let png = properties[kCGImagePropertyPNGDictionary] as? [CFString: Any] ?? [:]
+        if let stamp = png[kCGImagePropertyPNGCreationTime] as? String { return exifDate(stamp, offset: nil) ?? isoDate(stamp) }
+        return nil
     }
 
     /// EXIF writes "2025:11:29 16:32:36", in local time unless an offset
-    /// such as "+05:30" sits beside it.
+    /// such as "+05:30" sits beside it; an offset that will not parse is
+    /// dropped rather than the date.
     static func exifDate(_ stamp: String, offset: String?) -> Date? {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        if let offset {
+        if let offset, !offset.isEmpty {
             formatter.dateFormat = "yyyy:MM:dd HH:mm:ssxxx"
-            return formatter.date(from: stamp + offset)
+            if let date = formatter.date(from: stamp + offset) { return date }
         }
         formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
         formatter.timeZone = .current
         return formatter.date(from: stamp)
+    }
+
+    private static func isoDate(_ stamp: String) -> Date? {
+        ISO8601DateFormatter().date(from: stamp)
+    }
+
+    /// A capture time written into the file name by the camera or phone, in
+    /// local time: "Screenshot_2018-11-13-17-37-06", "2025-11-29_16-32-36",
+    /// "PXL_20230324_015637359", "IMG_20230101_123456".
+    static func dateInName(_ name: String) -> Date? {
+        let patterns = [#"(\d{4})-(\d{2})-(\d{2})[-_ ](\d{2})[-_.:](\d{2})[-_.:](\d{2})"#,
+                        #"(?<!\d)(\d{4})(\d{2})(\d{2})[-_](\d{2})(\d{2})(\d{2})"#]
+        for pattern in patterns {
+            guard let match = try? NSRegularExpression(pattern: pattern).firstMatch(in: name, range: NSRange(name.startIndex..., in: name)) else { continue }
+            let parts = (1...6).compactMap { Range(match.range(at: $0), in: name).flatMap { Int(name[$0]) } }
+            guard parts.count == 6, (1990...2100).contains(parts[0]) else { continue }
+            var components = DateComponents(year: parts[0], month: parts[1], day: parts[2], hour: parts[3], minute: parts[4], second: parts[5])
+            components.timeZone = .current
+            guard components.isValidDate(in: Calendar(identifier: .gregorian)),
+                  let date = Calendar(identifier: .gregorian).date(from: components) else { continue }
+            return date
+        }
+        return nil
     }
 
     /// The name Google Photos shows. The picker's own file name is used when
