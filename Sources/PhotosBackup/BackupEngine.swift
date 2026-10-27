@@ -543,7 +543,8 @@ final class BackupEngine {
         switch step {
         case let .upload(albumID, albumTitle, assetIDs):
             let title = failedAlbums.contains(albumID) ? nil : albumTitle
-            return await upload(assetIDs, album: title.map { (albumID, $0) }, auth: auth, runtime: runtime, settings: settings)
+            return await upload(assetIDs, album: title.map { (albumID, $0) }, includingHidden: albumID == BackupPlanner.pickedAlbumID,
+                                auth: auth, runtime: runtime, settings: settings)
         case let .addToAlbum(albumID, albumTitle, assetIDs, mediaKeys):
             if failedAlbums.contains(albumID) { return .nothing }
             return await addToAlbum(assetIDs, albumID: albumID, albumTitle: albumTitle, auth: auth, runtime: runtime)
@@ -593,7 +594,7 @@ final class BackupEngine {
 
     // MARK: - Batches
 
-    private func upload(_ assetIDs: [String], album: (id: String, title: String)?, auth: String,
+    private func upload(_ assetIDs: [String], album: (id: String, title: String)?, includingHidden: Bool = false, auth: String,
                         runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
         // iCloud originals download during the export, so it waits for the
         // network like the upload does.
@@ -606,7 +607,7 @@ final class BackupEngine {
         }
 
         var items: [BatchItem] = []
-        await AssetExporter().export(assetIDs, into: batch, shouldStop: { self.phase == .stopping }, started: { id, filename in
+        await AssetExporter().export(assetIDs, includingHidden: includingHidden, into: batch, shouldStop: { self.phase == .stopping }, started: { id, filename in
             self.show(id, filename: filename, status: .exporting)
         }, finished: { id, result in
             switch result {

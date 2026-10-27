@@ -153,6 +153,15 @@ private let live = AlbumSnapshot(id: "live", title: "Live Photos", kind: .smart,
         #expect(state.mirrors["trip"]?.googleAlbumID == "g1")
     }
 
+    @Test func onlyHandPickedStepsCarryThePickedAlbumID() {
+        let state = state(selected: ["trip"])
+        #expect(BackupPlanner.plan(picked: ["x"], state: state, batchSize: 10)
+            == [.upload(albumID: BackupPlanner.pickedAlbumID, albumTitle: nil, assetIDs: ["x"])])
+        let albumSteps = BackupPlanner.plan(albums: [trip], state: state, mirrorAlbums: true, batchSize: 10)
+        #expect(!albumSteps.isEmpty)
+        #expect(albumSteps.allSatisfy { if case let .upload(albumID, _, _) = $0 { albumID != BackupPlanner.pickedAlbumID } else { true } })
+    }
+
     @Test func storeRoundTripsAndStartsEmpty() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("state.json")
         defer { try? FileManager.default.removeItem(at: url.deletingLastPathComponent()) }

@@ -21,13 +21,19 @@ struct ExportError: LocalizedError {
 /// gpmc. Originals still in iCloud ("Optimize Mac Storage") are downloaded.
 @MainActor
 struct AssetExporter {
-    /// Albums hand out the burst frames someone filed in them one by one, but
-    /// a lookup by identifier with default options leaves out every frame but
-    /// a burst's pick. Measured 2026-10-27: 195 such frames in two selected
-    /// albums failed every run as "No longer in the Photos library".
-    private static var lookup: PHFetchOptions {
+    /// A lookup by identifier with default options leaves out some of what
+    /// was asked for. Albums hand out the burst frames someone filed in them
+    /// one by one, but default options drop every frame but a burst's pick
+    /// (2026-10-27: 195 such frames failed every run as "No longer in the
+    /// Photos library"). Choose Photos hands out photos from the Hidden album
+    /// once it is unlocked, and default options drop hidden ones (2026-10-28:
+    /// all 62 picks from it failed the same way). Hidden photos are looked up
+    /// for picks alone: an album's batch was listed at the start of a pass,
+    /// and a photo hidden since then must still stay behind.
+    static func lookup(includingHidden: Bool) -> PHFetchOptions {
         let options = PHFetchOptions()
         options.includeAllBurstAssets = true
+        options.includeHiddenAssets = includingHidden
         return options
     }
 
@@ -36,12 +42,13 @@ struct AssetExporter {
     ///     iCloud download) cannot be interrupted.
     ///   - started: called with each asset's upload filename before its export.
     ///   - finished: called with each asset's result as soon as it has one.
-    func export(_ assetIDs: [String], into directory: URL,
+    ///   - includingHidden: the owner picked these assets themselves.
+    func export(_ assetIDs: [String], includingHidden: Bool = false, into directory: URL,
                 shouldStop: () -> Bool,
                 started: (String, String) -> Void,
                 finished: (String, Result<ExportedAsset, Error>) -> Void) async {
         var assets: [String: PHAsset] = [:]
-        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: Self.lookup)
+        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: Self.lookup(includingHidden: includingHidden))
             .enumerateObjects { asset, _, _ in assets[asset.localIdentifier] = asset }
 
         for (index, id) in assetIDs.enumerated() {
@@ -97,7 +104,7 @@ struct AssetExporter {
     /// whose date moved), never for the library.
     static func editStates(of assetIDs: [String]) async -> [String: EditState] {
         var assets: [PHAsset] = []
-        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: lookup).enumerateObjects { asset, _, _ in assets.append(asset) }
+        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: lookup(includingHidden: false)).enumerateObjects { asset, _, _ in assets.append(asset) }
         var states: [String: EditState] = [:]
         for asset in assets {
             let resources = PHAssetResource.assetResources(for: asset)
