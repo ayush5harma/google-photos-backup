@@ -21,6 +21,16 @@ struct ExportError: LocalizedError {
 /// gpmc. Originals still in iCloud ("Optimize Mac Storage") are downloaded.
 @MainActor
 struct AssetExporter {
+    /// Albums hand out the burst frames someone filed in them one by one, but
+    /// a lookup by identifier with default options leaves out every frame but
+    /// a burst's pick. Measured 2026-10-27: 195 such frames in two selected
+    /// albums failed every run as "No longer in the Photos library".
+    private static var lookup: PHFetchOptions {
+        let options = PHFetchOptions()
+        options.includeAllBurstAssets = true
+        return options
+    }
+
     /// - Parameters:
     ///   - shouldStop: checked before each asset; an export in progress (an
     ///     iCloud download) cannot be interrupted.
@@ -31,7 +41,7 @@ struct AssetExporter {
                 started: (String, String) -> Void,
                 finished: (String, Result<ExportedAsset, Error>) -> Void) async {
         var assets: [String: PHAsset] = [:]
-        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: nil)
+        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: Self.lookup)
             .enumerateObjects { asset, _, _ in assets[asset.localIdentifier] = asset }
 
         for (index, id) in assetIDs.enumerated() {
@@ -87,7 +97,7 @@ struct AssetExporter {
     /// whose date moved), never for the library.
     static func editStates(of assetIDs: [String]) async -> [String: EditState] {
         var assets: [PHAsset] = []
-        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: nil).enumerateObjects { asset, _, _ in assets.append(asset) }
+        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: lookup).enumerateObjects { asset, _, _ in assets.append(asset) }
         var states: [String: EditState] = [:]
         for asset in assets {
             let resources = PHAssetResource.assetResources(for: asset)

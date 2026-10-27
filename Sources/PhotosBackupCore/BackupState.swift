@@ -62,7 +62,13 @@ public struct BackupState: Codable, Equatable, Sendable {
 
     public init() {}
 
+    /// Assets whose next upload skips gpmc's hash check: Google lost the key
+    /// it had given them (see forgetUploads). Optional so state written
+    /// before it decodes.
+    public var forcedUploads: Set<String>?
+
     public mutating func recordUpload(assetID: String, mediaKey: String, existing: Bool, at date: Date = Date(), stamp: EditStamp? = nil) {
+        forcedUploads?.remove(assetID)
         // A re-uploaded edit that Google stored as a new item is not in the
         // mirrored albums yet: forgetting the old membership makes the
         // planner add the new media key to them.
@@ -78,6 +84,31 @@ public struct BackupState: Codable, Equatable, Sendable {
     /// favourite or a keyword, not an edit): remember the new date only.
     public mutating func refreshStamp(assetID: String, _ stamp: EditStamp) {
         uploaded[assetID]?.editStamp = stamp
+    }
+
+    /// Google no longer has these media keys (an album call answered 404 for
+    /// them): forget the uploads they belong to, and their album membership,
+    /// so the planner sends those assets again and their new keys join the
+    /// albums. Returns the assets forgotten.
+    @discardableResult
+    public mutating func forgetUploads(withMediaKeys keys: some Sequence<String>) -> [String] {
+        let gone = Set(keys)
+        guard !gone.isEmpty else { return [] }
+        let assetIDs = uploaded.compactMap { gone.contains($0.value.mediaKey) ? $0.key : nil }.sorted()
+        for assetID in assetIDs {
+            uploaded[assetID] = nil
+            forcedUploads = (forcedUploads ?? []).union([assetID])
+            for (albumID, mirror) in mirrors where mirror.addedAssetIDs.contains(assetID) {
+                mirrors[albumID]?.addedAssetIDs.remove(assetID)
+            }
+        }
+        return assetIDs
+    }
+
+    /// The assets among `assetIDs` whose uploaded key is one of `mediaKeys`.
+    public func assets(_ assetIDs: [String], withMediaKeys mediaKeys: [String]) -> [String] {
+        let keys = Set(mediaKeys)
+        return assetIDs.filter { uploaded[$0].map { keys.contains($0.mediaKey) } ?? false }
     }
 
     public mutating func recordAlbum(_ albumID: String, googleAlbumID: String, added assetIDs: some Sequence<String>) {
@@ -96,6 +127,7 @@ public struct BackupState: Codable, Equatable, Sendable {
         fresh.selectedAlbumIDs = selectedAlbumIDs
         fresh.mirrors = mirrors
         fresh.accountEmail = accountEmail
+        fresh.forcedUploads = forcedUploads
         return fresh
     }
 
@@ -119,6 +151,21 @@ public struct BackupState: Codable, Equatable, Sendable {
     /// batch created, or a new one with the Photos album's name.
     public func albumTarget(for albumID: String, title: String) -> AlbumTarget {
         AlbumTarget(id: mirrors[albumID]?.googleAlbumID, name: title)
+    }
+
+    /// The target the Mac app sends: split out keys Google no longer has,
+    /// checked against up to three photos the album already holds. Picked
+    /// afresh each time: dead keys cluster by upload (3 of the 4 waiting for
+    /// one album, 2026-10-27), and a fixed three that all died would make a
+    /// live album look deleted on every run.
+    public func splittingAlbumTarget(for albumID: String, title: String) -> AlbumTarget {
+        var target = albumTarget(for: albumID, title: title)
+        target.splitMissing = true
+        if target.id != nil, let members = mirrors[albumID]?.addedAssetIDs {
+            let probes = members.shuffled().lazy.compactMap { uploaded[$0]?.mediaKey }.prefix(3)
+            target.probeMediaKeys = probes.isEmpty ? nil : Array(probes)
+        }
+        return target
     }
 }
 

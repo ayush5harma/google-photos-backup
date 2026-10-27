@@ -15,7 +15,8 @@ Requests (every field not marked optional is required):
   {"command": "version"}
   {"command": "check-auth", "auth_data": "..."}
   {"command": "upload", "auth_data": "...",
-   "items": [{"id": "<PHAsset id>", "path": "/abs/file", "filename": "IMG_1.HEIC"}],
+   "items": [{"id": "<PHAsset id>", "path": "/abs/file", "filename": "IMG_1.HEIC",
+              "force": false}],                   force optional, per item
    "quality": "original" | "saver" | "quota",     optional, default original
    "threads": 1,                                  optional
    "force": false,                                optional, skip gpmc's hash check
@@ -23,14 +24,23 @@ Requests (every field not marked optional is required):
    "album": {"id": "..."} | {"name": "..."}}      optional
   {"command": "add-to-album", "auth_data": "...", "media_keys": [...], "album": {...}}
 
+  An album may also carry "split_missing": true and "probe_media_keys" (up to
+  3 keys it already holds): a 404 then finds the keys Google no longer has
+  instead of failing the whole call (see _add_splitting_missing).
+
 Events all carry "type" and "v" (PROTOCOL_VERSION): version, auth, progress,
-item, item_failed, album, album_failed, done, stopped, fatal. Each item is
-reported as soon as Google confirms it. A fatal or stopped event is always the
-last line and the exit status names its kind (EXIT_*).
+item, item_failed, album, missing_media, album_failed, done, stopped, fatal.
+Each item is reported as soon as Google confirms it. A fatal or stopped event
+is always the last line and the exit status names its kind (EXIT_*).
 
   item_failed {"id", "message", "retryable"}   retryable: sending the same
       file again may work (network trouble, HTTP 408/429/5xx); added within
       protocol 1, so readers must not require it.
+  album {"album_id", "added", "media_keys"?}   media_keys, the keys actually
+      added, only for a split_missing album; without it every key went in.
+  missing_media {"media_keys"}   split_missing only, before album: keys Google
+      no longer has. Both come before album_failed or fatal when the album
+      step stops part-way, so an album it made is never lost.
   fatal {"kind", "message"}   kind: auth | network | rate_limit | request |
       internal. rate_limit is Google's HTTP 429. ("storage_full" is reserved:
       gpmc 0.9.0 drops the response body that tells a full account apart from
@@ -178,7 +188,7 @@ ALBUM_BATCH = 500
 # fakes had it, and every album append after the first batch failed.
 GPMC_SURFACE: dict[str, tuple[str, ...]] = {
     "Client": ("upload", "add_to_album"),
-    "Api": ("bearer_token", "find_remote_media_by_hash", "get_download_urls", "_new_session", "add_media_to_album"),
+    "Api": ("bearer_token", "find_remote_media_by_hash", "get_download_urls", "_new_session", "add_media_to_album", "create_album"),
 }
 
 
@@ -361,6 +371,11 @@ def _album(request: Event, required: bool) -> Event | None:
         return None
     if not isinstance(album, dict) or not (album.get("id") or album.get("name")):
         raise RequestError("`album` must carry an `id` or a `name`")
+    if not isinstance(album.get("split_missing", False), bool):
+        raise RequestError("`album.split_missing` must be a boolean")
+    probes = album.get("probe_media_keys", [])
+    if not isinstance(probes, list) or len(probes) > 3 or not all(isinstance(key, str) and key for key in probes):
+        raise RequestError("`album.probe_media_keys` must be at most 3 media keys")
     return album
 
 
@@ -369,6 +384,8 @@ def _items(request: Event) -> list[Event]:
     for item in items:
         if not isinstance(item, dict) or not all(isinstance(item.get(k), str) and item[k] for k in ("id", "path", "filename")):
             raise RequestError("every item needs string `id`, `path` and `filename`")
+        if not isinstance(item.get("force", False), bool):
+            raise RequestError("an item's `force` must be a boolean")
     return items
 
 
@@ -383,17 +400,163 @@ def _connect(request: Event, factory: ClientFactory) -> Any:
     return client
 
 
-def _add_to_album(client: Any, media_keys: list[str], album: Event) -> str:
-    if album.get("id"):
-        # gpmc 0.9.0, the release the app pins, has no
-        # Client.add_to_existing_album (only gpmc's main branch does): append
-        # the way 0.9.0's own add_to_album does, 500 keys per call.
+# Refused album calls a request may spend telling dead keys from live ones.
+# An isolated dead key costs about nine refusals (a 500-key batch halves nine
+# times), so this settles about 14 per request; measured 2026-10-27 with the
+# test fakes, 14 scattered dead keys in one batch took 170 calls in all.
+# Whatever is left waits for the next request.
+ALBUM_REFUSAL_BUDGET = 128
+
+
+class AlbumIncomplete(Exception):
+    """An album step stopped part-way: what it did is reported before `cause`."""
+
+    def __init__(self, album_id: str | None, added: list[str], missing: list[str], cause: BaseException) -> None:
+        super().__init__(str(cause))
+        self.album_id, self.added, self.missing, self.cause = album_id, added, missing, cause
+
+
+def _add_to_album(client: Any, media_keys: list[str], album: Event,
+                  stop: StopSignal | None = None) -> tuple[str | None, list[str], list[str]]:
+    """Add the keys to the album, creating it first when it has no id yet.
+
+    Returns the album's id (None when no key was left to create it with), the
+    keys added and the keys Google no longer has. Only a request asking for
+    `split_missing` (the Mac app) looks for those; any other keeps the
+    behaviour the Windows and Android apps read the album event by, where
+    `album` means every key went in.
+    """
+    if not album.get("split_missing"):
+        if album.get("id"):
+            # gpmc 0.9.0, the release the app pins, has no
+            # Client.add_to_existing_album (only gpmc's main branch does):
+            # append the way 0.9.0's own add_to_album does, 500 keys per call.
+            for start in range(0, len(media_keys), ALBUM_BATCH):
+                client.api.add_media_to_album(album_media_key=album["id"], media_keys=media_keys[start:start + ALBUM_BATCH])
+            return album["id"], list(media_keys), []
+        # add_to_album splits past 20,000 items into "<name> 1", "<name> 2"...;
+        # the first is the one the app remembers and appends to next time.
+        return client.add_to_album(media_keys, album["name"], False)[0], list(media_keys), []
+    return _add_splitting_missing(client, media_keys, album, stop)
+
+
+def _add_splitting_missing(client: Any, media_keys: list[str], album: Event,
+                           stop: StopSignal | None) -> tuple[str | None, list[str], list[str]]:
+    # Google refuses a whole create_album or add_media_to_album call with a
+    # 404 when any key in it no longer resolves. Measured 2026-10-27, a day
+    # after a 25,954-item run: 1 of 72 sampled keys, and 3 of the 4 waiting
+    # for one album, opened in Google Photos like a made-up key; twelve albums
+    # stopped filling. A refused batch is halved until each dead key stands
+    # alone, so every live key still goes in and the dead ones go back to the
+    # app to upload again.
+    known = album.get("id") or None
+    album_id = known
+    added: list[str] = []
+    missing: list[str] = []
+    refusals = 0
+    alive = known is None
+
+    def refused(error: BaseException) -> bool:
+        nonlocal refusals
+        if _http_status(error) != 404:
+            return False
+        refusals += 1
+        return refusals <= ALBUM_REFUSAL_BUDGET
+
+    def album_answers() -> bool:
+        # A deleted album answers 404 too. Re-adding a photo it already holds
+        # tells the two apart before any halving; with nothing to try, the
+        # refusal stays the album's, as before.
+        nonlocal alive
+        if alive:
+            return True
+        for key in album.get("probe_media_keys") or []:
+            try:
+                client.api.add_media_to_album(album_media_key=album_id, media_keys=[key])
+            except Exception as error:
+                logging.getLogger(__name__).info("album %s refused its own photo %s: %s", album_id, key, error)
+                if _http_status(error) == 404:
+                    continue
+                raise
+            logging.getLogger(__name__).info("album %s took back its own photo %s: the album is there", album_id, key)
+            alive = True
+            return True
+        return False
+
+    def stop_between_calls() -> None:
+        # Halving can take a few minutes inside the stop-deferring album
+        # step; a stop here still reports what went in (AlbumIncomplete).
+        if stop is not None and stop.requested:
+            raise StopRequested
+
+    def append(keys: list[str]) -> None:
+        stop_between_calls()
+        try:
+            client.api.add_media_to_album(album_media_key=album_id, media_keys=keys)
+        except Exception as error:
+            if not refused(error) or not album_answers():
+                raise
+            if len(keys) == 1:
+                missing.append(keys[0])
+                return
+            half = len(keys) // 2
+            append(keys[:half])
+            append(keys[half:])
+            return
+        added.extend(keys)
+
+    def create(keys: list[str]) -> None:
+        nonlocal album_id, alive
+        stop_between_calls()
+        try:
+            album_id = client.api.create_album(album_name=album["name"], media_keys=keys)
+        except Exception as error:
+            if not refused(error):
+                raise
+            if len(keys) == 1:
+                missing.append(keys[0])
+                return
+            half = len(keys) // 2
+            create(keys[:half])
+            (append if album_id else create)(keys[half:])
+            return
+        alive = True
+        added.extend(keys)
+
+    try:
+        # Creating through Api rather than Client.add_to_album lets a
+        # refused first batch be halved too; the Mac app never sends more
+        # than 500 keys, far below the 20,000 Client.add_to_album splits at.
         for start in range(0, len(media_keys), ALBUM_BATCH):
-            client.api.add_media_to_album(album_media_key=album["id"], media_keys=media_keys[start:start + ALBUM_BATCH])
-        return album["id"]
-    # add_to_album splits past 20,000 items into "<name> 1", "<name> 2"...;
-    # the first is the one the app remembers and appends to next time.
-    return client.add_to_album(media_keys, album["name"], False)[0]
+            batch = media_keys[start:start + ALBUM_BATCH]
+            (append if album_id else create)(batch)
+    except (Exception, StopRequested) as error:
+        if added or missing or album_id != known:
+            raise AlbumIncomplete(album_id, added, missing, error) from error
+        raise
+    if missing:
+        logging.getLogger(__name__).warning("Google Photos no longer has %d of the %d photos sent to an album: %s",
+                                            len(missing), len(media_keys), " ".join(missing))
+    return album_id, added, missing
+
+
+def _album_step(client: Any, media_keys: list[str], album: Event, emit: Emit, stop: StopSignal) -> None:
+    """Run the album call and report what it did, even when it stops part-way,
+    so the app never loses the id of an album this call made."""
+    try:
+        album_id, added, missing = _add_to_album(client, media_keys, album, stop)
+    except AlbumIncomplete as partial:
+        _report_album(emit, album, partial.album_id, partial.added, partial.missing)
+        raise partial.cause from None
+    _report_album(emit, album, album_id, added, missing)
+
+
+def _report_album(emit: Emit, album: Event, album_id: str | None, added: list[str], missing: list[str]) -> None:
+    if missing:
+        emit(_event("missing_media", media_keys=missing))
+    if album_id:
+        keys = {"media_keys": added} if album.get("split_missing") else {}
+        emit(_event("album", album_id=album_id, added=len(added), **keys))
 
 
 def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop: StopSignal) -> int:
@@ -428,7 +591,9 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
             use_quota=use_quota,
             saver=saver,
             threads=1,
-            force_upload=bool(request.get("force", False)),
+            # Per item: a photo whose earlier key Google lost goes up again
+            # without the hash check, which could hand that key back.
+            force_upload=bool(request.get("force", False)) or item.get("force", False),
             progress_callback=on_progress,
         )
 
@@ -476,8 +641,7 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
         # hearing its id, or the next run would create a second one.
         with stop.critical():
             try:
-                album_id = _add_to_album(client, confirmed, album)
-                emit(_event("album", album_id=album_id, added=len(confirmed)))
+                _album_step(client, confirmed, album, emit, stop)
             except Exception as error:
                 logging.getLogger(__name__).exception("adding to album failed")
                 emit(_event("album_failed", message=str(error)))
@@ -666,8 +830,7 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
             return EXIT_OK
         if command == "add-to-album":
             with stop.critical():
-                album_id = _add_to_album(client, request["media_keys"], request["album"])
-                emit(_event("album", album_id=album_id, added=len(request["media_keys"])))
+                _album_step(client, request["media_keys"], request["album"], emit, stop)
             return EXIT_OK
         return _upload(request, client, emit, failures, stop)
     except StopRequested:
