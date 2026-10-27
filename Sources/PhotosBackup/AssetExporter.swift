@@ -21,13 +21,19 @@ struct ExportError: LocalizedError {
 /// gpmc. Originals still in iCloud ("Optimize Mac Storage") are downloaded.
 @MainActor
 struct AssetExporter {
-    /// Albums hand out the burst frames someone filed in them one by one, but
-    /// a lookup by identifier with default options leaves out every frame but
-    /// a burst's pick. Measured 2026-10-27: 195 such frames in two selected
-    /// albums failed every run as "No longer in the Photos library".
-    private static var lookup: PHFetchOptions {
+    /// A lookup by identifier with default options leaves out what the asking
+    /// side already chose. Albums hand out the burst frames someone filed in
+    /// them one by one, but default options drop every frame but a burst's
+    /// pick (2026-10-27: 195 such frames failed every run as "No longer in the
+    /// Photos library"). Choose Photos hands out photos from the Hidden album
+    /// once it is unlocked, and default options drop hidden ones (2026-10-28:
+    /// all 62 picks from it failed the same way). Only assets something has
+    /// already asked for come through here; album and library listings still
+    /// leave hidden photos out, so a hidden photo goes up only when picked.
+    static var lookup: PHFetchOptions {
         let options = PHFetchOptions()
         options.includeAllBurstAssets = true
+        options.includeHiddenAssets = true
         return options
     }
 
