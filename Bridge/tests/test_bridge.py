@@ -468,6 +468,44 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(len(client.album_calls), 4)
         self.assertIn("503", events[-1]["message"])
 
+    def test_a_rate_limit_is_left_to_the_app_not_retried(self):
+        waits = []
+        client = FakeClient(flaky=[429])
+        with mock.patch.object(gpmc_bridge, "_sleep", waits.append):
+            code, _, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k1"], "album": {"id": "album-1"}}, client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_RATE_LIMIT)
+        self.assertEqual((len(client.album_calls), waits), (1, []))
+
+    def test_a_dropped_connection_is_not_retried_here(self):
+        waits = []
+        client = FakeClient(append_error=ConnectionError("Connection aborted."))
+        with mock.patch.object(gpmc_bridge, "_sleep", waits.append):
+            code, _, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k1"], "album": {"id": "album-1"}}, client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_NETWORK)
+        self.assertEqual((len(client.album_calls), waits), (1, []))
+
+    def test_a_stop_while_waiting_mid_split_reports_what_went_in_first(self):
+        # Batch 1 goes in, batch 2 meets a 503, and the app stops during the
+        # wait: the album event for batch 1 must come before `stopped`.
+        stop = gpmc_bridge.StopSignal()
+        keys = [f"k{i}" for i in range(600)]
+        client = FakeClient()
+        album = {"name": "Trip", "split_missing": True}
+
+        def fail_second_call():
+            if len(client.album_calls) == 2:
+                client.flaky.append(503)
+
+        client.on_append = fail_second_call
+        with mock.patch.object(gpmc_bridge, "_sleep", lambda seconds: stop.request()):
+            code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": keys, "album": album}, client, stop=stop)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_STOPPED)
+        self.assertEqual([event["type"] for event in events[-2:]], ["album", "stopped"])
+        self.assertEqual(of_type(events, "album")[0]["media_keys"], keys[:500])
+
     def test_a_dead_key_is_not_waited_on(self):
         waits = []
         client = FakeClient(dead_keys={"gone"})

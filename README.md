@@ -31,7 +31,7 @@ On 16 October 2026, a photo and video from each supported platform were read bac
 
 ## What’s new in v0.5.5
 
-Album steps no longer give up on a passing "500 Server Error" or "503 Service Unavailable" from Google ([#44](https://github.com/ayush5harma/google-photos-backup/issues/44)). The app tries the call again after a few seconds, so an album no longer waits for the next backup because of one bad moment on Google's side. The Android APK stays at 0.5.0 until a signed APK is published.
+Adding photos to an album no longer gives up on a passing "500 Server Error" or "503 Service Unavailable" from Google ([#44](https://github.com/ayush5harma/google-photos-backup/issues/44)). The call is tried again after a few seconds, so an album no longer waits for the next backup because of one bad moment on Google's side. On Windows this covers adding to existing albums; creating a new album there is unchanged. The Android APK stays at 0.5.0 until a signed APK is published.
 
 ## What’s new in v0.5.4
 

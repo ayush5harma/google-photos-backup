@@ -410,17 +410,20 @@ ALBUM_REFUSAL_BUDGET = 128
 # Google's album calls fail now and then with a 5xx that a few seconds later
 # does not recur. Measured 2026-10-27 on 0.5.4: 7 of about 30 album steps
 # ended on a 500 or 503, and each one skipped its album for the rest of the
-# run. A call is tried again after each of these pauses, at most
-# ALBUM_RETRY_BUDGET times in one request, so a Google that keeps failing
-# still ends the step within about a minute.
+# run. A call answered with a 5xx or 408 is tried again after each of these
+# pauses, at most ALBUM_RETRY_BUDGET times in one request, so a Google that
+# keeps failing still ends the step within about a minute. Dropped
+# connections are not retried here: gpmc already retries a connect for about
+# 8 minutes (measured 486 s) before the bridge sees it, and the app halts the
+# run on a network failure anyway.
 ALBUM_RETRY_DELAYS = (2.0, 5.0, 12.0)
 ALBUM_RETRY_BUDGET = 8
 _sleep = time.sleep  # the tests replace it
 
 
 def _album_caller(stop: StopSignal | None) -> Callable[..., Any]:
-    """Call an album method, waiting out Google's passing 5xx and dropped
-    connections; a stop during a wait ends the step (StopRequested)."""
+    """Call an album method, waiting out Google's passing 5xx; a stop during
+    a wait ends the step (StopRequested)."""
     left = [ALBUM_RETRY_BUDGET]
 
     def call(method: Callable[..., Any], **kwargs: Any) -> Any:
@@ -428,8 +431,7 @@ def _album_caller(stop: StopSignal | None) -> Callable[..., Any]:
             try:
                 return method(**kwargs)
             except Exception as error:
-                passing = _is_transient_status(_http_status(error)) or _is_network_error(error)
-                if delay is None or not passing or left[0] <= 0:
+                if delay is None or not _is_transient_status(_http_status(error)) or left[0] <= 0:
                     raise
                 left[0] -= 1
                 logging.getLogger(__name__).info("album call failed (%s); trying again in %.0f s", error, delay)
@@ -476,8 +478,8 @@ def _add_to_album(client: Any, media_keys: list[str], album: Event,
             for start in range(0, len(media_keys), ALBUM_BATCH):
                 call(client.api.add_media_to_album, album_media_key=album["id"], media_keys=media_keys[start:start + ALBUM_BATCH])
             return album["id"], list(media_keys), []
-        # Not retried: a 5xx from here may follow an album Google did create,
-        # and this call would start a second one.
+        # The Windows and Android apps' creation path, left as it was: only
+        # the Mac's (Api.create_album, below) is retried.
         # add_to_album splits past 20,000 items into "<name> 1", "<name> 2"...;
         # the first is the one the app remembers and appends to next time.
         return client.add_to_album(media_keys, album["name"], False)[0], list(media_keys), []
