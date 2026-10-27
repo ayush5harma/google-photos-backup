@@ -43,7 +43,9 @@ struct AssetExporter {
     ///   - started: called with each asset's upload filename before its export.
     ///   - finished: called with each asset's result as soon as it has one.
     ///   - includingHidden: the owner picked these assets themselves.
-    func export(_ assetIDs: [String], includingHidden: Bool = false, into directory: URL,
+    ///   - pickedFiles: files the picker handed over for picks PhotoKit
+    ///     cannot see (PickedFile), used only when the lookup misses.
+    func export(_ assetIDs: [String], includingHidden: Bool = false, pickedFiles: [String: URL] = [:], into directory: URL,
                 shouldStop: () -> Bool,
                 started: (String, String) -> Void,
                 finished: (String, Result<ExportedAsset, Error>) -> Void) async {
@@ -54,7 +56,12 @@ struct AssetExporter {
         for (index, id) in assetIDs.enumerated() {
             if shouldStop() { return }
             guard let asset = assets[id] else {
-                finished(id, .failure(ExportError(errorDescription: "No longer in the Photos library")))
+                if let file = pickedFiles[id] {
+                    started(id, file.lastPathComponent)
+                    finished(id, Self.stage(file, as: id, in: directory.appendingPathComponent(String(index), isDirectory: true)))
+                } else {
+                    finished(id, .failure(ExportError(errorDescription: "No longer in the Photos library")))
+                }
                 continue
             }
             let resources = PHAssetResource.assetResources(for: asset)
@@ -89,6 +96,30 @@ struct AssetExporter {
             } catch {
                 finished(id, .failure(ExportError(errorDescription: "Export failed: \(error.localizedDescription)")))
             }
+        }
+    }
+
+    /// The identifiers among `assetIDs` that PhotoKit will not hand this app,
+    /// even looking for hidden photos: on a Mac whose Hidden album is locked,
+    /// every hidden one.
+    static func unseen(_ assetIDs: [String]) -> [String] {
+        var seen = Set<String>()
+        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: lookup(includingHidden: true))
+            .enumerateObjects { asset, _, _ in seen.insert(asset.localIdentifier) }
+        return assetIDs.filter { !seen.contains($0) }
+    }
+
+    /// A picked file as the batch item for `id`: copied, not moved, so a
+    /// retry still has it until Google confirms the upload.
+    static func stage(_ file: URL, as id: String, in folder: URL) -> Result<ExportedAsset, Error> {
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            let url = folder.appendingPathComponent(file.lastPathComponent)
+            try FileManager.default.copyItem(at: file, to: url)
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
+            return .success(ExportedAsset(assetID: id, url: url, filename: file.lastPathComponent, size: size, stamp: nil))
+        } catch {
+            return .failure(ExportError(errorDescription: "Could not stage the picked file: \(error.localizedDescription)"))
         }
     }
 

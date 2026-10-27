@@ -371,14 +371,28 @@ struct PickPhotosButton<Label: View>: View {
     @State private var selection: [PhotosPickerItem] = []
 
     var body: some View {
-        styled(PhotosPicker(selection: $selection, matching: .any(of: [.images, .videos]), photoLibrary: .shared()) { label })
+        // .current: a pick that goes up from the picker's own file keeps its
+        // format instead of becoming a JPEG.
+        styled(PhotosPicker(selection: $selection, matching: .any(of: [.images, .videos]), preferredItemEncoding: .current,
+                            photoLibrary: .shared()) { label })
             .disabled(!model.hasAuthData || !model.canReadPhotos)
             .onChange(of: selection) { _, items in
                 // itemIdentifier is the PHAsset local identifier because the
                 // picker was given the shared library.
-                let ids = items.compactMap(\.itemIdentifier)
+                let picks = items.compactMap { item in item.itemIdentifier.map { ($0, item) } }
                 selection = []
-                if !ids.isEmpty { model.engine.backUp(picked: ids) }
+                guard !picks.isEmpty else { return }
+                let unseen = Set(AssetExporter.unseen(picks.map(\.0)))
+                Task {
+                    // Only what PhotoKit cannot see is copied out of the
+                    // picker now, while its access is fresh; the rest exports
+                    // from the library as before.
+                    var files: [String: URL] = [:]
+                    for (id, item) in picks where unseen.contains(id) {
+                        if let file = try? await item.loadTransferable(type: PickedFile.self) { files[id] = file.url }
+                    }
+                    model.engine.backUp(picked: picks.map(\.0), files: files)
+                }
             }
     }
 

@@ -113,6 +113,8 @@ final class BackupEngine {
     @ObservationIgnored private let verifier = BridgeProcess()
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var picked: [String] = []
+    /// Picker files for picks PhotoKit cannot see, until Google has them.
+    @ObservationIgnored private var pickedFiles: [String: URL] = [:]
     @ObservationIgnored private var messages: [MessagesMediaItem] = []
     @ObservationIgnored private var deviceItems: [DeviceMediaItem] = []
     /// Kept only while a connected-device run is queued. The device is the
@@ -185,7 +187,10 @@ final class BackupEngine {
     }
 
     /// A hand-picked selection, uploaded ahead of the albums.
-    func backUp(picked ids: [String]) {
+    /// - Parameter files: files the picker handed over for picks PhotoKit
+    ///   cannot see (hidden photos when the Hidden album is locked).
+    func backUp(picked ids: [String], files: [String: URL] = [:]) {
+        pickedFiles.merge(files) { _, new in new }
         picked.append(contentsOf: ids.filter { !picked.contains($0) })
         start(trigger: .picker)
     }
@@ -545,7 +550,7 @@ final class BackupEngine {
             let title = failedAlbums.contains(albumID) ? nil : albumTitle
             return await upload(assetIDs, album: title.map { (albumID, $0) }, includingHidden: albumID == BackupPlanner.pickedAlbumID,
                                 auth: auth, runtime: runtime, settings: settings)
-        case let .addToAlbum(albumID, albumTitle, assetIDs, mediaKeys):
+        case let .addToAlbum(albumID, albumTitle, assetIDs, _):
             if failedAlbums.contains(albumID) { return .nothing }
             return await addToAlbum(assetIDs, albumID: albumID, albumTitle: albumTitle, auth: auth, runtime: runtime)
         case let .reupload(assetIDs):
@@ -607,7 +612,8 @@ final class BackupEngine {
         }
 
         var items: [BatchItem] = []
-        await AssetExporter().export(assetIDs, includingHidden: includingHidden, into: batch, shouldStop: { self.phase == .stopping }, started: { id, filename in
+        await AssetExporter().export(assetIDs, includingHidden: includingHidden,
+                                     pickedFiles: includingHidden ? pickedFiles : [:], into: batch, shouldStop: { self.phase == .stopping }, started: { id, filename in
             self.show(id, filename: filename, status: .exporting)
         }, finished: { id, result in
             switch result {
@@ -1170,6 +1176,7 @@ final class BackupEngine {
 
     private func confirm(_ id: String, mediaKey: String, existing: Bool, item: BatchItem?) {
         model.state.recordUpload(assetID: id, mediaKey: mediaKey, existing: existing, stamp: item?.stamp)
+        if let file = pickedFiles.removeValue(forKey: id) { PickedFile.discard(file) }
         // A confirmation overrides an earlier failure of the same item.
         tally.confirmed(id, existing: existing, bytes: item?.size ?? 0)
         syncRunCounts()
