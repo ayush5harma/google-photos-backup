@@ -190,7 +190,10 @@ final class BackupEngine {
     /// - Parameter files: files the picker handed over for picks PhotoKit
     ///   cannot see (hidden photos when the Hidden album is locked).
     func backUp(picked ids: [String], files: [String: URL] = [:]) {
-        pickedFiles.merge(files) { _, new in new }
+        for (id, url) in files {
+            if let old = pickedFiles[id], old != url { PickedFile.discard(old) }
+            pickedFiles[id] = url
+        }
         picked.append(contentsOf: ids.filter { !picked.contains($0) })
         start(trigger: .picker)
     }
@@ -251,6 +254,7 @@ final class BackupEngine {
     func stop() {
         reclaimGeneration &+= 1
         picked = []
+        discardPickedFiles()
         messages = []
         deviceItems = []
         deviceSource?.cancelDownload()
@@ -467,6 +471,7 @@ final class BackupEngine {
     /// Messages queue.
     private func endQueues() {
         picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
+        discardPickedFiles()
         messages.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
         deviceItems.removeAll { model.state.uploaded[$0.id] != nil || failedAssets.contains($0.id) }
         if deviceItems.isEmpty {
@@ -1217,6 +1222,15 @@ final class BackupEngine {
         model.log(.photos, "Google Photos no longer had \(forgotten.count) backed-up \(forgotten.count == 1 ? "photo" : "photos"): "
                   + parts.joined(separator: ", ") + ".")
         return forgotten.count
+    }
+
+    /// Picker files are hidden photos: keep one only while its pick is still
+    /// queued or waiting in Activity for Retry.
+    private func discardPickedFiles() {
+        for (id, url) in pickedFiles where !picked.contains(id) && failures[id] == nil {
+            PickedFile.discard(url)
+            pickedFiles[id] = nil
+        }
     }
 
     /// The item has failed for this run; Retry or the next run releases it.

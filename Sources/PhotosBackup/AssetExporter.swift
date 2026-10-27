@@ -57,8 +57,15 @@ struct AssetExporter {
             if shouldStop() { return }
             guard let asset = assets[id] else {
                 if let file = pickedFiles[id] {
-                    started(id, file.lastPathComponent)
-                    finished(id, Self.stage(file, as: id, in: directory.appendingPathComponent(String(index), isDirectory: true)))
+                    let captured = await PickedFile.capturedDate(of: file)
+                    let name = PickedFile.uploadName(file.lastPathComponent, captured: captured)
+                    started(id, name)
+                    finished(id, Self.stage(file, as: id, named: name, captured: captured,
+                                            in: directory.appendingPathComponent(String(index), isDirectory: true)))
+                } else if includingHidden {
+                    // A pick PhotoKit cannot see whose file the picker did
+                    // not hand over: it is in the library, only hidden.
+                    finished(id, .failure(ExportError(errorDescription: "Photos did not hand over this hidden item; choose it again")))
                 } else {
                     finished(id, .failure(ExportError(errorDescription: "No longer in the Photos library")))
                 }
@@ -110,14 +117,18 @@ struct AssetExporter {
     }
 
     /// A picked file as the batch item for `id`: copied, not moved, so a
-    /// retry still has it until Google confirms the upload.
-    static func stage(_ file: URL, as id: String, in folder: URL) -> Result<ExportedAsset, Error> {
+    /// retry still has it until Google confirms the upload. Its mtime is set
+    /// to the capture time, as the PhotoKit path does with creationDate.
+    static func stage(_ file: URL, as id: String, named name: String, captured: Date?, in folder: URL) -> Result<ExportedAsset, Error> {
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let url = folder.appendingPathComponent(file.lastPathComponent)
+            let url = folder.appendingPathComponent(name)
             try FileManager.default.copyItem(at: file, to: url)
+            if let captured {
+                try? FileManager.default.setAttributes([.modificationDate: captured, .creationDate: captured], ofItemAtPath: url.path)
+            }
             let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
-            return .success(ExportedAsset(assetID: id, url: url, filename: file.lastPathComponent, size: size, stamp: nil))
+            return .success(ExportedAsset(assetID: id, url: url, filename: name, size: size, stamp: nil))
         } catch {
             return .failure(ExportError(errorDescription: "Could not stage the picked file: \(error.localizedDescription)"))
         }

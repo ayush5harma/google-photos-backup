@@ -382,16 +382,24 @@ struct PickPhotosButton<Label: View>: View {
                 let picks = items.compactMap { item in item.itemIdentifier.map { ($0, item) } }
                 selection = []
                 guard !picks.isEmpty else { return }
-                let unseen = Set(AssetExporter.unseen(picks.map(\.0)))
+                // Only what PhotoKit cannot see, and Google does not have yet,
+                // is copied out of the picker, while its access is fresh; the
+                // rest exports from the library as before and starts at once.
+                let ids = picks.map(\.0)
+                let unseen = Set(AssetExporter.unseen(ids)).subtracting(ids.filter { model.state.uploaded[$0] != nil })
+                let visible = ids.filter { !unseen.contains($0) }
+                if !visible.isEmpty { model.engine.backUp(picked: visible) }
+                guard !unseen.isEmpty else { return }
                 Task {
-                    // Only what PhotoKit cannot see is copied out of the
-                    // picker now, while its access is fresh; the rest exports
-                    // from the library as before.
                     var files: [String: URL] = [:]
                     for (id, item) in picks where unseen.contains(id) {
-                        if let file = try? await item.loadTransferable(type: PickedFile.self) { files[id] = file.url }
+                        do {
+                            if let file = try await item.loadTransferable(type: PickedFile.self) { files[id] = file.url }
+                        } catch {
+                            model.log(.photos, "Photos did not hand over a picked item: \(error.localizedDescription)", problem: true)
+                        }
                     }
-                    model.engine.backUp(picked: picks.map(\.0), files: files)
+                    model.engine.backUp(picked: ids.filter { unseen.contains($0) }, files: files)
                 }
             }
     }
