@@ -137,9 +137,20 @@ private let live = AlbumSnapshot(id: "live", title: "Live Photos", kind: .smart,
         var state = state(selected: ["trip"], uploaded: ["a", "b", "c", "d"])
         #expect(state.splittingAlbumTarget(for: "trip", title: "Trip") == AlbumTarget(id: nil, name: "Trip", splitMissing: true))
         state.recordAlbum("trip", googleAlbumID: "g1", added: ["d", "c", "b", "a"])
-        #expect(state.splittingAlbumTarget(for: "trip", title: "Trip")
-            == AlbumTarget(id: "g1", name: "Trip", splitMissing: true, probeMediaKeys: ["key-a", "key-b", "key-c"]))
+        let target = state.splittingAlbumTarget(for: "trip", title: "Trip")
+        #expect(target.id == "g1" && target.splitMissing == true)
+        let probes = target.probeMediaKeys ?? []
+        #expect(probes.count == 3 && Set(probes).isSubset(of: ["key-a", "key-b", "key-c", "key-d"]))
         #expect(state.assets(["a", "b", "x"], withMediaKeys: ["key-b", "key-x"]) == ["b"])
+    }
+
+    @Test func stateWrittenBefore054StillLoads() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("state.json")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(#"{"uploaded":{},"mirrors":{"trip":{"googleAlbumID":"g1","addedAssetIDs":["b"]}},"selectedAlbumIDs":["trip"]}"#.utf8).write(to: url)
+        let state = try BackupStore(url: url).load()
+        #expect(state.forcedUploads == nil)
+        #expect(state.mirrors["trip"]?.googleAlbumID == "g1")
     }
 
     @Test func storeRoundTripsAndStartsEmpty() throws {

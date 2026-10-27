@@ -50,6 +50,8 @@ class FakeApi:
         # gpmc 0.9.0 appends to an existing album here; its Client has no
         # add_to_existing_album (that is on gpmc's main branch only).
         self.client.album_calls.append(("id", album_media_key, list(media_keys)))
+        if self.client.on_append:
+            self.client.on_append()
         if self.client.append_error:
             raise self.client.append_error
         self._refuse(media_keys)
@@ -80,11 +82,12 @@ class FakeClient:
     """Behaves like gpmc.Client for the calls the bridge makes."""
 
     def __init__(self, existing=(), failing=(), auth_error=None, album_error=None, on_album=None, odd_keys=None,
-                 dead_keys=(), album_gone=False, append_error=None):
+                 dead_keys=(), album_gone=False, append_error=None, on_append=None):
         self.api = FakeApi(auth_error)
         self.dead_keys = set(dead_keys)
         self.album_gone = album_gone
         self.append_error = append_error
+        self.on_append = on_append
         # filename -> a non-string media key, as gpmc 0.9.0 returns when its
         # schema-less decode reads a key's bytes as a nested message.
         self.odd_keys = dict(odd_keys or {})
@@ -402,6 +405,32 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(code, gpmc_bridge.EXIT_RATE_LIMIT)
         self.assertEqual([event["type"] for event in events[-3:]], ["missing_media", "album", "fatal"])
         self.assertEqual(of_type(events, "album")[0], {"type": "album", "v": 1, "album_id": "album-new", "added": 1, "media_keys": ["k1"]})
+
+    def test_a_stop_while_halving_reports_what_went_in_first(self):
+        stop = gpmc_bridge.StopSignal()
+        calls = []
+
+        def stop_on_fourth_call():
+            calls.append(1)
+            if len(calls) == 4:
+                stop.request()
+
+        # Calls: all ten (refused), the album check, k0-k4 (refused), k0-k1.
+        client = FakeClient(dead_keys={"k3", "k8"}, on_append=stop_on_fourth_call)
+        keys = [f"k{i}" for i in range(10)]
+        code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": keys, "album": SPLIT_ALBUM}, client, stop=stop)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_STOPPED)
+        self.assertEqual(len(calls), 4)
+        self.assertEqual(of_type(events, "album"), [{"type": "album", "v": 1, "album_id": "album-1", "added": 2, "media_keys": ["k0", "k1"]}])
+        self.assertEqual(events[-1], {"type": "stopped", "v": 1})
+
+    def test_the_album_check_stops_at_the_first_photo_it_takes_back(self):
+        client = FakeClient(dead_keys={"gone"})
+        album = dict(SPLIT_ALBUM, probe_media_keys=["m1", "m2", "m3"])
+        run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["gone"], "album": album}, client)
+
+        self.assertEqual(client.album_calls, [("id", "album-1", ["gone"]), ("id", "album-1", ["m1"])])
 
     def test_upload_album_step_hands_dead_keys_back(self):
         client = FakeClient(dead_keys={"key-a.jpg"})

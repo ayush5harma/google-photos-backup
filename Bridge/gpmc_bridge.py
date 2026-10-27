@@ -401,8 +401,10 @@ def _connect(request: Event, factory: ClientFactory) -> Any:
 
 
 # Refused album calls a request may spend telling dead keys from live ones.
-# A dead key costs about two calls per halving (18 in a 500-key batch), so
-# this settles about seven per request; whatever is left stays for the next.
+# An isolated dead key costs about nine refusals (a 500-key batch halves nine
+# times), so this settles about 14 per request; measured 2026-10-27 with the
+# test fakes, 14 scattered dead keys in one batch took 170 calls in all.
+# Whatever is left waits for the next request.
 ALBUM_REFUSAL_BUDGET = 128
 
 
@@ -414,7 +416,8 @@ class AlbumIncomplete(Exception):
         self.album_id, self.added, self.missing, self.cause = album_id, added, missing, cause
 
 
-def _add_to_album(client: Any, media_keys: list[str], album: Event) -> tuple[str | None, list[str], list[str]]:
+def _add_to_album(client: Any, media_keys: list[str], album: Event,
+                  stop: StopSignal | None = None) -> tuple[str | None, list[str], list[str]]:
     """Add the keys to the album, creating it first when it has no id yet.
 
     Returns the album's id (None when no key was left to create it with), the
@@ -434,10 +437,11 @@ def _add_to_album(client: Any, media_keys: list[str], album: Event) -> tuple[str
         # add_to_album splits past 20,000 items into "<name> 1", "<name> 2"...;
         # the first is the one the app remembers and appends to next time.
         return client.add_to_album(media_keys, album["name"], False)[0], list(media_keys), []
-    return _add_splitting_missing(client, media_keys, album)
+    return _add_splitting_missing(client, media_keys, album, stop)
 
 
-def _add_splitting_missing(client: Any, media_keys: list[str], album: Event) -> tuple[str | None, list[str], list[str]]:
+def _add_splitting_missing(client: Any, media_keys: list[str], album: Event,
+                           stop: StopSignal | None) -> tuple[str | None, list[str], list[str]]:
     # Google refuses a whole create_album or add_media_to_album call with a
     # 404 when any key in it no longer resolves. Measured 2026-10-27, a day
     # after a 25,954-item run: 1 of 72 sampled keys, and 3 of the 4 waiting
@@ -461,20 +465,32 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event) -> 
 
     def album_answers() -> bool:
         # A deleted album answers 404 too. Re-adding a photo it already holds
-        # tells the two apart in a call or two, before any halving; with
-        # nothing to try, the refusal stays the album's, as before.
+        # tells the two apart before any halving; with nothing to try, the
+        # refusal stays the album's, as before.
         nonlocal alive
-        for key in [] if alive else album.get("probe_media_keys") or []:
+        if alive:
+            return True
+        for key in album.get("probe_media_keys") or []:
             try:
                 client.api.add_media_to_album(album_media_key=album_id, media_keys=[key])
             except Exception as error:
+                logging.getLogger(__name__).info("album %s refused its own photo %s: %s", album_id, key, error)
                 if _http_status(error) == 404:
                     continue
                 raise
+            logging.getLogger(__name__).info("album %s took back its own photo %s: the album is there", album_id, key)
             alive = True
-        return alive
+            return True
+        return False
+
+    def stop_between_calls() -> None:
+        # Halving can take a few minutes inside the stop-deferring album
+        # step; a stop here still reports what went in (AlbumIncomplete).
+        if stop is not None and stop.requested:
+            raise StopRequested
 
     def append(keys: list[str]) -> None:
+        stop_between_calls()
         try:
             client.api.add_media_to_album(album_media_key=album_id, media_keys=keys)
         except Exception as error:
@@ -491,6 +507,7 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event) -> 
 
     def create(keys: list[str]) -> None:
         nonlocal album_id, alive
+        stop_between_calls()
         try:
             album_id = client.api.create_album(album_name=album["name"], media_keys=keys)
         except Exception as error:
@@ -513,7 +530,7 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event) -> 
         for start in range(0, len(media_keys), ALBUM_BATCH):
             batch = media_keys[start:start + ALBUM_BATCH]
             (append if album_id else create)(batch)
-    except Exception as error:
+    except (Exception, StopRequested) as error:
         if added or missing or album_id != known:
             raise AlbumIncomplete(album_id, added, missing, error) from error
         raise
@@ -523,11 +540,11 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event) -> 
     return album_id, added, missing
 
 
-def _album_step(client: Any, media_keys: list[str], album: Event, emit: Emit) -> None:
+def _album_step(client: Any, media_keys: list[str], album: Event, emit: Emit, stop: StopSignal) -> None:
     """Run the album call and report what it did, even when it stops part-way,
     so the app never loses the id of an album this call made."""
     try:
-        album_id, added, missing = _add_to_album(client, media_keys, album)
+        album_id, added, missing = _add_to_album(client, media_keys, album, stop)
     except AlbumIncomplete as partial:
         _report_album(emit, album, partial.album_id, partial.added, partial.missing)
         raise partial.cause from None
@@ -624,7 +641,7 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
         # hearing its id, or the next run would create a second one.
         with stop.critical():
             try:
-                _album_step(client, confirmed, album, emit)
+                _album_step(client, confirmed, album, emit, stop)
             except Exception as error:
                 logging.getLogger(__name__).exception("adding to album failed")
                 emit(_event("album_failed", message=str(error)))
@@ -813,7 +830,7 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
             return EXIT_OK
         if command == "add-to-album":
             with stop.critical():
-                _album_step(client, request["media_keys"], request["album"], emit)
+                _album_step(client, request["media_keys"], request["album"], emit, stop)
             return EXIT_OK
         return _upload(request, client, emit, failures, stop)
     except StopRequested:

@@ -154,12 +154,15 @@ public struct BackupState: Codable, Equatable, Sendable {
     }
 
     /// The target the Mac app sends: split out keys Google no longer has,
-    /// checked against up to three photos the album already holds.
+    /// checked against up to three photos the album already holds. Picked
+    /// afresh each time: dead keys cluster by upload (3 of the 4 waiting for
+    /// one album, 2026-10-27), and a fixed three that all died would make a
+    /// live album look deleted on every run.
     public func splittingAlbumTarget(for albumID: String, title: String) -> AlbumTarget {
         var target = albumTarget(for: albumID, title: title)
         target.splitMissing = true
         if target.id != nil, let members = mirrors[albumID]?.addedAssetIDs {
-            let probes = members.sorted().lazy.compactMap { uploaded[$0]?.mediaKey }.prefix(3)
+            let probes = members.shuffled().lazy.compactMap { uploaded[$0]?.mediaKey }.prefix(3)
             target.probeMediaKeys = probes.isEmpty ? nil : Array(probes)
         }
         return target

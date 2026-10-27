@@ -31,7 +31,7 @@ On 16 October 2026, a photo and video from each supported platform were read bac
 
 ## What’s new in v0.5.4
 
-On the Mac, albums no longer stop filling with "404 Client Error: Not Found" ([#42](https://github.com/ayush5harma/google-photos-backup/issues/42)). Google refuses a whole album call when one photo in it is no longer in Google Photos; a day after one large backup, 1 of 72 sampled uploads had become such a photo. The app now adds every other photo, uploads the missing ones again and files them in their albums. Burst frames added to an album one by one now back up instead of failing as "No longer in the Photos library". Windows keeps the earlier album behaviour for now, and the Android APK stays at 0.5.0 until a signed APK is published.
+On the Mac, albums no longer stop filling with "404 Client Error: Not Found" ([#42](https://github.com/ayush5harma/google-photos-backup/issues/42)). Google refuses a whole album call when one photo in it is no longer in Google Photos; a day after one large backup, 1 of 72 sampled uploads had become such a photo. The app now adds every other photo, uploads the missing ones again and files them in their albums. Burst frames added to an album one by one now back up instead of failing as "No longer in the Photos library". A photo deleted in Google Photos while it is still in a backed-up Photos album is now uploaded again the next time that album is updated. Windows keeps the earlier album behaviour for now, and the Android APK stays at 0.5.0 until a signed APK is published.
 
 ## What’s new in v0.5.3
 
