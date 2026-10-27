@@ -407,6 +407,47 @@ def _connect(request: Event, factory: ClientFactory) -> Any:
 # Whatever is left waits for the next request.
 ALBUM_REFUSAL_BUDGET = 128
 
+# Google's album calls fail now and then with a 5xx that a few seconds later
+# does not recur. Measured 2026-10-27 on 0.5.4: 7 of about 30 album steps
+# ended on a 500 or 503, and each one skipped its album for the rest of the
+# run. A call is tried again after each of these pauses, at most
+# ALBUM_RETRY_BUDGET times in one request, so a Google that keeps failing
+# still ends the step within about a minute.
+ALBUM_RETRY_DELAYS = (2.0, 5.0, 12.0)
+ALBUM_RETRY_BUDGET = 8
+_sleep = time.sleep  # the tests replace it
+
+
+def _album_caller(stop: StopSignal | None) -> Callable[..., Any]:
+    """Call an album method, waiting out Google's passing 5xx and dropped
+    connections; a stop during a wait ends the step (StopRequested)."""
+    left = [ALBUM_RETRY_BUDGET]
+
+    def call(method: Callable[..., Any], **kwargs: Any) -> Any:
+        for delay in (*ALBUM_RETRY_DELAYS, None):
+            try:
+                return method(**kwargs)
+            except Exception as error:
+                passing = _is_transient_status(_http_status(error)) or _is_network_error(error)
+                if delay is None or not passing or left[0] <= 0:
+                    raise
+                left[0] -= 1
+                logging.getLogger(__name__).info("album call failed (%s); trying again in %.0f s", error, delay)
+                _wait(delay, stop)
+        raise AssertionError("unreachable")
+
+    return call
+
+
+def _wait(seconds: float, stop: StopSignal | None) -> None:
+    waited = 0.0
+    while waited < seconds:
+        if stop is not None and stop.requested:
+            raise StopRequested
+        step = min(0.25, seconds - waited)
+        _sleep(step)
+        waited += step
+
 
 class AlbumIncomplete(Exception):
     """An album step stopped part-way: what it did is reported before `cause`."""
@@ -426,22 +467,25 @@ def _add_to_album(client: Any, media_keys: list[str], album: Event,
     behaviour the Windows and Android apps read the album event by, where
     `album` means every key went in.
     """
+    call = _album_caller(stop)
     if not album.get("split_missing"):
         if album.get("id"):
             # gpmc 0.9.0, the release the app pins, has no
             # Client.add_to_existing_album (only gpmc's main branch does):
             # append the way 0.9.0's own add_to_album does, 500 keys per call.
             for start in range(0, len(media_keys), ALBUM_BATCH):
-                client.api.add_media_to_album(album_media_key=album["id"], media_keys=media_keys[start:start + ALBUM_BATCH])
+                call(client.api.add_media_to_album, album_media_key=album["id"], media_keys=media_keys[start:start + ALBUM_BATCH])
             return album["id"], list(media_keys), []
+        # Not retried: a 5xx from here may follow an album Google did create,
+        # and this call would start a second one.
         # add_to_album splits past 20,000 items into "<name> 1", "<name> 2"...;
         # the first is the one the app remembers and appends to next time.
         return client.add_to_album(media_keys, album["name"], False)[0], list(media_keys), []
-    return _add_splitting_missing(client, media_keys, album, stop)
+    return _add_splitting_missing(client, media_keys, album, stop, call)
 
 
-def _add_splitting_missing(client: Any, media_keys: list[str], album: Event,
-                           stop: StopSignal | None) -> tuple[str | None, list[str], list[str]]:
+def _add_splitting_missing(client: Any, media_keys: list[str], album: Event, stop: StopSignal | None,
+                           call: Callable[..., Any]) -> tuple[str | None, list[str], list[str]]:
     # Google refuses a whole create_album or add_media_to_album call with a
     # 404 when any key in it no longer resolves. Measured 2026-10-27, a day
     # after a 25,954-item run: 1 of 72 sampled keys, and 3 of the 4 waiting
@@ -472,7 +516,7 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event,
             return True
         for key in album.get("probe_media_keys") or []:
             try:
-                client.api.add_media_to_album(album_media_key=album_id, media_keys=[key])
+                call(client.api.add_media_to_album, album_media_key=album_id, media_keys=[key])
             except Exception as error:
                 logging.getLogger(__name__).info("album %s refused its own photo %s: %s", album_id, key, error)
                 if _http_status(error) == 404:
@@ -492,7 +536,7 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event,
     def append(keys: list[str]) -> None:
         stop_between_calls()
         try:
-            client.api.add_media_to_album(album_media_key=album_id, media_keys=keys)
+            call(client.api.add_media_to_album, album_media_key=album_id, media_keys=keys)
         except Exception as error:
             if not refused(error) or not album_answers():
                 raise
@@ -509,7 +553,9 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event,
         nonlocal album_id, alive
         stop_between_calls()
         try:
-            album_id = client.api.create_album(album_name=album["name"], media_keys=keys)
+            # Retried like an append: a 5xx after Google made the album risks
+            # a second one either way, now or when the app tries next.
+            album_id = call(client.api.create_album, album_name=album["name"], media_keys=keys)
         except Exception as error:
             if not refused(error):
                 raise
@@ -534,9 +580,6 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event,
         if added or missing or album_id != known:
             raise AlbumIncomplete(album_id, added, missing, error) from error
         raise
-    if missing:
-        logging.getLogger(__name__).warning("Google Photos no longer has %d of the %d photos sent to an album: %s",
-                                            len(missing), len(media_keys), " ".join(missing))
     return album_id, added, missing
 
 
@@ -553,6 +596,7 @@ def _album_step(client: Any, media_keys: list[str], album: Event, emit: Emit, st
 
 def _report_album(emit: Emit, album: Event, album_id: str | None, added: list[str], missing: list[str]) -> None:
     if missing:
+        logging.getLogger(__name__).warning("Google Photos no longer has %d photos sent to an album: %s", len(missing), " ".join(missing))
         emit(_event("missing_media", media_keys=missing))
     if album_id:
         keys = {"media_keys": added} if album.get("split_missing") else {}

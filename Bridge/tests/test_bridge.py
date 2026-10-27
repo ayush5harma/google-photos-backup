@@ -13,6 +13,7 @@ import logging
 import subprocess
 import sys
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -65,6 +66,9 @@ class FakeApi:
         return "album-new"
 
     def _refuse(self, media_keys):
+        # Each listed status answers one album call, then Google recovers.
+        if self.client.flaky:
+            raise FakeHTTPError(self.client.flaky.pop(0))
         if self.client.album_error:
             raise self.client.album_error
         # Google answers 404 for the whole call when any key in it is gone.
@@ -82,12 +86,13 @@ class FakeClient:
     """Behaves like gpmc.Client for the calls the bridge makes."""
 
     def __init__(self, existing=(), failing=(), auth_error=None, album_error=None, on_album=None, odd_keys=None,
-                 dead_keys=(), album_gone=False, append_error=None, on_append=None):
+                 dead_keys=(), album_gone=False, append_error=None, on_append=None, flaky=()):
         self.api = FakeApi(auth_error)
         self.dead_keys = set(dead_keys)
         self.album_gone = album_gone
         self.append_error = append_error
         self.on_append = on_append
+        self.flaky = list(flaky)
         # filename -> a non-string media key, as gpmc 0.9.0 returns when its
         # schema-less decode reads a key's bytes as a nested message.
         self.odd_keys = dict(odd_keys or {})
@@ -431,6 +436,70 @@ class UploadTests(unittest.TestCase):
         run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["gone"], "album": album}, client)
 
         self.assertEqual(client.album_calls, [("id", "album-1", ["gone"]), ("id", "album-1", ["m1"])])
+
+    def test_a_passing_503_on_an_album_append_is_tried_again(self):
+        waits = []
+        client = FakeClient(flaky=[503, 503])
+        with mock.patch.object(gpmc_bridge, "_sleep", waits.append):
+            code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k1"], "album": {"id": "album-1"}}, client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual(len(client.album_calls), 3)
+        self.assertEqual(sum(waits), 2.0 + 5.0)
+        self.assertEqual(of_type(events, "album"), [{"type": "album", "v": 1, "album_id": "album-1", "added": 1}])
+
+    def test_a_new_album_is_created_after_a_passing_500(self):
+        waits = []
+        client = FakeClient(flaky=[500])
+        album = {"name": "Trip", "split_missing": True}
+        with mock.patch.object(gpmc_bridge, "_sleep", waits.append):
+            code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k1"], "album": album}, client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual(client.album_calls, [("name", "Trip", ["k1"]), ("name", "Trip", ["k1"])])
+        self.assertEqual(of_type(events, "album")[0]["album_id"], "album-new")
+
+    def test_an_album_call_that_keeps_failing_gives_up_as_before(self):
+        client = FakeClient(flaky=[503, 503, 503, 503])
+        with mock.patch.object(gpmc_bridge, "_sleep", lambda seconds: None):
+            code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k1"], "album": {"id": "album-1"}}, client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_INTERNAL)
+        self.assertEqual(len(client.album_calls), 4)
+        self.assertIn("503", events[-1]["message"])
+
+    def test_a_dead_key_is_not_waited_on(self):
+        waits = []
+        client = FakeClient(dead_keys={"gone"})
+        with mock.patch.object(gpmc_bridge, "_sleep", waits.append):
+            run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["gone", "k1"], "album": SPLIT_ALBUM}, client)
+        self.assertEqual(waits, [])
+
+    def test_a_stop_during_a_retry_wait_stops_the_bridge(self):
+        stop = gpmc_bridge.StopSignal()
+        client = FakeClient(flaky=[503])
+        with mock.patch.object(gpmc_bridge, "_sleep", lambda seconds: stop.request()):
+            code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k1"], "album": {"id": "album-1"}}, client, stop=stop)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_STOPPED)
+        self.assertEqual(len(client.album_calls), 1)
+        self.assertEqual(events[-1], {"type": "stopped", "v": 1})
+
+    def test_retries_in_one_request_are_capped(self):
+        attempts = []
+
+        def flaky_call(**kwargs):
+            attempts.append(kwargs)
+            if len(attempts) % 2:
+                raise FakeHTTPError(503)
+            return "ok"
+
+        call = gpmc_bridge._album_caller(None)
+        with mock.patch.object(gpmc_bridge, "_sleep", lambda seconds: None):
+            for _ in range(gpmc_bridge.ALBUM_RETRY_BUDGET):
+                self.assertEqual(call(flaky_call), "ok")
+            with self.assertRaises(FakeHTTPError):
+                call(flaky_call)
 
     def test_upload_album_step_hands_dead_keys_back(self):
         client = FakeClient(dead_keys={"key-a.jpg"})
