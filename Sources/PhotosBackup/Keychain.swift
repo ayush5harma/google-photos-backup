@@ -40,8 +40,34 @@ struct Keychain {
         }
     }
 
-    func delete(account: String) {
-        SecItemDelete(query(account) as CFDictionary)
+    /// An item that is already gone counts as deleted. Anything else that
+    /// leaves it in place throws (a denied keychain prompt, a locked
+    /// keychain): an item left behind signs its account back in at the next
+    /// launch, so callers must not record the account as signed out.
+    func delete(account: String) throws {
+        #if DEBUG
+        if Self.refusedDeletesForTesting.contains(account) { try check(errSecAuthFailed) }
+        #endif
+        let status = SecItemDelete(query(account) as CFDictionary)
+        guard status != errSecItemNotFound else { return }
+        try check(status)
+    }
+
+    #if DEBUG
+    /// Tests only: accounts whose delete fails as a denied keychain prompt
+    /// does, leaving the item in place.
+    static var refusedDeletesForTesting: Set<String> = []
+    #endif
+
+    /// When the item was last written. Attributes only, like `accounts()`.
+    func modified(account: String) -> Date? {
+        var request = query(account)
+        request[kSecReturnAttributes as String] = true
+        request[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: AnyObject?
+        guard SecItemCopyMatching(request as CFDictionary, &result) == errSecSuccess,
+              let attributes = result as? [String: Any] else { return nil }
+        return attributes[kSecAttrModificationDate as String] as? Date
     }
 
     /// The account attribute of every item under the service. Attributes
@@ -60,15 +86,31 @@ struct Keychain {
 
     /// Moves a credential to another account attribute. The new item is
     /// written and read back before the old one is deleted, so any failure
-    /// leaves the credential where it was, to be moved at the next launch.
+    /// leaves the credential where it was, to be moved at the next launch;
+    /// a delete that fails throws too, so the caller keeps reading the old
+    /// item where it is.
+    ///
+    /// A target item written since the old one (the account signed in
+    /// again while the old item could not be deleted) is the newer
+    /// credential: it is kept and only the old item goes. Copying over it
+    /// put a stale sign-in back at the next launch (PR #53 review). An old
+    /// item written later (an older version signed in again after a
+    /// downgrade) still moves.
     func move(from old: String, to new: String) throws {
-        guard old != new, let value = load(account: old) else { return }
+        guard old != new else { return }
+        // Without a date to compare (none was ever missing when measured,
+        // 2026-11-05) the old item moves, as it always did.
+        if let oldModified = modified(account: old), let newModified = modified(account: new), newModified >= oldModified {
+            try delete(account: old)
+            return
+        }
+        guard let value = load(account: old) else { return }
         try save(value, account: new)
         guard load(account: new) == value else {
             throw NSError(domain: NSOSStatusErrorDomain, code: Int(errSecDecode),
                           userInfo: [NSLocalizedDescriptionKey: "The moved sign-in did not read back the same."])
         }
-        delete(account: old)
+        try delete(account: old)
     }
 
     private func check(_ status: OSStatus) throws {

@@ -987,15 +987,22 @@ final class AppModel {
         let adoption = candidate.adopting(account: email, stored: { store.readState($0) })
         do {
             try keychain.save(credential, account: adoption.account.id)
-            if adoption.account.id == unmovedLegacyCredential {
-                // The fresh sign-in replaces the item that could not be moved;
-                // left in place, it would overwrite this one at the next launch.
-                keychain.delete(account: AccountLibrary.legacyKeychainAccount)
-                unmovedLegacyCredential = nil
-            }
         } catch {
             connectState = .failed("Could not store the account in the keychain: \(error.localizedDescription)")
             return
+        }
+        if adoption.account.id == unmovedLegacyCredential {
+            // The fresh sign-in replaces the item that could not be moved.
+            do {
+                try keychain.delete(account: AccountLibrary.legacyKeychainAccount)
+                unmovedLegacyCredential = nil
+            } catch {
+                // Left in place it is still this account's (so Remove deletes
+                // it too), and a launch moves it only over an older item,
+                // never over this sign-in; the delete is tried again then.
+                log(.account, "The sign-in from before accounts could not be deleted from the keychain "
+                    + "(\(error.localizedDescription)); it is tried again at the next launch.", problem: true)
+            }
         }
         accountLibrary = candidate
         saveIndex()
@@ -1034,10 +1041,21 @@ final class AppModel {
         }
         let primaryBefore = primaryAccount?.id
         let title = accountLibrary.account(id)?.title ?? "an account"
-        keychain.delete(account: id)
-        if id == unmovedLegacyCredential {
-            keychain.delete(account: AccountLibrary.legacyKeychainAccount)
-            unmovedLegacyCredential = nil
+        do {
+            // The legacy item first: should either delete fail, the account
+            // still has a credential, and stays signed in, as it then is.
+            if id == unmovedLegacyCredential {
+                try keychain.delete(account: AccountLibrary.legacyKeychainAccount)
+                unmovedLegacyCredential = nil
+            }
+            try keychain.delete(account: id)
+        } catch {
+            // Marked removed with its item still there, the next launch
+            // would sign it back in (PR #53 review): it stays signed in.
+            refreshCredentials()
+            log(.account, "\(title) was not removed: its sign-in could not be deleted from the keychain "
+                + "(\(error.localizedDescription)). Try Remove again.", problem: true)
+            return
         }
         syncActiveRecord()
         accountLibrary.remove(id)
@@ -1140,8 +1158,9 @@ final class AppModel {
         do {
             if keychain.load(account: target) != nil {
                 // The account signed in on its own since: its credential is
-                // the newer one.
-                keychain.delete(account: id)
+                // the newer one. A delete that fails keeps everything as it
+                // was, to be refiled at the next check.
+                try keychain.delete(account: id)
             } else {
                 try keychain.move(from: id, to: target)
             }

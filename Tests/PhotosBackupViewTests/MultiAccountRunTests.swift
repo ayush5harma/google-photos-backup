@@ -43,7 +43,8 @@ final class MultiAccountRunTests: XCTestCase {
     }
 
     private func clean() {
-        for account in keychain.accounts() { keychain.delete(account: account) }
+        Keychain.refusedDeletesForTesting = []
+        for account in keychain.accounts() { try? keychain.delete(account: account) }
         try? FileManager.default.removeItem(at: support)
         try? FileManager.default.removeItem(at: runtime.appendingPathComponent("fake_gpmc_ledger.json"))
         AppEnvironment.defaults.removePersistentDomain(forName: AppEnvironment.bundleID + ".sandbox")
@@ -583,5 +584,66 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(after.accountsChoice, .chosen)
         XCTAssertEqual(after.targetAccounts.map(\.id), [primaryID])
         XCTAssertNil(after.stateError)
+    }
+
+    /// Review of PR #53, MINOR 2: Remove ignored a failed keychain delete
+    /// and marked the account removed; the item left behind signed it back
+    /// in at the next launch. Now it stays signed in and says why.
+    func testRemoveThatCannotDeleteTheSignInLeavesTheAccountSignedIn() async throws {
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        Keychain.refusedDeletesForTesting = [secondID]
+        await model.removeAccount(secondID)
+        XCTAssertTrue(model.accounts.contains { $0.id == secondID }, "marked removed with its sign-in still in the keychain")
+        XCTAssertNotNil(keychain.load(account: secondID))
+        XCTAssertEqual(model.status(of: secondID), .connected(email: Self.second))
+        XCTAssertTrue(model.diagnostics.events.contains { $0.isProblem && $0.message.contains("was not removed") })
+        XCTAssertTrue(AppModel().accounts.contains { $0.id == secondID }, "a launch agrees: still signed in")
+
+        Keychain.refusedDeletesForTesting = []
+        await model.removeAccount(secondID)
+        XCTAssertFalse(model.accounts.contains { $0.id == secondID })
+        XCTAssertNil(keychain.load(account: secondID))
+        XCTAssertFalse(AppModel().accounts.contains { $0.id == secondID }, "and stays removed after a launch")
+    }
+
+    /// Review of PR #53, MINOR 3: the legacy "gpmc" item, its delete
+    /// refused at the upgrade and again at a fresh sign-in, was moved over
+    /// that newer sign-in at the next launch. Now the move throws (the item
+    /// is read where it is) and never replaces the newer credential.
+    func testALegacyItemThatCannotBeDeletedNeverReplacesANewerSignIn() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let stale = Self.credential(Self.first)
+        let fresh = stale.replacingOccurrences(of: "E2E-FAKE-TOKEN", with: "E2E-FRESH-TOKEN")
+        var legacy = BackupState()
+        legacy.accountEmail = Self.first
+        try BackupStore(url: support.appendingPathComponent("state.json")).save(legacy)
+        try keychain.save(stale, account: AccountLibrary.legacyKeychainAccount)
+        try scenario(["per_account": true])
+        Keychain.refusedDeletesForTesting = [AccountLibrary.legacyKeychainAccount]
+
+        let model = AppModel()
+        model.settings.automatic = false
+        XCTAssertEqual(model.accounts.map(\.id), [firstID])
+        XCTAssertEqual(model.credential(for: firstID), stale)
+        XCTAssertNotNil(keychain.load(account: AccountLibrary.legacyKeychainAccount), "its delete was refused")
+
+        // The keychain keeps modification dates to the second.
+        try await Task.sleep(for: .milliseconds(1100))
+        await model.connect(pasted: fresh)
+        XCTAssertEqual(model.connectState, .idle, "the sign-in itself succeeds")
+        XCTAssertEqual(keychain.load(account: firstID), fresh)
+        XCTAssertTrue(model.diagnostics.events.contains { $0.isProblem && $0.message.contains("could not be deleted") })
+
+        let relaunched = AppModel()
+        XCTAssertEqual(keychain.load(account: firstID), fresh, "the left-over legacy item replaced the newer sign-in")
+        XCTAssertEqual(relaunched.credential(for: firstID), fresh)
+        XCTAssertEqual(relaunched.accounts.map(\.id), [firstID])
+
+        Keychain.refusedDeletesForTesting = []
+        _ = AppModel()
+        XCTAssertNil(keychain.load(account: AccountLibrary.legacyKeychainAccount), "deleted once the keychain allows it")
+        XCTAssertEqual(keychain.load(account: firstID), fresh)
     }
 }
