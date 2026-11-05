@@ -215,8 +215,9 @@ final class MultiAccountRunTests: XCTestCase {
     /// A primary run that halts (here Google refuses the primary's sign-in)
     /// leaves its Messages media queued in the engine. Found in review: the
     /// next account's run sent all of it to the second account. Nothing that
-    /// only the primary takes may reach another account; it waits for the
-    /// primary instead.
+    /// only the primary takes may reach another account, and the other
+    /// accounts still back up (the second review: holding the queue stopped
+    /// them for as long as the primary failed).
     func testWorkLeftQueuedByThePrimaryNeverGoesToAnotherAccount() async throws {
         let firstID = GoogleSignIn.normalizedEmail(Self.first)
         let secondID = GoogleSignIn.normalizedEmail(Self.second)
@@ -234,16 +235,27 @@ final class MultiAccountRunTests: XCTestCase {
                 model.engine.start(trigger: trigger)
             }
         }
+        let runsBefore = model.diagnostics.runs.count
         model.startBackupNow()
         try await settle(model)
         XCTAssertEqual(model.record(of: secondID)?.uploaded.count, 0, "the second account got the primary's Messages media")
         XCTAssertFalse(try uploads().contains { ($0["account"] as? String) == Self.second })
-        XCTAssertTrue(model.engine.hasQueuedPrimaryOnlyWork, "the items wait for the primary")
+        let newRuns = model.diagnostics.runs.prefix(model.diagnostics.runs.count - runsBefore)
+        XCTAssertTrue(newRuns.contains { model.accountTitle(reference: $0.account) == Self.second },
+                      "the second account still had its run while the primary failed")
+        XCTAssertFalse(model.engine.hasQueuedPrimaryOnlyWork, "the queue came out of the engine before the second account's run")
         XCTAssertEqual(model.activeAccountID, firstID)
 
-        // The primary's sign-in works again: they go to the primary, and only there.
+        // The primary's sign-in works again; a scan finds the items again,
+        // and they go to the primary, and only there.
         try scenario(["per_account": true])
-        model.runner.turn = { _, trigger in model.engine.start(trigger: trigger) }
+        model.runner.turn = { id, trigger in
+            if id == firstID {
+                model.engine.backUp(messages: queued, includingPhotos: true, trigger: trigger)
+            } else {
+                model.engine.start(trigger: trigger)
+            }
+        }
         model.startBackupNow()
         try await settle(model)
         let primary = Set(model.record(of: firstID)?.uploaded.keys.map { $0 } ?? [])

@@ -373,8 +373,8 @@ struct BackupCommands: Commands {
             Divider()
             Button("Archive Messages Now") { model.archive.start(trigger: .manual) }
                 .disabled(!model.settings.messagesArchive || model.archive.isRunning)
-            Button("Retry Failed Items") { model.engine.retryFailed() }
-                .disabled(model.engine.failedCount == 0 || model.engine.isActive)
+            Button("Retry Failed Items") { model.retryFailed() }
+                .disabled(model.engine.failedCount == 0 || model.engine.isActive || !model.canRetryFailures)
         }
         CommandGroup(after: .appSettings) {
             Button("Show Welcome Guide…") { AppRouter.shared.showWelcome() }
