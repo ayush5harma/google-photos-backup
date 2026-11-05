@@ -110,4 +110,30 @@ final class BridgeSessionTests: XCTestCase {
         XCTAssertEqual(after, 0, "a refused request does not end the session")
     }
 
+    /// PR #52 review asked whether a child the app starts while a session
+    /// runs (the verifier's bridge, an account check, the iCloud helper)
+    /// inherits the session's stdin, so close() would not end the bridge
+    /// until that child exited. It does not: Foundation's Process passes a
+    /// child only the descriptors it was given. This holds that down.
+    func testClosingEndsTheBridgeWhileAnotherChildRuns() async throws {
+        let session = BridgeSession()
+        let code = try await run(session, .upload(FakeRuntime.auth, items: [try fake.stage("a.jpg")], quality: .original,
+                                                  threads: 1, album: nil))
+        XCTAssertEqual(code, 0)
+        let bridge = try XCTUnwrap(fake.uploads.first?["pid"] as? Int)
+        // Started the way BridgeChild starts a bridge: its own pipes.
+        let other = Process()
+        other.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        other.arguments = ["30"]
+        other.standardInput = Pipe()
+        other.standardOutput = Pipe()
+        try other.run()
+        defer { other.terminate() }
+
+        session.close()
+        let deadline = Date().addingTimeInterval(5)
+        while kill(pid_t(bridge), 0) == 0, Date() < deadline { try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertTrue(other.isRunning)
+        XCTAssertNotEqual(kill(pid_t(bridge), 0), 0, "the bridge outlived close() while another child ran")
+    }
 }

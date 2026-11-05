@@ -94,8 +94,11 @@ final class BridgeSession {
     /// start-up and the sign-in.
     private(set) var lastRequestStartedBridge = false
 
+    /// One request at a time: two would read each other's events from the
+    /// one stream, and an item's media key could be recorded for another.
     func run(_ request: BridgeRequest, runtime: BridgeRuntime, workDirectory: URL, log: URL,
              onEvent: (BridgeEvent) -> Void) async throws -> Int32 {
+        precondition(!busy, "BridgeSession.run while a request is in flight")
         lastRequestStartedBridge = !(child?.process.isRunning ?? false)
         let child = try running(runtime: runtime, workDirectory: workDirectory, log: log)
         busy = true
