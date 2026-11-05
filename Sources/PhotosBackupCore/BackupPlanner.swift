@@ -18,13 +18,25 @@ public struct AlbumSnapshot: Equatable, Sendable, Identifiable {
     /// Each asset's PHAsset.modificationDate, read during the same
     /// enumeration; an asset without one is never taken for edited.
     public let modified: [String: Date]
+    /// Members Photos marks hidden (PHAsset.isHidden), read in the same
+    /// enumeration. The listing leaves hidden photos out already; the
+    /// planner checks this as well, so a change of fetch options can never
+    /// put a hidden photo in a Google album or in another account.
+    public let hiddenAssetIDs: Set<String>
 
-    public init(id: String, title: String, kind: AlbumKind, assetIDs: [String], modified: [String: Date] = [:]) {
+    public init(id: String, title: String, kind: AlbumKind, assetIDs: [String], modified: [String: Date] = [:],
+                hiddenAssetIDs: Set<String> = []) {
         self.id = id
         self.title = title
         self.kind = kind
         self.assetIDs = assetIDs
         self.modified = modified
+        self.hiddenAssetIDs = hiddenAssetIDs
+    }
+
+    /// The members that are not hidden, in album order.
+    public var visibleAssetIDs: [String] {
+        hiddenAssetIDs.isEmpty ? assetIDs : assetIDs.filter { !hiddenAssetIDs.contains($0) }
     }
 }
 
@@ -91,7 +103,8 @@ public enum BackupPlanner {
         batchSize: Int,
         excludingAssets: Set<String> = [],
         excludingAlbums: Set<String> = [],
-        reuploadEdits: Bool = false
+        reuploadEdits: Bool = false,
+        uploadsHidden: Bool = false
     ) -> [PlannedStep] {
         let steps = planNew(albums: albums, state: state, mirrorAlbums: mirrorAlbums, batchSize: batchSize,
                             excludingAssets: excludingAssets, excludingAlbums: excludingAlbums)
@@ -179,13 +192,19 @@ public enum BackupPlanner {
             let mirrored = mirrorAlbums && album.kind == .user && !excludingAlbums.contains(album.id)
             let toUpload = album.assetIDs.filter { state.uploaded[$0] == nil && !planned.contains($0) }
             planned.formUnion(toUpload)
-            for batch in toUpload.chunked(batchSize) {
-                steps.append(.upload(albumID: album.id, albumTitle: mirrored ? album.title : nil, assetIDs: batch))
+            // A hidden member goes to the library only, never into the album.
+            let intoAlbum = mirrored ? toUpload.filter { !album.hiddenAssetIDs.contains($0) } : []
+            let libraryOnly = mirrored ? toUpload.filter { album.hiddenAssetIDs.contains($0) } : toUpload
+            for batch in intoAlbum.chunked(batchSize) {
+                steps.append(.upload(albumID: album.id, albumTitle: album.title, assetIDs: batch))
+            }
+            for batch in libraryOnly.chunked(batchSize) {
+                steps.append(.upload(albumID: album.id, albumTitle: nil, assetIDs: batch))
             }
 
             guard mirrored else { continue }
             let added = state.mirrors[album.id]?.addedAssetIDs ?? []
-            let toAdd = album.assetIDs.filter { state.uploaded[$0] != nil && !added.contains($0) }
+            let toAdd = album.visibleAssetIDs.filter { state.uploaded[$0] != nil && !added.contains($0) }
             for batch in toAdd.chunked(albumBatchSize) {
                 steps.append(.addToAlbum(albumID: album.id, albumTitle: album.title, assetIDs: batch,
                                          mediaKeys: batch.compactMap { state.uploaded[$0]?.mediaKey }))
