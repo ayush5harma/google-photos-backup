@@ -5,7 +5,7 @@ import XCTest
 
 /// Settings saved before "Choose parallel uploads automatically" existed:
 /// the old default of 2 (stored for everyone who never touched it) becomes
-/// Automatic, a number someone chose stays the most a run uses.
+/// Automatic, a number someone chose stays theirs.
 final class BackupSettingsTests: XCTestCase {
     private func decode(_ json: String) throws -> BackupSettings {
         try JSONDecoder().decode(BackupSettings.self, from: Data(json.utf8))
@@ -18,7 +18,7 @@ final class BackupSettingsTests: XCTestCase {
         XCTAssertTrue(try decode("{}").threadsAutomatic)
     }
 
-    func testAChosenNumberStaysTheMost() throws {
+    func testAChosenNumberStaysChosen() throws {
         for threads in [1, 3, 8, 16] {
             let settings = try decode(#"{"threads": \#(threads)}"#)
             XCTAssertFalse(settings.threadsAutomatic, "\(threads)")

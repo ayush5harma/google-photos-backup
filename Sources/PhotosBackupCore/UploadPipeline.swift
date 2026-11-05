@@ -30,14 +30,21 @@ public struct UploadSample: Equatable, Sendable {
 
 /// How many uploads go at once, decided between bridge requests (issue #50).
 ///
-/// It starts at four and adds one while each step is measurably faster
-/// (10% more bytes a second); the first step that is not goes back to the
-/// best level and stays. A step that is not faster is the link's limit
-/// showing as longer per-file times, so that is also how rising latency
-/// reads here. Google pushing back ends the climb for the run: a 429 halves
-/// the level, two or more retryable failures in one request take one off,
-/// and the level only ever goes down after that. A chosen number in Settings
-/// is the most it uses.
+/// A number chosen in Settings is used from the run's first request. Through
+/// 0.6.0 it was only a ceiling for the climb below. Measured 2026-11-05 on
+/// 0.6.0 with 16 chosen and a run of small photos: about one photo a second
+/// (0.6-0.8 MB/s) on a 177 Mbit/s uplink, and a 5 s sample of the bridge had
+/// 4 uploads sending and 4 waiting on Google. Each photo is about four round
+/// trips (hash check, upload token, bytes, commit), so the photos in flight,
+/// not the bandwidth, set the pace.
+///
+/// Automatically, it starts at four and adds one while each step is
+/// measurably faster (10% more bytes a second); the first step that is not
+/// goes back to the best level and stays. A step that is not faster is the
+/// link's limit showing as longer per-file times, so that is also how rising
+/// latency reads here. In either mode Google pushing back ends the climb for
+/// the run: a 429 halves the level, two or more retryable failures in one
+/// request take one off, and the level only ever goes down after that.
 public struct UploadParallelism: Equatable, Sendable {
     /// The bridge's MAX_THREADS. A ceiling: the climb reaches it only while
     /// each step keeps improving throughput.
@@ -52,10 +59,12 @@ public struct UploadParallelism: Equatable, Sendable {
     public static let serverFailuresThatCount = 2
 
     private enum Reason: Equatable, Sendable {
-        case finding, noFaster(Int), most, rateLimited, serverTrouble
+        case finding, noFaster(Int), most, chosen, rateLimited, serverTrouble
     }
 
     public let cap: Int
+    /// False: `cap` is the number chosen in Settings, used as it is.
+    public let automatic: Bool
     public private(set) var current: Int
     public private(set) var isClimbing: Bool
     private var reason = Reason.finding
@@ -63,8 +72,15 @@ public struct UploadParallelism: Equatable, Sendable {
     private var pendingBytes: Int64 = 0
     private var pendingSeconds: TimeInterval = 0
 
-    public init(cap: Int) {
+    public init(cap: Int, automatic: Bool) {
         self.cap = min(max(1, cap), Self.automaticCap)
+        self.automatic = automatic
+        guard automatic else {
+            current = self.cap
+            isClimbing = false
+            reason = .chosen
+            return
+        }
         current = min(Self.initial, self.cap)
         isClimbing = current < self.cap
         if !isClimbing { reason = .most }
@@ -116,13 +132,14 @@ public struct UploadParallelism: Equatable, Sendable {
         case .finding: return "\(level), finding the fastest"
         case let .noFaster(tried): return "\(level) (no faster at \(tried))"
         case .most: return "\(level) (the most it uses)"
+        case .chosen: return "\(level) (as chosen in Settings)"
         case .rateLimited: return "\(level) (Google asked to slow down)"
         case .serverTrouble: return "\(level) (Google had trouble keeping up)"
         }
     }
 
     public static func == (lhs: UploadParallelism, rhs: UploadParallelism) -> Bool {
-        lhs.cap == rhs.cap && lhs.current == rhs.current && lhs.isClimbing == rhs.isClimbing && lhs.reason == rhs.reason
+        lhs.cap == rhs.cap && lhs.automatic == rhs.automatic && lhs.current == rhs.current && lhs.isClimbing == rhs.isClimbing && lhs.reason == rhs.reason
             && lhs.best?.level == rhs.best?.level && lhs.best?.rate == rhs.best?.rate
             && lhs.pendingBytes == rhs.pendingBytes && lhs.pendingSeconds == rhs.pendingSeconds
     }

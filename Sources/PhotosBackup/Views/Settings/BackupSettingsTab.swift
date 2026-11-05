@@ -29,7 +29,7 @@ struct BackupSettingsTab: View {
 
             Section {
                 Toggle("Choose parallel uploads automatically", isOn: $model.settings.threadsAutomatic)
-                StepperRow(title: "At most, uploads at once", value: $model.settings.threads, range: BackupSettings.threadRange)
+                StepperRow(title: "Uploads at once", value: $model.settings.threads, range: BackupSettings.threadRange)
                     .disabled(model.settings.threadsAutomatic)
                 StepperRow(title: "Items per batch", value: $model.settings.batchSize, range: BackupSettings.batchRange, step: 5)
                 Toggle("Recreate my albums in Google Photos", isOn: $model.settings.mirrorAlbums)
@@ -37,7 +37,7 @@ struct BackupSettingsTab: View {
             } header: {
                 Text("Uploads")
             } footer: {
-                FormNote("Automatically, a backup starts with 4 uploads at once and adds more while that is faster, up to \(UploadParallelism.automaticCap); when Google asks it to slow down, it uses fewer for the rest of the backup. Otherwise the number you choose is the most it uses. Larger batches need more free disk space while they upload. Edited photos are uploaded again as edited, the way Google Photos would back them up.")
+                FormNote("Automatically, a backup starts with 4 uploads at once and adds more while that is faster, up to \(UploadParallelism.automaticCap); when Google asks it to slow down, it uses fewer for the rest of the backup. Otherwise a backup uses the number you choose from the start, and fewer only when Google asks it to slow down. Larger batches need more free disk space while they upload. Edited photos are uploaded again as edited, the way Google Photos would back them up.")
             }
 
             Section {
