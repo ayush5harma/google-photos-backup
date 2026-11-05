@@ -1078,6 +1078,15 @@ final class BackupEngine {
     /// then every account that planned some of it sends its part at the
     /// same time through its own bridge. The staged files go once every
     /// account is done with them.
+    ///
+    /// The accounts move in lockstep: the next batch starts only once the
+    /// slowest account is done with this one (a retry backoff or a 429 hold
+    /// included), so a fast account waits for a slow one at every batch. In
+    /// total this is never slower than one account at a time, but it caps
+    /// the gain at the slowest account's pace. The follow-up (review of
+    /// PR #68) is per-lane batch pulling: each lane takes the next batch
+    /// when it is ready, with a per-batch count of the lanes still using its
+    /// files, which are removed when that count reaches zero.
     private func send(_ batch: SharedPass.Batch, at index: Int, of pass: SharedPass, settings: BackupSettings) async -> Outcome {
         let sending = batch.accounts.compactMap(lane).filter { !$0.halted }
         let sends = batch.sends.filter { send in sending.contains { $0.account == send.account } }
