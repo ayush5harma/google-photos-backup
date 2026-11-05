@@ -275,8 +275,8 @@ public enum BackupPlanner {
         guard let mirror = state.mirrors[album.id], mirror.googleAlbumID != nil else {
             return AlbumAdmission(admitted: Set(visible), held: [])
         }
+        guard mirror.hasRecord else { return AlbumAdmission(admitted: [], held: []) }
         let recorded = mirror.recordedAssetIDs
-        guard !recorded.isEmpty else { return AlbumAdmission(admitted: [], held: []) }
         let newcomers = visible.filter { !recorded.contains($0) }
         let approved = mirror.approvedAssetIDs ?? []
         let counted = newcomers.filter { !approved.contains($0) }

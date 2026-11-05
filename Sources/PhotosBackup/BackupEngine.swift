@@ -585,7 +585,7 @@ final class BackupEngine {
     /// never into an album): another account never gets one.
     func planPass(settings: BackupSettings) -> [PlannedStep] {
         let albums = model.activeTakesSelection ? model.albums.map(\.snapshot) : []
-        if settings.mirrorAlbums { rebaselineUnknownMirrors(in: albums) }
+        if settings.mirrorAlbums, model.activeTakesSelection { rebaselineUnknownMirrors(in: albums + model.unlistedAlbums) }
         if settings.reuploadEdits { stampEarlierUploads(in: albums) }
         picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
         // What this run already confirmed is never planned again in it,

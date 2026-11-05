@@ -501,8 +501,9 @@ final class MultiAccountRunTests: XCTestCase {
         model.settings.reuploadEdits = false
         let members = ["asset-a", "asset-b", "asset-c"]
         model.useAlbumsForTesting([LibraryAlbum(snapshot: AlbumSnapshot(id: "shared", title: "Shared With Family", kind: .user,
-                                                                        assetIDs: members), symbol: "rectangle.stack")])
-        model.state.selectedAlbumIDs = ["shared"]
+                                                                        assetIDs: members), symbol: "rectangle.stack")],
+                                  unlisted: [AlbumSnapshot(id: "emptied", title: "Emptied", kind: .user, assetIDs: [])])
+        model.state.selectedAlbumIDs = ["shared", "emptied"]
         model.saveState()
 
         var seen: [String: [PlannedStep]] = [:]
@@ -510,6 +511,7 @@ final class MultiAccountRunTests: XCTestCase {
             if turn.account == secondID {
                 for id in members { model.state.recordUpload(assetID: id, mediaKey: "second-\(id)", existing: false) }
                 model.state.mirrors["shared"] = AlbumMirror(googleAlbumID: "fake-album-shared", addedAssetIDs: [])
+                model.state.mirrors["emptied"] = AlbumMirror(googleAlbumID: "fake-album-emptied", addedAssetIDs: [])
             }
             seen[turn.account] = model.engine.planPass(settings: model.settings)
         }
@@ -519,12 +521,14 @@ final class MultiAccountRunTests: XCTestCase {
                        "a brand-new album is created with every member")
         XCTAssertEqual(seen[secondID], [], "nothing is re-added to the linked album")
         XCTAssertEqual(model.record(of: secondID)?.mirrors["shared"]?.knownAssetIDs, Set(members))
+        XCTAssertEqual(model.record(of: secondID)?.mirrors["emptied"]?.knownAssetIDs, [],
+                       "an album with nothing to list gets an empty record, so photos added later go in")
         let saved = try BackupStore(url: support.appendingPathComponent(AccountLibrary.stateFile(for: secondID))).load()
         XCTAssertEqual(saved.mirrors["shared"]?.knownAssetIDs, Set(members), "the new baseline is on disk")
         // Problems reach the shareable report: counts only, the title in a plain line (review MAJOR 4).
         let problems = model.diagnostics.events.filter { $0.isProblem && $0.message.contains("had no record") }
-        XCTAssertEqual(problems.count, 1)
-        XCTAssertTrue(problems.first?.message.contains("3 photos") == true, problems.first?.message ?? "no event")
+        XCTAssertEqual(problems.count, 2, "one per album re-baselined")
+        XCTAssertTrue(problems.contains { $0.message.contains("its 3 photos") }, problems.map(\.message).joined(separator: " / "))
         XCTAssertFalse(model.diagnostics.events.contains { $0.isProblem && $0.message.contains("Shared With Family") },
                        "an album title in a problem line")
         XCTAssertTrue(model.diagnostics.events.contains { !$0.isProblem && $0.message.contains("Shared With Family") })

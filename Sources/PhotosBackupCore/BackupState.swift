@@ -85,6 +85,12 @@ public struct AlbumMirror: Codable, Equatable, Sendable {
         approvedAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .approvedAssetIDs)
     }
 
+    /// Whether the mirror knows what its album held when linked: some member
+    /// added, or a known list, even an empty one (an album re-baselined
+    /// while empty). Without one, a linked album takes nothing until it is
+    /// re-baselined.
+    public var hasRecord: Bool { !addedAssetIDs.isEmpty || knownAssetIDs != nil }
+
     /// Every member this mirror has a record of, sent or only known.
     /// Read every pass for every linked album: without known members it is
     /// addedAssetIDs itself, not a copy.
@@ -226,8 +232,8 @@ public struct BackupState: Codable, Equatable, Sendable {
     /// re-baselined, for the timeline.
     public mutating func rebaselineUnknownMirrors(in albums: [AlbumSnapshot]) -> [RebaselinedAlbum] {
         var rebaselined: [RebaselinedAlbum] = []
-        for album in albums where album.kind == .user && selectedAlbumIDs.contains(album.id) && !album.assetIDs.isEmpty {
-            guard var mirror = mirrors[album.id], mirror.googleAlbumID != nil, mirror.recordedAssetIDs.isEmpty else { continue }
+        for album in albums where album.kind == .user && selectedAlbumIDs.contains(album.id) {
+            guard var mirror = mirrors[album.id], mirror.googleAlbumID != nil, !mirror.hasRecord else { continue }
             mirror.knownAssetIDs = Set(album.assetIDs)
             mirror.approvedAssetIDs = nil
             mirrors[album.id] = mirror

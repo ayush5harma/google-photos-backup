@@ -81,6 +81,24 @@ private let shared = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, a
         #expect(fresh.rebaselineUnknownMirrors(in: [shared]).isEmpty, "an album not created yet is not a re-add")
     }
 
+    /// Review of feat/53-guards, minor 6: an Apple album that was empty when
+    /// its record was cleared is re-baselined as empty (a record, though an
+    /// empty one), so photos added to it later go in instead of all being
+    /// taken as known.
+    @Test func anAlbumEmptyWhenReBaselinedStillTakesPhotosAddedLater() {
+        var cleared = state(selected: ["shared"], mirrors: ["shared": AlbumMirror(googleAlbumID: "g-shared", addedAssetIDs: [])])
+        let empty = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: [])
+        #expect(cleared.rebaselineUnknownMirrors(in: [empty]) == [RebaselinedAlbum(albumID: "shared", title: "Shared", count: 0)])
+        #expect(cleared.mirrors["shared"]?.knownAssetIDs == [], "an empty record, not a missing one")
+        #expect(cleared.rebaselineUnknownMirrors(in: [empty]).isEmpty, "once is enough")
+
+        cleared.recordUpload(assetID: "new", mediaKey: "key-new", existing: false)
+        let later = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: ["new"])
+        #expect(cleared.rebaselineUnknownMirrors(in: [later]).isEmpty)
+        #expect(BackupPlanner.plan(albums: [later], state: cleared, mirrorAlbums: true, batchSize: 10, uploadsHidden: true)
+            == [.addToAlbum(albumID: "shared", albumTitle: "Shared", assetIDs: ["new"], mediaKeys: ["key-new"])])
+    }
+
     @Test func aBrandNewAlbumIsStillCreatedWithAllItsMembers() {
         let steps = BackupPlanner.plan(albums: [shared], state: state(selected: ["shared"], uploaded: ["a"]), mirrorAlbums: true,
                                        batchSize: 10, uploadsHidden: true)

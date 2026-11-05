@@ -53,9 +53,19 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         DispatchQueue.main.async { self.onChange?() }
     }
 
-    /// Every offered album with its asset identifiers, newest first. Runs off
-    /// the main thread: a large library takes a noticeable moment.
-    static func loadAlbums() async -> [LibraryAlbum] {
+    /// What one read of the library finds.
+    struct Listing {
+        /// Every offered album with its asset identifiers, newest first.
+        var albums: [LibraryAlbum]
+        /// User albums with nothing to list, kept out of the window but
+        /// still read by the re-baseline (BackupState.rebaselineUnknownMirrors):
+        /// an album empty when its record was lost gets an empty record, so
+        /// photos added later go in instead of all being taken as known.
+        var unlisted: [AlbumSnapshot]
+    }
+
+    /// Runs off the main thread: a large library takes a noticeable moment.
+    static func loadAlbums() async -> Listing {
         await Task.detached(priority: .utility) { readAlbums() }.value
     }
 
@@ -75,7 +85,7 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         return options
     }
 
-    private static func readAlbums() -> [LibraryAlbum] {
+    private static func readAlbums() -> Listing {
         let options = listing
 
         // The modification date comes with the asset row PhotoKit already
@@ -112,14 +122,15 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         }
 
         var user: [LibraryAlbum] = []
+        var unlisted: [AlbumSnapshot] = []
         PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
             .enumerateObjects { collection, _, _ in
                 let album = snapshot(id: collection.localIdentifier, title: collection.localizedTitle ?? "Untitled", kind: .user,
                                      PHAsset.fetchAssets(in: collection, options: options))
-                guard !album.assetIDs.isEmpty else { return }
+                guard !album.assetIDs.isEmpty else { return unlisted.append(album) }
                 user.append(LibraryAlbum(snapshot: album, symbol: "rectangle.stack"))
             }
         user.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-        return albums + user
+        return Listing(albums: albums + user, unlisted: unlisted)
     }
 }
