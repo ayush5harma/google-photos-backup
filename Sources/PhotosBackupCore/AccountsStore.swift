@@ -4,7 +4,8 @@ import Foundation
 /// support directory. Loading never writes the index or a record: the caller
 /// saves the index once the credential it files is safely in the keychain,
 /// so a crash between the two only makes the next launch file it again.
-/// (It does move an unreadable file aside, never to be read back.)
+/// (It does move an unreadable file aside, and copies state.json once at
+/// the upgrade from one account; neither is read back.)
 public struct AccountsStore: Sendable {
     public let directory: URL
 
@@ -18,6 +19,12 @@ public struct AccountsStore: Sendable {
     /// passed their storage check (PR #53 review), so a damaged or missing
     /// accounts.json is read from here first.
     public static let indexCopyFile = "accounts.json.bak"
+    /// state.json as it was at the upgrade from one account, written once
+    /// and never read. After the upgrade an older version shows itself
+    /// signed out (the keychain item moved), and signing in there to another
+    /// account rewrites state.json, until then the only copy of the first
+    /// account's history (PR #53 review). Kept for recovery by hand.
+    public static let preAccountsCopy = "state.json.pre-accounts"
 
     public var indexURL: URL { directory.appendingPathComponent(Self.indexFile) }
     public var indexCopyURL: URL { directory.appendingPathComponent(Self.indexCopyFile) }
@@ -93,6 +100,9 @@ public struct AccountsStore: Sendable {
             library = AccountLibrary(index: index, states: states, unclaimed: unclaimed)
         } else {
             let legacy = readState(AccountLibrary.legacyStateFile, &unreadable)
+            // Only at the upgrade itself: a rebuilt index finds a state.json
+            // that is no longer from before accounts.
+            if legacy != nil, !indexLost { keepPreAccountsCopy() }
             library = .migrating(legacy: legacy, credentialEmail: legacyCredential.email,
                                  hasCredential: legacyCredential.exists, now: now)
             migrated = true
@@ -172,6 +182,15 @@ public struct AccountsStore: Sendable {
             lost = true
             return nil
         }
+    }
+
+    /// Copies state.json byte for byte, once: an existing copy is never
+    /// replaced. A failed copy leaves the upgrade exactly as it was before
+    /// this copy existed, so it does not stop the launch.
+    private func keepPreAccountsCopy() {
+        let copy = url(of: Self.preAccountsCopy)
+        guard !FileManager.default.fileExists(atPath: copy.path) else { return }
+        try? FileManager.default.copyItem(at: url(of: AccountLibrary.legacyStateFile), to: copy)
     }
 
     private static func decodeIndex(at url: URL) throws -> AccountsIndex {

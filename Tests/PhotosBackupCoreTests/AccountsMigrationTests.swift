@@ -251,4 +251,59 @@ enum LegacyStateFixture {
         #expect(again.state.uploaded["x"]?.mediaKey == "AF1QipX")
         #expect(again.state.mirrors["trip"]?.googleAlbumID == "AF1QipAlbum")
     }
+
+    /// Review of PR #53, MINOR 4: downgraded after the upgrade, the older
+    /// version is signed out (its keychain item moved) and signing in there
+    /// to another account rewrites state.json, the only copy of the first
+    /// account's history. The upgrade keeps state.json.pre-accounts, byte
+    /// for byte, once; nothing reads it, and nothing replaces it.
+    @Test func theUpgradeKeepsAOneTimeCopyOfStateJson() throws {
+        let directory = try scratch()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let legacyURL = directory.appendingPathComponent("state.json")
+        let copyURL = directory.appendingPathComponent(AccountsStore.preAccountsCopy)
+        try BackupStore(url: legacyURL).save(LegacyStateFixture.make())
+        let before = try Data(contentsOf: legacyURL)
+        let store = AccountsStore(directory: directory)
+
+        let loaded = store.load(legacyCredential: (exists: true, email: LegacyStateFixture.email))
+        #expect(loaded.migrated)
+        #expect(try Data(contentsOf: copyURL) == before)
+        #expect(try Data(contentsOf: legacyURL) == before, "state.json itself is untouched")
+        try store.save(loaded.library.index)
+
+        // The older version, signed in to another account, rewrites state.json.
+        var other = BackupState()
+        other.accountEmail = "someone.else@gmail.com"
+        other.recordUpload(assetID: "y", mediaKey: "key-y", existing: false)
+        try BackupStore(url: legacyURL).save(other)
+        let upgradedAgain = store.load(legacyCredential: (exists: true, email: "someone.else@gmail.com"))
+        #expect(upgradedAgain.reassigned == [LegacyStateFixture.email])
+        #expect(try Data(contentsOf: copyURL) == before, "the copy still holds the first account's history")
+        let kept = try BackupStore(url: copyURL).load()
+        #expect(kept.uploaded.count == LegacyStateFixture.uploads && kept.mirrors.count == LegacyStateFixture.albums)
+
+        // Even a second upgrade (accounts.json and its copy gone) leaves it.
+        try FileManager.default.removeItem(at: store.indexURL)
+        try FileManager.default.removeItem(at: store.indexCopyURL)
+        _ = store.load(legacyCredential: (exists: false, email: nil))
+        #expect(try Data(contentsOf: copyURL) == before)
+    }
+
+    @Test func noCopyWithoutAStateJsonOrForALostIndex() throws {
+        let directory = try scratch()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AccountsStore(directory: directory)
+        let copyURL = directory.appendingPathComponent(AccountsStore.preAccountsCopy)
+        let fresh = store.load(legacyCredential: (exists: true, email: "me@example.com"))
+        #expect(!FileManager.default.fileExists(atPath: copyURL.path), "a fresh install has nothing to copy")
+
+        // Signed in since: state.json is that account's, not from before accounts.
+        try store.save(BackupState(), file: "state.json")
+        try store.save(fresh.library.index)
+        try Data("{broken".utf8).write(to: store.indexURL)
+        try Data("{broken".utf8).write(to: store.indexCopyURL)
+        #expect(store.load(legacyCredential: (exists: false, email: nil)).indexLost)
+        #expect(!FileManager.default.fileExists(atPath: copyURL.path))
+    }
 }
