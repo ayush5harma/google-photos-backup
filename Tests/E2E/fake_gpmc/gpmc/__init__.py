@@ -28,18 +28,27 @@ Scenario keys (all optional):
                                  answers 404, as Google does for a key it
                                  no longer has
   "delay": 0.2                   seconds each file takes (to test Stop)
+  "per_account": true            each account (the credential's Email) holds
+                                 its own media and albums, as separate Google
+                                 accounts do, under "accounts" in the ledger
 
 Ledger (JSON, written under an exclusive file lock):
   {"media": {"<sha1 hex>": "<media key>"},
    "counters": {"uploads": n, "auth": n, "<file name>": attempts},
-   "uploads": [{"filename", "sha1", "status": "uploaded" | "existing" | "failed", "message"?}],
-   "albums": {"<album id>": {"name", "media_keys": [...]}}}
+   "uploads": [{"filename", "sha1", "status": "uploaded" | "existing" | "failed", "message"?,
+                "account", "saver", "use_quota"}],
+   "albums": {"<album id>": {"name", "media_keys": [...]}},
+   "accounts": {"<email>": {"media": {...}, "albums": {...}}}}   with "per_account"
+Every upload records the account and the quality flags it was sent with, so a
+test can prove each account goes up as Original quality (saver and use_quota
+both false: the Pixel XL path).
 """
 
 from __future__ import annotations
 
 import contextlib
 import hashlib
+import urllib.parse
 import json
 import logging
 import os
@@ -137,6 +146,26 @@ def _ledger(scenario: dict[str, Any]) -> Iterator[dict[str, Any]]:
             handle.flush()
 
 
+def _email(auth_data: str) -> str:
+    """The Email field of an auth_data string."""
+    for pair in auth_data.split("&"):
+        name, _, value = pair.partition("=")
+        if name == "Email":
+            return urllib.parse.unquote_plus(value)
+    return ""
+
+
+def _space(data: dict[str, Any], scenario: dict[str, Any], account: str) -> dict[str, Any]:
+    """Where this account's media and albums live: the ledger itself, or with
+    "per_account" a Google account of its own."""
+    if not scenario.get("per_account"):
+        return data
+    space = data.setdefault("accounts", {}).setdefault(account or "unknown", {})
+    space.setdefault("media", {})
+    space.setdefault("albums", {})
+    return space
+
+
 def _count(data: dict[str, Any], key: str) -> int:
     """Increments a counter and returns its new value."""
     data["counters"][key] = data["counters"].get(key, 0) + 1
@@ -156,6 +185,7 @@ def _error(kind: str, url: str) -> Exception:
 class Api:
     def __init__(self, auth_data: str) -> None:
         self.auth_data = auth_data
+        self.account = _email(auth_data)
 
     @property
     def bearer_token(self) -> str:
@@ -175,15 +205,16 @@ class Api:
 
     def add_media_to_album(self, album_media_key: str, media_keys: list[str]) -> dict:
         # gpmc 0.9.0 appends to an existing album here, not on Client.
-        _album(media_keys, album_id=album_media_key)
+        _album(media_keys, album_id=album_media_key, account=self.account)
         return {}
 
     def create_album(self, album_name: str, media_keys: list[str]) -> str:
-        return _album(media_keys, name=album_name)
+        return _album(media_keys, name=album_name, account=self.account)
 
     def find_remote_media_by_hash(self, sha1_hash: bytes) -> str | None:
-        with _ledger(_scenario()) as data:
-            return data["media"].get(sha1_hash.hex())
+        scenario = _scenario()
+        with _ledger(scenario) as data:
+            return _space(data, scenario, self.account)["media"].get(sha1_hash.hex())
 
 
 class Client:
@@ -193,6 +224,7 @@ class Client:
         self.timeout = timeout
         self.language = language
         self.api = Api(auth_data)
+        self.account = self.api.account
 
     def upload(
         self,
@@ -210,7 +242,8 @@ class Client:
             path = Path(path)
             filename = options.get("filename") or path.name
             try:
-                results.update(self._upload_file(path, filename, force_upload, progress_callback))
+                results.update(self._upload_file(path, filename, force_upload, progress_callback,
+                                                 flags={"saver": saver, "use_quota": use_quota}))
             except Exception as error:
                 # gpmc 0.9.0 reports a failed file only like this: a progress
                 # event with phase "error" and one logged line.
@@ -218,10 +251,13 @@ class Client:
                     progress_callback(self._event("error", path, filename, 0))
                 _logger.error(f"Error uploading file {path}: {error}")
                 with _ledger(_scenario()) as data:
-                    data["uploads"].append({"filename": filename, "status": "failed", "message": str(error)})
+                    data["uploads"].append({"filename": filename, "status": "failed", "message": str(error),
+                                            "account": self.account, "saver": saver, "use_quota": use_quota})
         return results
 
-    def _upload_file(self, path: Path, filename: str, force: bool, progress: Callable[[dict[str, Any]], None] | None) -> dict[str, str]:
+    def _upload_file(self, path: Path, filename: str, force: bool, progress: Callable[[dict[str, Any]], None] | None,
+                     flags: dict[str, bool] | None = None) -> dict[str, str]:
+        tags = {"account": self.account, **(flags or {})}
         scenario = _scenario()
         report = (lambda phase, done: progress(self._event(phase, path, filename, done))) if progress else (lambda *_: None)
         content = path.read_bytes()
@@ -231,12 +267,13 @@ class Client:
             time.sleep(float(scenario["delay"]))
 
         with _ledger(scenario) as data:
+            media = _space(data, scenario, self.account)["media"]
             if not force:
                 report("checking", 0)
-                if sha1 in data["media"]:
-                    data["uploads"].append({"filename": filename, "sha1": sha1, "status": "existing"})
+                if sha1 in media:
+                    data["uploads"].append({"filename": filename, "sha1": sha1, "status": "existing", **tags})
                     report("skipped", len(content))
-                    return {path.absolute().as_posix(): data["media"][sha1]}
+                    return {path.absolute().as_posix(): media[sha1]}
             if _count(data, "uploads") <= scenario.get("rate_limit_first", 0):
                 raise _error("429", UPLOAD_URL)
             if filename in scenario.get("fail", {}):
@@ -255,9 +292,12 @@ class Client:
         report("uploading", len(content) // 2)
         report("finalizing", len(content))
         media_key = f"fake-{sha1[:24]}"
+        if scenario.get("per_account"):
+            # A key of the account's own: one item in two accounts has two keys.
+            media_key = "fake-" + hashlib.sha1((self.account + sha1).encode()).hexdigest()[:24]
         with _ledger(scenario) as data:
-            data["media"][sha1] = media_key
-            data["uploads"].append({"filename": filename, "sha1": sha1, "status": "uploaded"})
+            _space(data, scenario, self.account)["media"][sha1] = media_key
+            data["uploads"].append({"filename": filename, "sha1": sha1, "status": "uploaded", **tags})
         report("complete", len(content))
         return {path.absolute().as_posix(): media_key}
 
@@ -268,19 +308,21 @@ class Client:
                 "filename": filename, "bytes_completed": done, "bytes_total": total}
 
     def add_to_album(self, media_keys: list[str], album_name: str, show_progress: bool) -> list[str]:
-        return [_album(media_keys, name=album_name)]
+        return [_album(media_keys, name=album_name, account=self.account)]
 
 
-def _album(media_keys: list[str], name: str | None = None, album_id: str | None = None) -> str:
+def _album(media_keys: list[str], name: str | None = None, album_id: str | None = None, account: str = "") -> str:
     scenario = _scenario()
     if scenario.get("album_error"):
         raise RuntimeError(scenario["album_error"])
     if set(media_keys) & set(scenario.get("dead_media_keys", [])):
         raise _error("404", ALBUM_URL)
     with _ledger(scenario) as data:
+        albums = _space(data, scenario, account)["albums"]
         if album_id is None:
-            album_id = f"fake-album-{len(data['albums']) + 1}"
-            data["albums"][album_id] = {"name": name, "media_keys": []}
-        album = data["albums"].setdefault(album_id, {"name": name, "media_keys": []})
+            prefix = f"fake-album-{account}-" if scenario.get("per_account") else "fake-album-"
+            album_id = f"{prefix}{len(albums) + 1}"
+            albums[album_id] = {"name": name, "media_keys": []}
+        album = albums.setdefault(album_id, {"name": name, "media_keys": []})
         album["media_keys"] += [key for key in media_keys if key not in album["media_keys"]]
     return album_id
