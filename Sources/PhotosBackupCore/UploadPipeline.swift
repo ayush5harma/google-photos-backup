@@ -39,8 +39,9 @@ public struct UploadSample: Equatable, Sendable {
 /// and the level only ever goes down after that. A chosen number in Settings
 /// is the most it uses.
 public struct UploadParallelism: Equatable, Sendable {
-    /// The bridge's MAX_THREADS.
-    public static let automaticCap = 8
+    /// The bridge's MAX_THREADS. A ceiling: the climb reaches it only while
+    /// each step keeps improving throughput.
+    public static let automaticCap = 16
     public static let initial = 4
     public static let improvement = 0.10
     /// A level is judged on at least this much: one batch of photos is

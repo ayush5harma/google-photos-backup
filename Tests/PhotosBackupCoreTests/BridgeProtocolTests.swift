@@ -122,7 +122,7 @@ private func event(_ json: String) throws -> BridgeEvent {
     /// sent to the bridge as "original" and nothing else (Bridge/gpmc_bridge.py
     /// upload_flags turns that into saver=False, use_quota=False).
     @Test func originalQualityIsSentAsOriginal() throws {
-        for threads in 1...UploadParallelism.automaticCap {
+        for threads in 1...16 {
             let request = BridgeRequest.upload("auth", items: [BridgeItem(id: "A", path: "/s/A.MOV", filename: "A.MOV", force: true)],
                                                quality: .original, threads: threads, album: nil)
             let json = try #require(JSONSerialization.jsonObject(with: request.encoded()) as? [String: Any])

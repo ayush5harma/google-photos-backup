@@ -114,7 +114,7 @@ hold forever and keep automatic runs from starting.
 
 **Parallel uploads.** With "Choose parallel uploads automatically" on, a run
 starts with 4 uploads at once and adds one after each batch that was at least
-10% faster in bytes a second, up to 8; the first step that is not faster goes
+10% faster in bytes a second, up to 16; the first step that is not faster goes
 back to the best level and stays there. A 429 halves the level and two or more
 retryable failures in one batch take one off, for the rest of the run. With it
 off, the number chosen is the most a run uses. The Activity window and the menu
@@ -273,8 +273,8 @@ outside its range is clamped when settings load.
 | Setting (UI) | Key | Default | Range |
 |---|---|---|---|
 | Upload quality | `quality` | Pixel XL original quality (`original`) | `original`, `saver` (Storage saver), `quota` (Original, counts against storage). Google controls actual storage accounting. |
-| Choose parallel uploads automatically | `threadsAutomatic` | on | Starts at 4 uploads at once, adds one while that is at least 10% faster, up to 8; a 429 halves it and repeated server errors take one off, for the rest of the run. Settings saved before it existed decode as on when Parallel uploads was the old default of 2, and keep the chosen number otherwise. |
-| At most, uploads at once | `threads` | 2 | 1 to 8; used when automatic is off, as the most a run uses |
+| Choose parallel uploads automatically | `threadsAutomatic` | on | Starts at 4 uploads at once, adds one while that is at least 10% faster, up to 16; a 429 halves it and repeated server errors take one off, for the rest of the run. Settings saved before it existed decode as on when Parallel uploads was the old default of 2, and keep the chosen number otherwise. |
+| At most, uploads at once | `threads` | 2 | 1 to 16; used when automatic is off, as the most a run uses |
 | Items per batch | `batchSize` | 20 | 5 to 100, in steps of 5 |
 | Recreate my albums in Google Photos | `mirrorAlbums` | on | |
 | Back up edits again | `reuploadEdits` | on | |

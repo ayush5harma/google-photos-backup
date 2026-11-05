@@ -9,7 +9,7 @@ struct BackupSettings: Codable, Equatable {
     /// The most gpmc uploads at once when `threadsAutomatic` is off.
     var threads = 2
     /// The engine finds how many uploads at once the link takes, up to the
-    /// bridge's 8, and uses fewer when Google pushes back (UploadParallelism).
+    /// bridge's 16, and uses fewer when Google pushes back (UploadParallelism).
     var threadsAutomatic = true
     /// Assets exported and handed to gpmc per bridge run; also how much
     /// staging space a run needs at once.
@@ -105,7 +105,7 @@ struct BackupSettings: Codable, Equatable {
     /// small batch no longer pays its start-up, but under 5 the parallel
     /// uploads still sit idle at each batch's end; over 100 stages too much
     /// at once.
-    static let threadRange = 1...8
+    static let threadRange = 1...UploadParallelism.automaticCap
     static let batchRange = 5...100
     static let snapshotRange = 0...30
 

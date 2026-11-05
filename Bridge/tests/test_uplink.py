@@ -136,8 +136,18 @@ class QualityGuardTests(unittest.TestCase):
             self.assertLessEqual(set(call), UPLOAD_KWARGS, context)
             self.assertEqual(call["threads"], 1, context)
 
+    def test_the_thread_ceiling_is_sixteen(self):
+        # A literal, so the ceiling cannot move without this guard being read:
+        # every count up to it is exercised below, and one past it is refused.
+        self.assertEqual(gpmc_bridge.MAX_THREADS, 16)
+        for threads in (0, 17):
+            client = FakeClient()
+            _, events, _ = serve([upload(["a.jpg"], threads=threads)], client)
+            self.assertEqual(client.upload_calls, [], threads)
+            self.assertEqual(answers(events)[0][0], gpmc_bridge.EXIT_REQUEST, threads)
+
     def test_no_upload_path_sends_other_flags_for_original(self):
-        for threads in range(1, gpmc_bridge.MAX_THREADS + 1):
+        for threads in range(1, 17):
             for quality in ({}, {"quality": "original"}):
                 for force in ({}, {"force": True}):
                     request = upload(["a.jpg", "b.jpg", "c.jpg"], threads=threads, **quality, **force)
@@ -265,6 +275,28 @@ class KeptSessionTests(unittest.TestCase):
         # never get, or give back, a kept one.
         self.assertNotIn("_new_session", vars(client.api))
         self.assertIsInstance(client.api._new_session(), FakeSession)
+
+    def test_sixteen_threads_keep_sixteen_sessions_without_reopening_any(self):
+        # Every thread holds its own session while it works; all of them must
+        # fit in the idle list when the round ends, or the surplus is closed
+        # and a new connection opened for the next round.
+        pool = gpmc_bridge.SessionPool(FakeSession)
+        held = [pool.checkout() for _ in range(gpmc_bridge.MAX_THREADS)]
+        for session in held:
+            session.close()
+        self.assertEqual(FakeSession.made, 16)
+        self.assertFalse(any(session.closed for session in held))
+        again = [pool.checkout() for _ in range(gpmc_bridge.MAX_THREADS)]
+        self.assertEqual(FakeSession.made, 16)
+        self.assertEqual({id(s) for s in again}, {id(s) for s in held})
+
+    def test_sixteen_upload_threads_make_at_most_sixteen_sessions(self):
+        client = SessionClient()
+        names = [f"{n}.jpg" for n in range(48)]
+        code, _, _ = serve([upload(names, threads=16)], client)
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual(len(client.api.sessions_seen), 48 * 4)
+        self.assertLessEqual(FakeSession.made, 16)
 
     def test_a_one_shot_request_keeps_gpmcs_fresh_sessions(self):
         # PR #52 review: the Windows app and the Android app's run() are one

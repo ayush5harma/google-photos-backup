@@ -96,7 +96,7 @@ EXIT_STOPPED = 5
 EXIT_RATE_LIMIT = 6
 
 DEFAULT_TIMEOUT = 60
-MAX_THREADS = 8
+MAX_THREADS = 16
 
 # quality -> (saver, use_quota), the two gpmc flags that pick the device model
 # gpmc reports at commit: Pixel XL (original, free), Pixel 2 (storage saver),
@@ -474,6 +474,11 @@ def _renew_one_at_a_time(api: Any) -> None:
 # verify_original clears a session's headers, cookies and retries for its
 # signed downloads. A one-shot request (the Windows app, the Android app's
 # in-process run(), the Mac app's checks) keeps gpmc's fresh sessions.
+# One session serves one call at a time, so it holds one connection per host
+# and requests' per-session pool (10 connections a host) is never the limit,
+# however many threads run: sixteen threads are sixteen sessions. What must
+# cover every thread is this idle list: with fewer slots than threads, each
+# round of calls would close the surplus sessions and open them again.
 MAX_IDLE_SESSIONS = MAX_THREADS + 2
 _POOL_ATTRIBUTE = "_photos_backup_sessions"
 
