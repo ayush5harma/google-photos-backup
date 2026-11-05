@@ -506,7 +506,9 @@ final class BackupEngine {
             if messagesOnly { break }
             await model.reloadAlbums()
             let settings = model.settings
-            let albums = model.albums.map(\.snapshot)
+            // An account the choice leaves out gets only what it alone takes
+            // (the queues above and the picks), never the selected albums.
+            let albums = model.activeTakesSelection ? model.albums.map(\.snapshot) : []
             if settings.reuploadEdits { stampEarlierUploads(in: albums) }
             picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
             // What this run already confirmed is never planned again in it,

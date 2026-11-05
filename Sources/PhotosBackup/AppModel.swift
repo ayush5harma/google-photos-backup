@@ -212,6 +212,8 @@ final class AppModel {
     @ObservationIgnored private var accountLibrary: AccountLibrary
     /// Signed-in accounts in run order; the first is the primary.
     private(set) var accounts: [BackupAccount] = []
+    /// "Back up to": which accounts a backup that names none goes to.
+    private(set) var accountsChoice: AccountsChoice = .all
     /// Whose record `state` is and whose credential `authData` is: the
     /// account a run is going to, else the primary. It changes only while
     /// the engine is idle, so whatever a run confirms lands in its account.
@@ -313,7 +315,7 @@ final class AppModel {
         try? FileManager.default.removeItem(at: paths.staging)
         try? FileManager.default.removeItem(at: PickedFile.root)
         refreshCredentials()
-        accounts = accountLibrary.accounts
+        publishAccounts()
         activeAccountID = accountLibrary.primary?.id
         state = currentRecord()
         if indexChanged { saveIndex() }
@@ -394,23 +396,91 @@ final class AppModel {
         return summary
     }
 
+    // MARK: - Which accounts backups go to
+
+    /// Whether a backup that names no account goes to this one.
+    func isIncluded(_ id: String) -> Bool {
+        accounts.first { $0.id == id }.map { AccountLibrary.includes(accountsChoice, $0) } ?? false
+    }
+
+    /// Signed-in accounts the choice includes, ready or not.
+    var includedAccounts: [BackupAccount] { accounts.filter { AccountLibrary.includes(accountsChoice, $0) } }
+
+    /// Where Back Up Now, an automatic run and photosbackup://backup go, in
+    /// order: included, with a credential and past the storage check.
+    var targetAccounts: [BackupAccount] { runnableAccounts.filter { AccountLibrary.includes(accountsChoice, $0) } }
+
+    /// Accounts are signed in, and the choice leaves every one of them out.
+    var noAccountIncluded: Bool { !accounts.isEmpty && includedAccounts.isEmpty }
+
+    /// "Back up to: All accounts / Only the accounts I choose".
+    func chooseAccounts(_ choice: AccountsChoice) {
+        guard choice != accountsChoice else { return }
+        syncActiveRecord()
+        accountLibrary.choose(choice)
+        saveIndex()
+        publishAccounts()
+        log(.account, choice == .all ? "Backups go to all accounts" : "Backups go only to the accounts chosen in Settings")
+    }
+
+    /// An account's "Include in backups". Never touches its record or
+    /// credential; a one-off backup can still go to an account left out.
+    func setIncluded(_ id: String, _ included: Bool) {
+        guard let account = accountLibrary.account(id), !account.removed, isIncluded(id) != included else { return }
+        syncActiveRecord()
+        accountLibrary.include(id, included)
+        saveIndex()
+        publishAccounts()
+        log(.account, included ? "\(account.title) is included in backups" : "\(account.title) is left out of backups")
+    }
+
+    private func publishAccounts() {
+        accounts = accountLibrary.accounts
+        accountsChoice = accountLibrary.choice
+    }
+
+    /// Whether a run on the active account backs up the album selection.
+    /// A pass's turn says so for itself (a one-off names its account);
+    /// otherwise an account the choice leaves out takes only what it alone
+    /// takes: picks, Messages media and device imports, for the primary.
+    var activeTakesSelection: Bool {
+        guard let id = activeAccountID else { return true }
+        if let turn = runner.currentTurn, turn.account == id { return turn.photos }
+        return isIncluded(id)
+    }
+
     /// The selection against every account a run goes to, summed: with
     /// several accounts the selection is backed up only once each holds it,
-    /// so the status, the ring and the percentage count every copy. With one
-    /// account it is `summary`.
+    /// so the status, the ring and the percentage count every copy, and an
+    /// account left out counts for nothing. With one account it is `summary`.
     var overallSummary: BackupSummary {
-        let runnable = runnableAccounts
-        guard accounts.count > 1, !runnable.isEmpty else { return summary }
-        let each = runnable.map { summary(of: $0.id) }
+        let targets = targetAccounts
+        if targets.isEmpty {
+            // Signed out (the primary's record, as with one account), or
+            // nothing included: then nothing is to go anywhere.
+            return noAccountIncluded ? BackupSummary(backedUp: 0, pending: 0, selectedAlbums: summary.selectedAlbums) : summary
+        }
+        if targets.count == 1, targets[0].id == activeAccountID { return summary }
+        let each = targets.map { summary(of: $0.id) }
         return BackupSummary(backedUp: each.reduce(0) { $0 + $1.backedUp }, pending: each.reduce(0) { $0 + $1.pending },
                              selectedAlbums: summary.selectedAlbums)
+    }
+
+    /// The selection against one account a run goes to, for "Backed up":
+    /// the active one when it is such an account, else the first. With the
+    /// primary left out, its own count would describe an account no run
+    /// goes to.
+    var leadingSummary: BackupSummary {
+        let targets = targetAccounts
+        if targets.isEmpty || targets.contains(where: { $0.id == activeAccountID }) { return summary }
+        return summary(of: targets[0].id)
     }
 
     /// With several accounts, what is left in words that do not count an
     /// item twice: "1,234 items to go to one account"; nil otherwise.
     var accountsPendingPhrase: String? {
         guard accounts.count > 1 else { return nil }
-        let behind = runnableAccounts.filter { summary(of: $0.id).pending > 0 }
+        let behind = targetAccounts.filter { summary(of: $0.id).pending > 0 }
         guard !behind.isEmpty else { return nil }
         let items = behind.reduce(0) { $0 + summary(of: $1.id).pending }
         return "\(items.formatted()) items to go to \(behind.count == 1 ? "one account" : "\(behind.count) accounts")"
@@ -573,14 +643,18 @@ final class AppModel {
         runner.start(trigger: trigger, messages: true)
     }
 
-    /// Every account in turn; Messages media too when it is on.
-    func startBackupNow(trigger: RunTrigger = .manual) {
-        runner.start(trigger: trigger, messages: true)
+    /// Back Up Now: the accounts the choice includes, in turn, and Messages
+    /// media to the primary when it is on (even if the choice leaves the
+    /// primary out of photo backups). `destination` makes it a one-off to
+    /// every account or to one; the saved choice never changes.
+    func startBackupNow(to destination: AccountRunner.Destination = .chosen, trigger: RunTrigger = .manual) {
+        runner.start(trigger: trigger, messages: true, to: destination)
     }
 
-    /// The selected albums to every account in turn.
-    func backUpPhotosNow(trigger: RunTrigger) {
-        runner.start(trigger: trigger, messages: false)
+    /// The selected albums to the accounts the choice includes, in turn,
+    /// or as a one-off to `destination`.
+    func backUpPhotosNow(to destination: AccountRunner.Destination = .chosen, trigger: RunTrigger) {
+        runner.start(trigger: trigger, messages: false, to: destination)
     }
 
     /// A busy engine, or a pass between two accounts.
@@ -901,7 +975,7 @@ final class AppModel {
         accountLibrary = candidate
         saveIndex()
         refreshCredentials()
-        accounts = accountLibrary.accounts
+        publishAccounts()
         if activeAccountID == nil || accountLibrary.account(activeAccountID ?? "")?.removed == true {
             // The first account (or the first after the last was removed).
             activate(primaryAccount?.id)
@@ -944,7 +1018,7 @@ final class AppModel {
         accountLibrary.remove(id)
         saveIndex()
         refreshCredentials()
-        accounts = accountLibrary.accounts
+        publishAccounts()
         accountStatuses[id] = nil
         if activeAccountID == id { activate(primaryAccount?.id) }
         primaryChanged(from: primaryBefore)
@@ -992,7 +1066,7 @@ final class AppModel {
         syncActiveRecord()
         accountLibrary.confirmStorage(id)
         saveIndex()
-        accounts = accountLibrary.accounts
+        publishAccounts()
         log(.account, "Backups to \(account.title) start")
         startBackupNow(trigger: .manual)
     }
@@ -1053,7 +1127,7 @@ final class AppModel {
         accountLibrary = candidate
         saveIndex()
         refreshCredentials()
-        accounts = accountLibrary.accounts
+        publishAccounts()
         accountStatuses[id] = nil
         accountStatuses[target] = .connected(email: email)
         if activeAccountID == id || activeAccountID == target {
@@ -1100,6 +1174,8 @@ final class AppModel {
         var email: String
         var status: AccountStatus
         var storageChecked = true
+        /// False leaves it out: backups then go only to the chosen accounts.
+        var included = true
         /// nil keeps whatever record the fixture sets as `state` later.
         var record: BackupState?
     }
@@ -1116,8 +1192,9 @@ final class AppModel {
             let id = library.adopting(account: item.email, storageChecked: item.storageChecked).account.id
             if let record = item.record { library.update(record, for: id) }
         }
+        for item in fixture where !item.included { library.include(GoogleSignIn.normalizedEmail(item.email), false) }
         accountLibrary = library
-        accounts = library.accounts
+        publishAccounts()
         credentialAccounts = Set(fixture.filter { $0.status != .missing }.map { GoogleSignIn.normalizedEmail($0.email) })
         accountStatuses = Dictionary(fixture.map { (GoogleSignIn.normalizedEmail($0.email), $0.status) }, uniquingKeysWith: { first, _ in first })
         activeAccountID = accounts.first?.id

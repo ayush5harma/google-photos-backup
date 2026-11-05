@@ -123,7 +123,8 @@ final class MultiAccountRunTests: XCTestCase {
 
         let batch = try items(3, tag: "same-library")
         var turns: [String] = []
-        model.runner.turn = { id, trigger in
+        model.runner.turn = { turn, trigger in
+            let id = turn.account
             turns.append(id)
             XCTAssertEqual(model.activeAccountID, id, "the engine runs with the account whose turn it is")
             model.engine.backUp(messages: batch, includingPhotos: false, trigger: trigger)
@@ -212,6 +213,202 @@ final class MultiAccountRunTests: XCTestCase {
         return model
     }
 
+    private static let third = "e2e.third@example.com"
+
+    /// Each turn hands the engine `batch` as stand-ins for the selected
+    /// albums (no Photos library here), and records what the turn was.
+    private func recordTurns(_ model: AppModel, batch: @escaping () -> [MessagesMediaItem]) -> () -> [AccountRunner.Turn] {
+        var turns: [AccountRunner.Turn] = []
+        model.runner.turn = { turn, trigger in
+            turns.append(turn)
+            XCTAssertEqual(model.activeAccountID, turn.account, "the engine runs with the account whose turn it is")
+            XCTAssertEqual(model.activeTakesSelection, turn.photos, "the engine plans the albums exactly when the turn takes them")
+            model.engine.backUp(messages: batch(), includingPhotos: false, trigger: trigger)
+        }
+        return {
+            defer { turns = [] }
+            return turns
+        }
+    }
+
+    private func uploaded(_ items: [MessagesMediaItem], in model: AppModel, _ id: String) -> Bool {
+        let record = model.record(of: id)?.uploaded ?? [:]
+        return items.allSatisfy { record[$0.id] != nil }
+    }
+
+    private func untouched(_ items: [MessagesMediaItem], in model: AppModel, _ id: String) -> Bool {
+        let record = model.record(of: id)?.uploaded ?? [:]
+        return items.allSatisfy { record[$0.id] == nil }
+    }
+
+    /// "Back up to": all accounts (an account added later included), then
+    /// only the chosen ones, and one-off runs to one account or to all that
+    /// never change the choice; the choice is in accounts.json.
+    func testBackupsGoToTheChosenAccountsAndAOneOffLeavesTheChoiceAlone() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        let thirdID = GoogleSignIn.normalizedEmail(Self.third)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        XCTAssertEqual(model.accountsChoice, .all)
+        var batch = try items(2, tag: "all")
+        let turns = recordTurns(model) { batch }
+
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(turns().map(\.account), [firstID, secondID], "All accounts: every account, in order")
+        XCTAssertTrue(uploaded(batch, in: model, firstID) && uploaded(batch, in: model, secondID))
+
+        // Leave the primary out: backups go to the second account only.
+        model.setIncluded(firstID, false)
+        XCTAssertEqual(model.accountsChoice, .chosen)
+        XCTAssertEqual(model.targetAccounts.map(\.id), [secondID])
+        batch = try items(2, tag: "chosen")
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(turns().map(\.account), [secondID])
+        XCTAssertTrue(uploaded(batch, in: model, secondID))
+        XCTAssertTrue(untouched(batch, in: model, firstID), "an account left out gets nothing from Back Up Now")
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let saved = try decoder.decode(AccountsIndex.self, from: Data(contentsOf: support.appendingPathComponent("accounts.json")))
+        XCTAssertEqual(saved.backUpTo, .chosen, "the choice is stored beside the selection")
+        XCTAssertEqual(saved.accounts.map(\.chosen), [false, true])
+
+        // A one-off to the account left out goes there, and only there.
+        model.startBackupNow(to: .only(firstID))
+        try await settle(model)
+        XCTAssertEqual(turns(), [AccountRunner.Turn(account: firstID, photos: true, messages: false)])
+        XCTAssertTrue(uploaded(batch, in: model, firstID))
+        XCTAssertEqual(model.accountsChoice, .chosen, "a one-off does not change the choice")
+        XCTAssertFalse(model.isIncluded(firstID))
+
+        // "All accounts" in the Back Up Now menu, also a one-off.
+        batch = try items(1, tag: "every")
+        model.startBackupNow(to: .every)
+        try await settle(model)
+        XCTAssertEqual(turns().map(\.account), [firstID, secondID])
+        XCTAssertEqual(model.targetAccounts.map(\.id), [secondID])
+
+        // A relaunch reads the same choice.
+        let relaunched = AppModel()
+        XCTAssertEqual(relaunched.accountsChoice, .chosen)
+        XCTAssertEqual(relaunched.targetAccounts.map(\.id), [secondID])
+
+        // Back to all accounts; one added later joins once its storage
+        // check is confirmed.
+        model.chooseAccounts(.all)
+        await model.connect(pasted: Self.credential(Self.third))
+        XCTAssertTrue(model.isIncluded(thirdID))
+        XCTAssertEqual(model.targetAccounts.map(\.id), [firstID, secondID], "still waiting for its storage check")
+        batch = try items(1, tag: "added-later")
+        model.confirmStorage(for: thirdID)
+        try await settle(model)
+        XCTAssertEqual(turns().map(\.account), [firstID, secondID, thirdID])
+        XCTAssertTrue(uploaded(batch, in: model, thirdID))
+        XCTAssertTrue(try uploads().allSatisfy { ($0["saver"] as? Bool) == false && ($0["use_quota"] as? Bool) == false },
+                      "every account, one-offs included, goes up as Original quality (Pixel XL)")
+    }
+
+    /// photosbackup://backup keeps meaning the saved choice; ?account=
+    /// names one account exactly, and an address no account has is logged
+    /// and ignored, never matched to another.
+    func testALinkBacksUpToTheAccountItNamesAndNeverGuesses() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        model.setIncluded(secondID, false)
+        let batch = try items(1, tag: "link")
+        let turns = recordTurns(model) { batch }
+        func follow(_ link: String) async throws {
+            model.perform(try XCTUnwrap(AutomationCommand(url: try XCTUnwrap(URL(string: link)))))
+            try await settle(model)
+        }
+
+        try await follow("photosbackup://backup")
+        XCTAssertEqual(turns().map(\.account), [firstID], "the saved choice")
+
+        // Named as typed, in another case: the account left out, one-off.
+        try await follow("photosbackup://backup?account=E2E.Second%40Example.COM")
+        XCTAssertEqual(turns().map(\.account), [secondID])
+        XCTAssertEqual(model.accountsChoice, .chosen)
+        XCTAssertFalse(model.isIncluded(secondID), "a link does not change the choice")
+        let runs = model.diagnostics.runs.prefix(1)
+        XCTAssertEqual(runs.first?.trigger, .automation)
+
+        try await follow("photosbackup://backup?account=nobody@example.com")
+        XCTAssertEqual(turns(), [], "an unknown account is ignored")
+        // The timeline masks addresses (n***@example.com), as it always has.
+        XCTAssertTrue(model.diagnostics.events.contains { $0.message.contains("@example.com, which is not an account signed in here") && $0.isProblem },
+                      "and the timeline says so")
+        // An address that differs from a signed-in one by one letter is
+        // still unknown: it is never matched to the nearest account.
+        try await follow("photosbackup://backup?account=e2e.secnd@example.com")
+        XCTAssertEqual(turns(), [])
+    }
+
+    /// Picks, Messages media and device imports go only to the primary,
+    /// also when the choice leaves the primary out of photo backups: its
+    /// turn then carries Messages media alone, and outside a pass a run on
+    /// it never plans the selected albums.
+    func testAPrimaryLeftOutStillTakesWhatOnlyItTakes() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        model.settings.messagesMedia = true
+        model.setIncluded(firstID, false)
+        typealias Turn = AccountRunner.Turn
+        XCTAssertEqual(model.runner.plan(.chosen, messages: true),
+                       [Turn(account: firstID, photos: false, messages: true), Turn(account: secondID, photos: true, messages: false)])
+        XCTAssertEqual(model.runner.plan(.chosen, messages: false), [Turn(account: secondID, photos: true, messages: false)],
+                       "a photos-only backup does not visit the primary")
+        XCTAssertEqual(model.runner.plan(.only(secondID), messages: true), [Turn(account: secondID, photos: true, messages: false)],
+                       "Messages media never goes to another account")
+        XCTAssertEqual(model.runner.plan(.only(firstID), messages: true), [Turn(account: firstID, photos: true, messages: true)])
+        XCTAssertEqual(model.activeAccountID, firstID)
+        XCTAssertFalse(model.activeTakesSelection, "a pick or a device import on the primary left out plans no albums")
+
+        let messages = try items(3, tag: "messages")
+        let photos = try items(2, tag: "photos")
+        var turns: [Turn] = []
+        model.runner.turn = { turn, trigger in
+            turns.append(turn)
+            XCTAssertEqual(model.activeTakesSelection, turn.photos)
+            model.engine.backUp(messages: turn.messages ? messages : photos, includingPhotos: turn.photos, trigger: trigger)
+        }
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(turns, [Turn(account: firstID, photos: false, messages: true), Turn(account: secondID, photos: true, messages: false)])
+        XCTAssertTrue(uploaded(messages, in: model, firstID), "Messages media went to the primary")
+        XCTAssertTrue(untouched(messages, in: model, secondID))
+        XCTAssertTrue(uploaded(photos, in: model, secondID))
+        XCTAssertTrue(untouched(photos, in: model, firstID))
+        XCTAssertEqual(model.activeAccountID, firstID)
+    }
+
+    /// With every account left out, nothing runs and the status says why,
+    /// instead of "Everything is backed up".
+    func testNoAccountIncludedRunsNothingAndSaysSo() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        model.setIncluded(firstID, false)
+        model.setIncluded(secondID, false)
+        XCTAssertTrue(model.noAccountIncluded)
+        XCTAssertEqual(model.targetAccounts, [])
+        let turns = recordTurns(model) { [] }
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(turns(), [])
+        XCTAssertTrue(model.diagnostics.events.contains { $0.message.contains("no Google account is included in backups") })
+        XCTAssertEqual(model.overallSummary.total, 0)
+        XCTAssertEqual(model.status.kind, .attention)
+        XCTAssertTrue(model.attention.contains { $0.id == "no-account" })
+    }
+
     /// A primary run that halts (here Google refuses the primary's sign-in)
     /// leaves its Messages media queued in the engine. Found in review: the
     /// next account's run sent all of it to the second account. Nothing that
@@ -228,7 +425,8 @@ final class MultiAccountRunTests: XCTestCase {
         let queued = try items(4, tag: "primary-only")
         // The app's own turns: Messages media to the primary, the photo run
         // (nothing to plan here, no Photos library) to every account.
-        model.runner.turn = { id, trigger in
+        model.runner.turn = { turn, trigger in
+            let id = turn.account
             if id == firstID {
                 model.engine.backUp(messages: queued, includingPhotos: true, trigger: trigger)
             } else {
@@ -249,7 +447,8 @@ final class MultiAccountRunTests: XCTestCase {
         // The primary's sign-in works again; a scan finds the items again,
         // and they go to the primary, and only there.
         try scenario(["per_account": true])
-        model.runner.turn = { id, trigger in
+        model.runner.turn = { turn, trigger in
+            let id = turn.account
             if id == firstID {
                 model.engine.backUp(messages: queued, includingPhotos: true, trigger: trigger)
             } else {

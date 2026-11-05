@@ -11,8 +11,30 @@ import PhotosBackupCore
 @MainActor
 @Observable
 final class AccountRunner {
-    /// The account the pass is backing up to now.
-    private(set) var current: String?
+    /// Where a pass goes.
+    enum Destination: Equatable {
+        /// The accounts "Back up to" includes: Back Up Now, automatic runs,
+        /// photosbackup://backup.
+        case chosen
+        /// Every account ready for backups, whatever the choice. A one-off:
+        /// the choice is not changed.
+        case every
+        /// This account only (an id), whatever the choice. A one-off too.
+        case only(String)
+    }
+
+    /// One account's part of a pass.
+    struct Turn: Equatable {
+        let account: String
+        /// The album selection goes to it.
+        let photos: Bool
+        /// Messages media goes along: the primary's turn only.
+        let messages: Bool
+    }
+
+    /// The turn in progress, and so the account the pass is backing up to.
+    private(set) var currentTurn: Turn?
+    var current: String? { currentTurn?.account }
     private(set) var isRunning = false
 
     @ObservationIgnored private unowned let model: AppModel
@@ -24,7 +46,7 @@ final class AccountRunner {
     /// active; nil is the app's own (Messages media to the primary account,
     /// then the selected albums). The integration test, which has no Photos
     /// library, hands it files instead.
-    @ObservationIgnored var turn: ((_ account: String, _ trigger: RunTrigger) -> Void)?
+    @ObservationIgnored var turn: ((_ turn: Turn, _ trigger: RunTrigger) -> Void)?
 
     /// The engine reports a phase change at most this late to the pass.
     private static let pollInterval: Duration = .milliseconds(250)
@@ -33,19 +55,26 @@ final class AccountRunner {
         self.model = model
     }
 
-    /// - Parameter messages: Messages media goes along to the primary account.
-    func start(trigger: RunTrigger, messages: Bool) {
+    /// - Parameters:
+    ///   - messages: Messages media goes along to the primary account.
+    ///   - destination: the saved choice, or a one-off.
+    func start(trigger: RunTrigger, messages: Bool, to destination: Destination = .chosen) {
         // A run asked for in person goes ahead on a metered network or on
         // battery, as it would have had it started the pass.
         if trigger.overridesConditions, model.engine.isActive { model.engine.start(trigger: trigger) }
         guard task == nil else { return }
-        let order = model.runnableAccounts.map(\.id)
-        guard !order.isEmpty else { return }
+        let turns = plan(destination, messages: messages)
+        guard !turns.isEmpty else {
+            if destination == .chosen, model.noAccountIncluded, !trigger.isAutomatic {
+                model.log(.account, "Nothing was backed up: no Google account is included in backups. Choose one in Settings > Account.")
+            }
+            return
+        }
         stopped = false
         outcomes = [:]
         isRunning = true
         task = Task { [weak self] in
-            await self?.run(order, trigger: trigger, messages: messages)
+            await self?.run(turns, to: destination, trigger: trigger)
             self?.task = nil
             self?.isRunning = false
         }
@@ -60,31 +89,60 @@ final class AccountRunner {
         outcomes[id] = outcome
     }
 
-    private func run(_ order: [String], trigger: RunTrigger, messages: Bool) async {
-        for id in order {
+    /// The turns of a pass, in run order. Messages media goes only to the
+    /// primary, and goes there whenever a pass that is not a one-off to
+    /// another account takes it along, even if the choice leaves the primary
+    /// out of photo backups: its turn then carries Messages media alone.
+    func plan(_ destination: Destination, messages: Bool) -> [Turn] {
+        let ready = model.runnableAccounts.map(\.id)
+        let photos: Set<String> = switch destination {
+        case .chosen: Set(model.targetAccounts.map(\.id))
+        case .every: Set(ready)
+        case let .only(id): ready.contains(id) ? [id] : []
+        }
+        let primary = model.primaryAccount?.id
+        let messagesGo = switch destination {
+        case let .only(id): id == primary
+        case .chosen, .every: true
+        }
+        let withMessages = messages && messagesGo && model.settings.messagesMedia
+        return ready.compactMap { id in
+            let turn = Turn(account: id, photos: photos.contains(id), messages: withMessages && id == primary)
+            return turn.photos || turn.messages ? turn : nil
+        }
+    }
+
+    private func run(_ turns: [Turn], to destination: Destination, trigger: RunTrigger) async {
+        for planned in turns {
             await settled()
             if stopped { break }
+            let id = planned.account
             // A primary run that halted leaves its picks, Messages media or
             // device import queued, and any run sends the queue first: it
             // comes out of the engine before another account's turn.
             if id != model.primaryAccount?.id, model.engine.hasQueuedPrimaryOnlyWork {
                 model.setAsidePrimaryOnlyWork()
             }
-            // Removed, signed out or not yet storage-checked meanwhile.
-            guard model.runnableAccounts.contains(where: { $0.id == id }), model.activate(id) else { continue }
-            current = id
+            // Removed, signed out or not yet storage-checked meanwhile; for
+            // the saved choice, also left out meanwhile.
+            guard model.runnableAccounts.contains(where: { $0.id == id }) else { continue }
+            let turn = Turn(account: id,
+                            photos: planned.photos && (destination != .chosen || model.isIncluded(id)),
+                            messages: planned.messages && id == model.primaryAccount?.id && model.settings.messagesMedia)
+            guard turn.photos || turn.messages, model.activate(id) else { continue }
+            currentTurn = turn
             outcomes[id] = nil
-            if let turn {
-                turn(id, trigger)
-            } else if messages, id == model.primaryAccount?.id, model.settings.messagesMedia {
-                await model.scanMessages(includingPhotos: true, trigger: trigger)
+            if let hook = self.turn {
+                hook(turn, trigger)
+            } else if turn.messages {
+                await model.scanMessages(includingPhotos: turn.photos, trigger: trigger)
             } else if model.library.isAuthorized {
                 model.engine.start(trigger: trigger)
             }
             await settled()
             if case .stopped = outcomes[id] { break }
         }
-        current = nil
+        currentTurn = nil
         await settled()
         model.activate(model.primaryAccount?.id)
         model.releaseHeldPicks()

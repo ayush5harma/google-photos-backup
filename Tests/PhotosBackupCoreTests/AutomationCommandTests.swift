@@ -51,6 +51,35 @@ private func command(_ string: String) -> AutomationCommand? {
         #expect(command("photosbackup://settings/secrets") == nil)
     }
 
+    /// photosbackup://backup and backup/photos keep meaning "Back up to";
+    /// ?account= names one account, compared as Google compares addresses.
+    @Test func aBackupLinkCanNameOneAccount() {
+        #expect(command("photosbackup://backup") == .backUp(.everything, account: nil))
+        #expect(command("photosbackup://backup?account=me@example.com") == .backUp(.everything, account: "me@example.com"))
+        #expect(command("photosbackup://backup/photos?account=family%40example.com") == .backUp(.photos, account: "family@example.com"))
+        #expect(command("photosbackup://backup?account=J.Smith@GoogleMail.com") == .backUp(.everything, account: "jsmith@gmail.com"))
+        #expect(command("photosbackup://backup?account=%20me@example.com%20") == .backUp(.everything, account: "me@example.com"))
+        // "+" is part of an address, not a space.
+        #expect(command("photosbackup://backup?account=me+photos@example.com") == .backUp(.everything, account: "me+photos@example.com"))
+        #expect(command("photosbackup://backup?from=shortcut&Account=me@example.com") == .backUp(.everything, account: "me@example.com"))
+    }
+
+    /// Strict: a link that does not name exactly one address is not
+    /// followed at all, rather than backing up somewhere it did not say.
+    @Test func anAccountThatIsNotOneAddressIsNotFollowed() {
+        #expect(command("photosbackup://backup?account=") == nil)
+        #expect(command("photosbackup://backup?account") == nil)
+        #expect(command("photosbackup://backup?account=me") == nil)
+        #expect(command("photosbackup://backup?account=gpmc") == nil)
+        #expect(command("photosbackup://backup?account=@example.com") == nil)
+        #expect(command("photosbackup://backup?account=me@") == nil)
+        #expect(command("photosbackup://backup?account=a@b@example.com") == nil)
+        #expect(command("photosbackup://backup?account=me%20you@example.com") == nil)
+        #expect(command("photosbackup://backup?account=a@example.com&account=b@example.com") == nil)
+        // Only the primary takes Messages media.
+        #expect(command("photosbackup://backup/messages-media?account=me@example.com") == nil)
+    }
+
     // A manual run's trigger, so the history and notifications treat it as
     // something a person asked for.
     @Test func automationRunsAreNotAutomatic() {

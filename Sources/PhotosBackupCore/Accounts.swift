@@ -144,8 +144,7 @@ public struct AccountLibrary: Equatable, Sendable {
     /// Whether a backup that names no account goes to this one: any
     /// signed-in account with "All accounts", a ticked one otherwise.
     public func isIncluded(_ id: String) -> Bool {
-        guard let account = account(id), !account.removed else { return false }
-        return Self.includes(index.backUpTo, account)
+        account(id).map { Self.includes(index.backUpTo, $0) } ?? false
     }
 
     /// The signed-in accounts a backup that names none goes to, in run order.
@@ -174,8 +173,10 @@ public struct AccountLibrary: Equatable, Sendable {
         setChosen(account.id, included)
     }
 
-    private static func includes(_ choice: AccountsChoice, _ account: BackupAccount) -> Bool {
-        choice == .all || account.chosen
+    /// The rule, for a copy of the account list kept elsewhere (the app's
+    /// observable one).
+    public static func includes(_ choice: AccountsChoice, _ account: BackupAccount) -> Bool {
+        !account.removed && (choice == .all || account.chosen)
     }
 
     public func account(_ id: String) -> BackupAccount? {

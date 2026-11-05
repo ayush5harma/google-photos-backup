@@ -66,6 +66,8 @@ extension AppModel {
         return accounts.first { $0.id == id }?.title
     }
 
+    static let noAccountHeadline = "No account is included in backups"
+
     /// AppModel.describe words a full Google account this way.
     var isStorageFull: Bool {
         engine.lastError?.hasPrefix("Your Google account is out of storage") == true
@@ -83,10 +85,10 @@ extension AppModel {
         case .waiting: .waiting(engine.waitReason)
         }
         let accountProblem = if case .failed = account { true } else { false }
+        let problem = isStorageFull ? "Google storage is full" : (noAccountIncluded ? Self.noAccountHeadline : nil)
         return MenuBarStatus(.init(signedIn: hasAuthData, accountProblem: accountProblem, activity: activity,
                                    remaining: engine.remaining, pending: summary.pending, total: summary.total,
-                                   failed: engine.failedCount, problem: isStorageFull ? "Google storage is full" : nil,
-                                   archiving: archive.isRunning))
+                                   failed: engine.failedCount, problem: problem, archiving: archive.isRunning))
     }
 
     var iCloudMenuStatus: ICloudMenuStatus {
@@ -142,7 +144,7 @@ extension AppModel {
         case .waiting: return "Waiting"
         case .attention:
             if !hasAuthData { return "Not signed in" }
-            if isStorageFull || account.isFailed { return "Backups are stopped" }
+            if isStorageFull || account.isFailed || noAccountIncluded { return "Backups are stopped" }
             return "\(engine.failedCount.formatted()) need another try"
         }
     }
@@ -176,6 +178,11 @@ extension AppModel {
                                        detail: "Turn on Photos Backup in Privacy & Security.", actionTitle: "Open Settings",
                                        action: .openPhotosPrivacy))
             }
+        }
+        if noAccountIncluded {
+            items.append(Attention(id: "no-account", symbol: "person.crop.circle.badge.xmark", title: Self.noAccountHeadline,
+                                   detail: "Tick Include in backups for an account, or back up to all accounts.",
+                                   actionTitle: "Choose Accounts…", action: .openSettings(.account)))
         }
         if isStorageFull {
             items.append(Attention(id: "storage", symbol: "exclamationmark.triangle.fill", title: "Google storage is full",
