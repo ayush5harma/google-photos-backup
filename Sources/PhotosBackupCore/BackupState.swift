@@ -47,13 +47,12 @@ public struct BackupRecord: Codable, Equatable, Sendable {
 public struct AlbumMirror: Codable, Equatable, Sendable {
     /// Unset until the first batch creates the album.
     public var googleAlbumID: String?
-    /// Assets already added to that album. The only members ever offered
-    /// as probes, since the bridge re-adds a probe to the album.
+    /// Assets already added to that album, never sent to it again.
     public var addedAssetIDs: Set<String>
     /// Members taken as known without being sent: the whole album when its
     /// record of members was found empty (rebaselineUnknownMirrors), and
-    /// held members the owner chose to skip. Never sent to the album and
-    /// never a probe. nil when there are none, so a record that never
+    /// held members the owner chose to skip. Never sent to the album, and
+    /// kept apart from added ones. nil when there are none, so a record that never
     /// needed it is written exactly as before.
     public var knownAssetIDs: Set<String>?
     /// Members cleared to go into the linked album whatever their number:
@@ -251,18 +250,12 @@ public struct BackupState: Codable, Equatable, Sendable {
         AlbumTarget(id: mirrors[albumID]?.googleAlbumID, name: title)
     }
 
-    /// The target the Mac app sends: split out keys Google no longer has,
-    /// checked against up to three photos the album already holds. Picked
-    /// afresh each time: dead keys cluster by upload (3 of the 4 waiting for
-    /// one album, 2026-10-27), and a fixed three that all died would make a
-    /// live album look deleted on every run.
+    /// The target the Mac app sends: split out keys Google no longer has.
+    /// Nothing else: no key the album already holds is ever sent again (see
+    /// AlbumTarget.splitMissing).
     public func splittingAlbumTarget(for albumID: String, title: String) -> AlbumTarget {
         var target = albumTarget(for: albumID, title: title)
         target.splitMissing = true
-        if target.id != nil, let members = mirrors[albumID]?.addedAssetIDs {
-            let probes = members.shuffled().lazy.compactMap { uploaded[$0]?.mediaKey }.prefix(3)
-            target.probeMediaKeys = probes.isEmpty ? nil : Array(probes)
-        }
         return target
     }
 }

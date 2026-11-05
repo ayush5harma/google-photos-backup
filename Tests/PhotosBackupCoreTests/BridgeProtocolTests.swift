@@ -76,14 +76,14 @@ private func event(_ json: String) throws -> BridgeEvent {
     }
 
     @Test func splittingAlbumAndForcedItemUseTheBridgeFieldNames() throws {
-        let album = AlbumTarget(id: "g", name: "Trip", splitMissing: true, probeMediaKeys: ["m1"])
+        let album = AlbumTarget(id: "g", name: "Trip", splitMissing: true)
         let request = BridgeRequest.upload("auth", items: [BridgeItem(id: "A", path: "/s/A.HEIC", filename: "A.HEIC", force: true),
                                                            BridgeItem(id: "B", path: "/s/B.HEIC", filename: "B.HEIC")],
                                            quality: .original, threads: 1, album: album)
         let json = try #require(JSONSerialization.jsonObject(with: request.encoded()) as? [String: Any])
         let encodedAlbum = try #require(json["album"] as? [String: Any])
         #expect(encodedAlbum["split_missing"] as? Bool == true)
-        #expect(encodedAlbum["probe_media_keys"] as? [String] == ["m1"])
+        #expect(encodedAlbum["probe_media_keys"] == nil)
         let items = try #require(json["items"] as? [[String: Any]])
         #expect(items[0]["force"] as? Bool == true)
         #expect(items[1]["force"] == nil)

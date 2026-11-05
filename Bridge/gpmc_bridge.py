@@ -24,9 +24,10 @@ Requests (every field not marked optional is required):
    "album": {"id": "..."} | {"name": "..."}}      optional
   {"command": "add-to-album", "auth_data": "...", "media_keys": [...], "album": {...}}
 
-  An album may also carry "split_missing": true and "probe_media_keys" (up to
-  3 keys it already holds): a 404 then finds the keys Google no longer has
-  instead of failing the whole call (see _add_splitting_missing).
+  An album may also carry "split_missing": true: a 404 then finds the keys
+  Google no longer has instead of failing the whole call (see
+  _add_splitting_missing). "probe_media_keys", which apps before 0.6.0 sent,
+  is ignored: the bridge never sends a key its request is not adding.
 
 Events all carry "type" and "v" (PROTOCOL_VERSION): version, auth, progress,
 item, item_failed, album, missing_media, album_failed, done, stopped, fatal,
@@ -400,9 +401,7 @@ def _album(request: Event, required: bool) -> Event | None:
         raise RequestError("`album` must carry an `id` or a `name`")
     if not isinstance(album.get("split_missing", False), bool):
         raise RequestError("`album.split_missing` must be a boolean")
-    probes = album.get("probe_media_keys", [])
-    if not isinstance(probes, list) or len(probes) > 3 or not all(isinstance(key, str) and key for key in probes):
-        raise RequestError("`album.probe_media_keys` must be at most 3 media keys")
+    # probe_media_keys from an app before 0.6.0 is accepted and never read.
     return album
 
 
@@ -693,39 +692,37 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event, sto
     # stopped filling. A refused batch is halved until each dead key stands
     # alone, so every live key still goes in and the dead ones go back to the
     # app to upload again.
+    #
+    # A deleted album answers 404 too. Until 0.6.0 the app sent up to three
+    # keys the album already held, and the bridge re-added one to tell the
+    # two apart; a photo the owner had taken out of a shared album by hand
+    # went back in. Now only this request's own adds decide: the album is
+    # alive once one of them goes in, and only then are keys refused on
+    # their own reported missing. If none goes in (album gone, or every key
+    # dead) the refusal stays the album's and no key is reported, so nothing
+    # is uploaded again or re-added; the app says which album failed.
     known = album.get("id") or None
     album_id = known
     added: list[str] = []
-    missing: list[str] = []
+    refused_alone: list[str] = []
     refusals = 0
-    alive = known is None
+    first_refusal: BaseException | None = None
 
     def refused(error: BaseException) -> bool:
-        nonlocal refusals
+        nonlocal refusals, first_refusal
         if _http_status(error) != 404:
             return False
         refusals += 1
+        first_refusal = first_refusal or error
         return refusals <= ALBUM_REFUSAL_BUDGET
 
-    def album_answers() -> bool:
-        # A deleted album answers 404 too. Re-adding a photo it already holds
-        # tells the two apart before any halving; with nothing to try, the
-        # refusal stays the album's, as before.
-        nonlocal alive
-        if alive:
-            return True
-        for key in album.get("probe_media_keys") or []:
-            try:
-                call(client.api.add_media_to_album, album_media_key=album_id, media_keys=[key])
-            except Exception as error:
-                logging.getLogger(__name__).info("album %s refused its own photo %s: %s", album_id, key, error)
-                if _http_status(error) == 404:
-                    continue
-                raise
-            logging.getLogger(__name__).info("album %s took back its own photo %s: the album is there", album_id, key)
-            alive = True
-            return True
-        return False
+    def alive() -> bool:
+        # An album being created exists once create_album answers, and a
+        # 404 before that can only be the keys' own.
+        return known is None or bool(added)
+
+    def missing() -> list[str]:
+        return list(refused_alone) if alive() else []
 
     def stop_between_calls() -> None:
         # Halving can take a few minutes inside the stop-deferring album
@@ -738,10 +735,10 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event, sto
         try:
             call(client.api.add_media_to_album, album_media_key=album_id, media_keys=keys)
         except Exception as error:
-            if not refused(error) or not album_answers():
+            if not refused(error):
                 raise
             if len(keys) == 1:
-                missing.append(keys[0])
+                refused_alone.append(keys[0])
                 return
             half = len(keys) // 2
             append(keys[:half])
@@ -750,7 +747,7 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event, sto
         added.extend(keys)
 
     def create(keys: list[str]) -> None:
-        nonlocal album_id, alive
+        nonlocal album_id
         stop_between_calls()
         try:
             # Retried like an append: a 5xx after Google made the album risks
@@ -760,13 +757,12 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event, sto
             if not refused(error):
                 raise
             if len(keys) == 1:
-                missing.append(keys[0])
+                refused_alone.append(keys[0])
                 return
             half = len(keys) // 2
             create(keys[:half])
             (append if album_id else create)(keys[half:])
             return
-        alive = True
         added.extend(keys)
 
     try:
@@ -777,10 +773,12 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event, sto
             batch = media_keys[start:start + ALBUM_BATCH]
             (append if album_id else create)(batch)
     except (Exception, StopRequested) as error:
-        if added or missing or album_id != known:
-            raise AlbumIncomplete(album_id, added, missing, error) from error
+        if added or missing() or album_id != known:
+            raise AlbumIncomplete(album_id, added, missing(), error) from error
         raise
-    return album_id, added, missing
+    if refused_alone and not alive() and first_refusal is not None:
+        raise first_refusal
+    return album_id, added, missing()
 
 
 def _album_step(client: Any, media_keys: list[str], album: Event, emit: Emit, stop: StopSignal) -> None:

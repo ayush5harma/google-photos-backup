@@ -615,6 +615,15 @@ final class BackupEngine {
         }
     }
 
+    /// An album call Google refused outright: the album is gone, or every
+    /// photo sent was. The bridge cannot tell which without re-adding a photo
+    /// the album holds (which could put back one removed by hand), so nothing
+    /// is uploaded again; the timeline names the album for the owner to look.
+    private func logAlbumRefused(_ title: String, _ message: String) {
+        model.log(.photos, "Google Photos refused to add photos to \"\(title)\" (\(message)). Its Google album may have been "
+                  + "deleted; nothing was sent again, and the next backup tries once more.", problem: true)
+    }
+
     /// Records what an album call put in, and counts it against the run's
     /// limit for albums linked before the call. A call that creates the
     /// album passes its visible members, which may all follow uncounted.
@@ -1148,10 +1157,11 @@ final class BackupEngine {
                             // waits for the hold (with its cap).
                             albumLimited = true
                         } else {
-                            // The title stays out: it lands in the timeline
-                            // and the shareable report.
+                            // The title stays out of lastError, which lands in
+                            // the shareable report; the timeline names it.
                             self.failedAlbums.insert(album.id)
                             self.lastError = "Backed up, but not added to a Google Photos album: \(message)"
+                            self.logAlbumRefused(album.title, message)
                         }
                     case let .fatal(kind, message):
                         fatal = (kind, message)
@@ -1377,7 +1387,7 @@ final class BackupEngine {
             default:
                 failedAlbums.insert(albumID)
                 lastError = "Could not add photos to a Google Photos album: \(message)"
-                model.log(.photos, lastError ?? message, problem: true)
+                logAlbumRefused(albumTitle, message)
                 return progressed ? .progressed : .nothing
             }
         }

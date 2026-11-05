@@ -46,8 +46,8 @@ private let shared = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, a
         let later = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: ["new", "a", "b", "c"])
         #expect(BackupPlanner.plan(albums: [later], state: cleared, mirrorAlbums: true, batchSize: 10, uploadsHidden: true)
             == [.addToAlbum(albumID: "shared", albumTitle: "Shared", assetIDs: ["new"], mediaKeys: ["key-new"])])
-        // Known members are never offered as probes: the bridge re-adds a probe.
-        #expect(cleared.splittingAlbumTarget(for: "shared", title: "Shared").probeMediaKeys == nil)
+        // No member ever goes to the bridge again except as an add.
+        #expect(cleared.splittingAlbumTarget(for: "shared", title: "Shared") == AlbumTarget(id: "g-shared", name: "Shared", splitMissing: true))
     }
 
     @Test func aMirrorWithoutItsMemberListStillLoadsAndIsReBaselined() throws {
@@ -172,7 +172,7 @@ private func added(_ steps: [PlannedStep]) -> [String] {
         state.skipAlbumAdds("shared", assetIDs: ids("new", 30))
         #expect(state.mirrors["shared"]?.knownAssetIDs == Set(ids("new", 30)))
         #expect(state.mirrors["shared"]?.approvedAssetIDs == nil)
-        #expect(state.mirrors["shared"]?.addedAssetIDs == Set(ids("old", 10)), "skipped photos are not taken for added (or probes)")
+        #expect(state.mirrors["shared"]?.addedAssetIDs == Set(ids("old", 10)), "skipped photos are not taken for added")
         #expect(BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 10, uploadsHidden: true).isEmpty)
         #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: state).isEmpty)
         // A photo added after the skip goes in as usual.
