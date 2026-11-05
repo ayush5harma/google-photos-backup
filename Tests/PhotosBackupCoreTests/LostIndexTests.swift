@@ -73,6 +73,35 @@ import Testing
         #expect(names.contains { $0.hasPrefix("accounts.json.") && $0.hasSuffix(".unreadable") }, "the damaged file is set aside")
     }
 
+    /// Second round, MINOR d: accounts.json was written and then the copy;
+    /// with only the copy's write failing, the copy left behind was an older
+    /// list that a later damaged accounts.json would be restored from. The
+    /// old copy is deleted instead, so a later loss rebuilds.
+    @Test func aCopyThatCannotBeWrittenNeverLeavesAnOlderOneBehind() throws {
+        let directory = try scratch()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AccountsStore(directory: directory)
+        _ = try leftOutWorkAccount(in: store)
+        var newer = store.load(legacyCredential: (false, nil)).library
+        newer.include(Self.workID, true)
+        newer.include(Self.primaryID, false)
+
+        struct CopyRefused: Error {}
+        let copyURL = store.indexCopyURL
+        let failing = AccountsStore(directory: directory, write: { data, url in
+            if url == copyURL { throw CopyRefused() }
+            try data.write(to: url, options: .atomic)
+        })
+        #expect(throws: CopyRefused.self) { try failing.save(newer.index) }
+        #expect(!FileManager.default.fileExists(atPath: store.indexCopyURL.path), "the older copy is gone")
+        #expect(store.load(legacyCredential: (false, nil)).library.included.map(\.id) == [Self.workID], "accounts.json is the newer list")
+
+        try Data("{broken".utf8).write(to: store.indexURL)
+        let loaded = store.load(legacyCredential: (false, nil))
+        #expect(!loaded.indexRestored, "an older list was restored")
+        #expect(loaded.indexLost)
+    }
+
     /// A deleted accounts.json is read from its copy too.
     @Test func aMissingIndexIsReadFromItsCopy() throws {
         let directory = try scratch()

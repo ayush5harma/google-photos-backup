@@ -8,9 +8,16 @@ import Foundation
 /// the upgrade from one account; neither is read back.)
 public struct AccountsStore: Sendable {
     public let directory: URL
+    /// Writes the index and its copy; tests make one of the two fail.
+    private let write: @Sendable (Data, URL) throws -> Void
 
     public init(directory: URL) {
+        self.init(directory: directory, write: { try $0.write(to: $1, options: .atomic) })
+    }
+
+    init(directory: URL, write: @escaping @Sendable (Data, URL) throws -> Void) {
         self.directory = directory
+        self.write = write
     }
 
     public static let indexFile = "accounts.json"
@@ -120,10 +127,19 @@ public struct AccountsStore: Sendable {
     public func save(_ index: AccountsIndex) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try Self.encoder.encode(index)
-        try data.write(to: indexURL, options: .atomic)
+        try write(data, indexURL)
         // Only after the index itself, so the copy is always an index that
         // was written in full.
-        try data.write(to: indexCopyURL, options: .atomic)
+        do {
+            try write(data, indexCopyURL)
+        } catch {
+            // The copy left behind is now older than accounts.json, and a
+            // later damaged accounts.json would be restored from it (PR #53
+            // review). Without it a loss rebuilds, which asks for the
+            // choice again instead of bringing back an old one.
+            try? FileManager.default.removeItem(at: indexCopyURL)
+            throw error
+        }
     }
 
     /// Written exactly as BackupStore always wrote state.json.
