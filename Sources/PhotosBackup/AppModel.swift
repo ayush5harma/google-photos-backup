@@ -225,7 +225,7 @@ final class AppModel {
     /// The account the legacy keychain item belongs to when moving it
     /// failed this launch: it is read where it is until the next launch.
     @ObservationIgnored private var unmovedLegacyCredential: String?
-    @ObservationIgnored private var accountSummaries: [String: (selection: Set<String>, summary: BackupSummary)] = [:]
+    @ObservationIgnored private var accountSummaries: [String: (selection: Set<String>, primary: Bool, summary: BackupSummary)] = [:]
     /// Picks made while a pass was on another account (see backUp(picked:)).
     @ObservationIgnored private var heldPicks: (ids: [String], files: [String: URL]) = ([], [:])
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
@@ -236,11 +236,19 @@ final class AppModel {
         didSet {
             summaryCache = nil
             accountSummaries = [:]
+            heldCache = nil
         }
     }
     private(set) var albumsLoaded = false
     private(set) var photosStatus: PHAuthorizationStatus
-    var state: BackupState { didSet { summaryCache = nil } }
+    var state: BackupState {
+        didSet {
+            summaryCache = nil
+            heldCache = nil
+        }
+    }
+    /// heldAlbumAdds, kept like the summary; keyed by what else it reads.
+    @ObservationIgnored private var heldCache: (key: [String], notices: [HeldAlbumNotice])?
     /// The summary walks every selected asset; the menu bar label and the
     /// panel read it many times per progress tick, so it is kept until the
     /// albums or the state change.
@@ -425,14 +433,15 @@ final class AppModel {
     }
 
     /// The selection against one account's record: "backed up" per account.
+    /// Hidden photos count for the primary only: no other account is sent one.
     func summary(of id: String) -> BackupSummary {
         if id == activeAccountID { return summary }
-        let albums = albums, selection = state.selectedAlbumIDs
-        if let cached = accountSummaries[id], cached.selection == selection { return cached.summary }
+        let albums = albums, selection = state.selectedAlbumIDs, primary = id == primaryAccount?.id
+        if let cached = accountSummaries[id], cached.selection == selection, cached.primary == primary { return cached.summary }
         var record = accountLibrary.state(for: id) ?? BackupState()
         record.selectedAlbumIDs = selection
-        let summary = BackupPlanner.summary(albums: albums.map(\.snapshot), state: record)
-        accountSummaries[id] = (selection, summary)
+        let summary = BackupPlanner.summary(albums: albums.map(\.snapshot), state: record, includingHidden: primary)
+        accountSummaries[id] = (selection, primary, summary)
         return summary
     }
 
@@ -594,7 +603,7 @@ final class AppModel {
         // observes the changes that invalidate it.
         let albums = albums, state = state
         if let summaryCache { return summaryCache }
-        let summary = BackupPlanner.summary(albums: albums.map(\.snapshot), state: state)
+        let summary = BackupPlanner.summary(albums: albums.map(\.snapshot), state: state, includingHidden: isPrimaryActive)
         summaryCache = summary
         return summary
     }
@@ -604,7 +613,57 @@ final class AppModel {
 
     var selectedAlbums: [LibraryAlbum] { albums.filter { state.selectedAlbumIDs.contains($0.id) } }
 
-    func progress(of album: LibraryAlbum) -> AlbumProgress { BackupPlanner.progress(of: album.snapshot, state: state) }
+    /// Guard C (2): photos held back from a Google album that already
+    /// exists, per account and album, each waiting for "Add them" or
+    /// "Skip". Empty while albums are not mirrored.
+    struct HeldAlbumNotice: Identifiable, Equatable {
+        let account: String
+        /// The account's address, when there are several to tell apart.
+        let accountTitle: String?
+        let held: HeldAlbumAdds
+
+        var id: String { account + "\u{1F}" + held.albumID }
+        var count: Int { held.assetIDs.count }
+    }
+
+    var heldAlbumAdds: [HeldAlbumNotice] {
+        let albums = albums, state = state, accounts = accounts, mirrored = settings.mirrorAlbums
+        let key = accounts.map(\.id) + [mirrored ? "mirrored" : "unmirrored"]
+        if let heldCache, heldCache.key == key { return heldCache.notices }
+        var notices: [HeldAlbumNotice] = []
+        if mirrored {
+            let snapshots = albums.map(\.snapshot)
+            for account in accounts {
+                guard var record = record(of: account.id) else { continue }
+                record.selectedAlbumIDs = state.selectedAlbumIDs
+                notices += BackupPlanner.heldAlbumAdds(albums: snapshots, state: record).map {
+                    HeldAlbumNotice(account: account.id, accountTitle: accounts.count > 1 ? account.title : nil, held: $0)
+                }
+            }
+        }
+        heldCache = (key, notices)
+        return notices
+    }
+
+    /// "Add them": the held photos go into the album, starting now when
+    /// nothing is running (a running pass picks them up at its next one).
+    func addHeldPhotos(_ notice: HeldAlbumNotice) {
+        changeRecord(of: notice.account) { $0.approveAlbumAdds(notice.held.albumID, assetIDs: notice.held.assetIDs) }
+        log(.photos, "Adding the \(notice.count.formatted()) held photo\(notice.count == 1 ? "" : "s") to \"\(notice.held.title)\", as asked.")
+        if !isBackingUp { backUpPhotosNow(to: .only(notice.account), trigger: .manual) }
+    }
+
+    /// "Skip": the held photos are recorded as known and never sent to the
+    /// album; photos added to it later still go in.
+    func skipHeldPhotos(_ notice: HeldAlbumNotice) {
+        changeRecord(of: notice.account) { $0.skipAlbumAdds(notice.held.albumID, assetIDs: notice.held.assetIDs) }
+        log(.photos, "Skipped the \(notice.count.formatted()) held photo\(notice.count == 1 ? "" : "s") for \"\(notice.held.title)\": "
+            + "they stay out of its Google album.")
+    }
+
+    func progress(of album: LibraryAlbum) -> AlbumProgress {
+        BackupPlanner.progress(of: album.snapshot, state: state, includingHidden: isPrimaryActive)
+    }
 
     // MARK: - Lifecycle
 
@@ -914,6 +973,7 @@ final class AppModel {
         change(&record)
         accountLibrary.update(record, for: id)
         accountSummaries[id] = nil
+        heldCache = nil
         do {
             try accountsStore.save(record, file: account.stateFile)
         } catch {

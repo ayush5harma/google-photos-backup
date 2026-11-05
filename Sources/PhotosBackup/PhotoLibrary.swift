@@ -60,10 +60,14 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
     }
 
     /// How every album and All Photos are listed: the user's own library,
-    /// newest first, hidden photos left out (PhotoKit's default, which the
-    /// exporter relies on to upload a hidden photo only when it is picked).
+    /// newest first, hidden photos left out (the exporter relies on it to
+    /// upload a hidden photo only when it is picked). Said here rather than
+    /// left to PhotoKit's default, and the planner checks each asset's
+    /// isHidden as well (AlbumSnapshot.hiddenAssetIDs): a hidden photo
+    /// never joins a Google album, nor goes to an account but the primary.
     static var listing: PHFetchOptions {
         let options = PHFetchOptions()
+        options.includeHiddenAssets = false
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: false)]
         // Only the user's own library: shared-album items are someone
         // else's, and PhotoKit cannot hand out their originals anyway.
@@ -80,14 +84,16 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         func snapshot(id: String, title: String, kind: AlbumKind, _ result: PHFetchResult<PHAsset>) -> AlbumSnapshot {
             var ids: [String] = []
             var modified: [String: Date] = [:]
+            var hidden = Set<String>()
             ids.reserveCapacity(result.count)
             modified.reserveCapacity(result.count)
             result.enumerateObjects { asset, _, _ in
                 let id = asset.localIdentifier
                 ids.append(id)
                 if let date = asset.modificationDate { modified[id] = date }
+                if asset.isHidden { hidden.insert(id) }
             }
-            return AlbumSnapshot(id: id, title: title, kind: kind, assetIDs: ids, modified: modified)
+            return AlbumSnapshot(id: id, title: title, kind: kind, assetIDs: ids, modified: modified, hiddenAssetIDs: hidden)
         }
 
         var albums = [LibraryAlbum(

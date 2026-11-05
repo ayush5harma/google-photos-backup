@@ -38,16 +38,68 @@ public struct BackupRecord: Codable, Equatable, Sendable {
 }
 
 /// The Google Photos album standing in for one Photos album.
+///
+/// The app adds to a Google album but never removes from it, and cannot
+/// read what it holds: a photo the owner took out of a (perhaps shared)
+/// album by hand is invisible to it. So once an album is linked, only
+/// photos that joined the Photos album since are ever sent to it; the
+/// members recorded here are never sent again.
 public struct AlbumMirror: Codable, Equatable, Sendable {
     /// Unset until the first batch creates the album.
     public var googleAlbumID: String?
-    /// Assets already added to that album.
+    /// Assets already added to that album, never sent to it again.
     public var addedAssetIDs: Set<String>
+    /// Members taken as known without being sent: the whole album when its
+    /// record of members was found empty (rebaselineUnknownMirrors), and
+    /// held members the owner chose to skip. Never sent to the album, and
+    /// kept apart from added ones. nil when there are none, so a record that never
+    /// needed it is written exactly as before.
+    public var knownAssetIDs: Set<String>?
+    /// Members cleared to go into the linked album whatever their number:
+    /// the ones the album was created with, until they are in (a first run
+    /// that stops part-way is not a re-add), and held members the owner
+    /// chose to add. Dropped as they go in; nil when there are none.
+    public var approvedAssetIDs: Set<String>?
 
-    public init(googleAlbumID: String? = nil, addedAssetIDs: Set<String> = []) {
+    public init(googleAlbumID: String? = nil, addedAssetIDs: Set<String> = [], knownAssetIDs: Set<String>? = nil,
+                approvedAssetIDs: Set<String>? = nil) {
         self.googleAlbumID = googleAlbumID
         self.addedAssetIDs = addedAssetIDs
+        self.knownAssetIDs = knownAssetIDs
+        self.approvedAssetIDs = approvedAssetIDs
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case googleAlbumID, addedAssetIDs, knownAssetIDs, approvedAssetIDs
+    }
+
+    /// A mirror whose member list is missing (a hand edit, a damaged file)
+    /// still loads, as a linked album with no record of its members, which
+    /// the next run re-baselines instead of refilling; the rest of the
+    /// record loads with it rather than the whole file being refused.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        googleAlbumID = try container.decodeIfPresent(String.self, forKey: .googleAlbumID)
+        addedAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .addedAssetIDs) ?? []
+        knownAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .knownAssetIDs)
+        approvedAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .approvedAssetIDs)
+    }
+
+    /// Every member this mirror has a record of, sent or only known.
+    /// Read every pass for every linked album: without known members it is
+    /// addedAssetIDs itself, not a copy.
+    public var recordedAssetIDs: Set<String> {
+        guard let known = knownAssetIDs, !known.isEmpty else { return addedAssetIDs }
+        return addedAssetIDs.union(known)
+    }
+}
+
+/// A linked album found with no record of its members, taken as holding
+/// every member it has now.
+public struct RebaselinedAlbum: Equatable, Sendable {
+    public let albumID: String
+    public let title: String
+    public let count: Int
 }
 
 /// Everything the app remembers between launches, keyed by PHAsset and
@@ -113,11 +165,70 @@ public struct BackupState: Codable, Equatable, Sendable {
         return assetIDs.filter { uploaded[$0].map { keys.contains($0.mediaKey) } ?? false }
     }
 
-    public mutating func recordAlbum(_ albumID: String, googleAlbumID: String, added assetIDs: some Sequence<String>) {
+    /// - Parameter members: the Photos album's visible members, read when
+    ///   this call creates the Google album: they may all still go in on a
+    ///   later pass or run without counting as re-adds.
+    /// - Returns: how many of `assetIDs` went into an album that was linked
+    ///   already without being approved, which the run counts against
+    ///   BackupPlanner.linkedAlbumAddLimit.
+    @discardableResult
+    public mutating func recordAlbum(_ albumID: String, googleAlbumID: String, added assetIDs: some Sequence<String>,
+                                     members: [String] = []) -> Int {
         var mirror = mirrors[albumID] ?? AlbumMirror()
+        let added = Set(assetIDs)
+        var approved = mirror.approvedAssetIDs ?? []
+        let counted: Int
+        if mirror.googleAlbumID == nil {
+            approved.formUnion(members)
+            counted = 0
+        } else {
+            counted = added.subtracting(mirror.addedAssetIDs).subtracting(approved).count
+        }
         mirror.googleAlbumID = googleAlbumID
-        mirror.addedAssetIDs.formUnion(assetIDs)
+        mirror.addedAssetIDs.formUnion(added)
+        approved.subtract(mirror.addedAssetIDs)
+        mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
         mirrors[albumID] = mirror
+        return counted
+    }
+
+    /// "Add them": the owner clears held members to go into the album.
+    public mutating func approveAlbumAdds(_ albumID: String, assetIDs: some Sequence<String>) {
+        guard var mirror = mirrors[albumID] else { return }
+        let approved = (mirror.approvedAssetIDs ?? []).union(assetIDs).subtracting(mirror.recordedAssetIDs)
+        mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
+        mirrors[albumID] = mirror
+    }
+
+    /// "Skip": held members are recorded as known, and never sent.
+    public mutating func skipAlbumAdds(_ albumID: String, assetIDs: some Sequence<String>) {
+        guard var mirror = mirrors[albumID] else { return }
+        let skipped = Set(assetIDs)
+        guard !skipped.isEmpty else { return }
+        mirror.knownAssetIDs = (mirror.knownAssetIDs ?? []).union(skipped)
+        let approved = (mirror.approvedAssetIDs ?? []).subtracting(skipped)
+        mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
+        mirrors[albumID] = mirror
+    }
+
+    /// Guard C: a linked album with no record of what it holds (its members
+    /// cleared by a reset, a damaged file or a hand edit) is never refilled.
+    /// Re-adding every member would put back photos the owner took out of
+    /// the Google album by hand: on 2026-11-05 a cleared state re-added a
+    /// whole Apple album to a shared Google album. Each such selected user
+    /// album instead takes its current members, hidden ones too, as known,
+    /// and only photos that join it later go in. Returns the albums
+    /// re-baselined, for the timeline.
+    public mutating func rebaselineUnknownMirrors(in albums: [AlbumSnapshot]) -> [RebaselinedAlbum] {
+        var rebaselined: [RebaselinedAlbum] = []
+        for album in albums where album.kind == .user && selectedAlbumIDs.contains(album.id) && !album.assetIDs.isEmpty {
+            guard var mirror = mirrors[album.id], mirror.googleAlbumID != nil, mirror.recordedAssetIDs.isEmpty else { continue }
+            mirror.knownAssetIDs = Set(album.assetIDs)
+            mirror.approvedAssetIDs = nil
+            mirrors[album.id] = mirror
+            rebaselined.append(RebaselinedAlbum(albumID: album.id, title: album.title, count: album.assetIDs.count))
+        }
+        return rebaselined
     }
 
     /// The same selection and album links with no record of what was
@@ -139,18 +250,12 @@ public struct BackupState: Codable, Equatable, Sendable {
         AlbumTarget(id: mirrors[albumID]?.googleAlbumID, name: title)
     }
 
-    /// The target the Mac app sends: split out keys Google no longer has,
-    /// checked against up to three photos the album already holds. Picked
-    /// afresh each time: dead keys cluster by upload (3 of the 4 waiting for
-    /// one album, 2026-10-27), and a fixed three that all died would make a
-    /// live album look deleted on every run.
+    /// The target the Mac app sends: split out keys Google no longer has.
+    /// Nothing else: no key the album already holds is ever sent again (see
+    /// AlbumTarget.splitMissing).
     public func splittingAlbumTarget(for albumID: String, title: String) -> AlbumTarget {
         var target = albumTarget(for: albumID, title: title)
         target.splitMissing = true
-        if target.id != nil, let members = mirrors[albumID]?.addedAssetIDs {
-            let probes = members.shuffled().lazy.compactMap { uploaded[$0]?.mediaKey }.prefix(3)
-            target.probeMediaKeys = probes.isEmpty ? nil : Array(probes)
-        }
         return target
     }
 }

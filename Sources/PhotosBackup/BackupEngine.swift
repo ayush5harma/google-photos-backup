@@ -176,6 +176,12 @@ final class BackupEngine {
     @ObservationIgnored private var messagesOnly = false
     @ObservationIgnored private var failedAssets = Set<String>()
     @ObservationIgnored private var failedAlbums = Set<String>()
+    /// Guard C (2): per album, the photos this run added by itself to a
+    /// Google album linked before it (BackupState.recordAlbum's count),
+    /// which BackupPlanner.linkedAlbumAddLimit caps.
+    @ObservationIgnored private var albumAddsThisRun: [String: Int] = [:]
+    /// Albums whose held adds this run already put in the timeline.
+    @ObservationIgnored private var heldAlbumsLogged = Set<String>()
     /// The batch being exported or sent; Retry leaves these alone.
     @ObservationIgnored private var inFlight = Set<String>()
     @ObservationIgnored private var retries = RetryTracker()
@@ -477,6 +483,8 @@ final class BackupEngine {
         lastError = nil
         failedAssets = []
         failedAlbums = []
+        albumAddsThisRun = [:]
+        heldAlbumsLogged = []
         retries = RetryTracker()
         tally = RunTally()
         meter = ThroughputMeter()
@@ -573,19 +581,72 @@ final class BackupEngine {
     /// (the queues before this and the picks), never the selected albums;
     /// AppModel.activeTakesSelection says which, and is read every pass, so
     /// unticking an account mid-run stops its albums at the next pass.
+    /// Only the primary may be sent a hidden photo the albums list (and
+    /// never into an album): another account never gets one.
     func planPass(settings: BackupSettings) -> [PlannedStep] {
         let albums = model.activeTakesSelection ? model.albums.map(\.snapshot) : []
+        if settings.mirrorAlbums { rebaselineUnknownMirrors(in: albums) }
         if settings.reuploadEdits { stampEarlierUploads(in: albums) }
         picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
         // What this run already confirmed is never planned again in it,
         // not even as an edit (Photos' analysis or a favourite can move
         // its date mid-run), so every asset goes to Google at most once
         // per run and re-uploads cannot keep the passes going.
-        return BackupPlanner.plan(picked: picked, state: model.state, batchSize: settings.batchSize)
+        let steps = BackupPlanner.plan(picked: picked, state: model.state, batchSize: settings.batchSize)
             + BackupPlanner.plan(albums: albums, state: model.state, mirrorAlbums: settings.mirrorAlbums,
                                  batchSize: settings.batchSize,
                                  excludingAssets: failedAssets.union(picked).union(tally.confirmedIDs),
-                                 excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits)
+                                 excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits,
+                                 uploadsHidden: model.isPrimaryActive, albumAddsThisRun: albumAddsThisRun)
+        if settings.mirrorAlbums { logHeldAlbumAdds(in: albums) }
+        return steps
+    }
+
+    /// Guard C (2): adds held back from an album that already exists go in
+    /// the timeline as a problem, once per album and run; the Overview
+    /// offers "Add them" and "Skip" for each (AppModel.heldAlbumAdds).
+    private func logHeldAlbumAdds(in albums: [AlbumSnapshot]) {
+        let held = BackupPlanner.heldAlbumAdds(albums: albums, state: model.state, albumAddsThisRun: albumAddsThisRun)
+        for album in held where heldAlbumsLogged.insert(album.albumID).inserted {
+            let count = album.assetIDs.count
+            model.log(.photos, "\(count.formatted()) photo\(count == 1 ? "" : "s") waiting to be added to \"\(album.title)\": more than "
+                      + "\(BackupPlanner.linkedAlbumAddLimit) would have gone into a Google album that already exists, so none were sent. "
+                      + "Add them or skip them on the Overview.", problem: true)
+        }
+    }
+
+    /// An album call Google refused outright: the album is gone, or every
+    /// photo sent was. The bridge cannot tell which without re-adding a photo
+    /// the album holds (which could put back one removed by hand), so nothing
+    /// is uploaded again; the timeline names the album for the owner to look.
+    private func logAlbumRefused(_ title: String, _ message: String) {
+        model.log(.photos, "Google Photos refused to add photos to \"\(title)\" (\(message)). Its Google album may have been "
+                  + "deleted; nothing was sent again, and the next backup tries once more.", problem: true)
+    }
+
+    /// Records what an album call put in, and counts it against the run's
+    /// limit for albums linked before the call. A call that creates the
+    /// album passes its visible members, which may all follow uncounted.
+    private func recordAlbum(_ albumID: String, googleAlbumID: String, added: [String]) {
+        let members = model.state.mirrors[albumID]?.googleAlbumID == nil
+            ? model.albums.first { $0.id == albumID }?.snapshot.visibleAssetIDs ?? []
+            : []
+        let counted = model.state.recordAlbum(albumID, googleAlbumID: googleAlbumID, added: added, members: members)
+        if counted > 0 { albumAddsThisRun[albumID, default: 0] += counted }
+    }
+
+    /// Guard C (1): a linked album found with no record of its members is
+    /// never refilled, only re-baselined; the timeline says which and how
+    /// many, as a problem, since something reset the record.
+    private func rebaselineUnknownMirrors(in albums: [AlbumSnapshot]) {
+        let rebaselined = model.state.rebaselineUnknownMirrors(in: albums)
+        guard !rebaselined.isEmpty else { return }
+        model.saveState()
+        for album in rebaselined {
+            let photos = "\(album.count.formatted()) photo\(album.count == 1 ? "" : "s")"
+            model.log(.photos, "The Google album for \"\(album.title)\" had no record of what it holds, so nothing was added to it: "
+                      + "its \(photos) are taken as already there, and only photos added to the album from now on go in.", problem: true)
+        }
     }
 
     /// Drops from the queues what is backed up or failed for this run, and
@@ -1085,7 +1146,7 @@ final class BackupEngine {
                     case let .album(googleID, _, addedKeys):
                         if let album {
                             let added = addedKeys.map { self.model.state.assets(confirmed, withMediaKeys: $0) } ?? confirmed
-                            self.model.state.recordAlbum(album.id, googleAlbumID: googleID, added: added)
+                            self.recordAlbum(album.id, googleAlbumID: googleID, added: added)
                         }
                     case let .albumFailed(message):
                         guard let album else { break }
@@ -1096,10 +1157,11 @@ final class BackupEngine {
                             // waits for the hold (with its cap).
                             albumLimited = true
                         } else {
-                            // The title stays out: it lands in the timeline
-                            // and the shareable report.
+                            // The title stays out of lastError, which lands in
+                            // the shareable report; the timeline names it.
                             self.failedAlbums.insert(album.id)
                             self.lastError = "Backed up, but not added to a Google Photos album: \(message)"
+                            self.logAlbumRefused(album.title, message)
                         }
                     case let .fatal(kind, message):
                         fatal = (kind, message)
@@ -1288,7 +1350,7 @@ final class BackupEngine {
                         missingKeys += keys
                     case let .album(googleID, _, addedKeys):
                         let added = addedKeys.map { self.model.state.assets(pending, withMediaKeys: $0) } ?? pending
-                        self.model.state.recordAlbum(albumID, googleAlbumID: googleID, added: added)
+                        self.recordAlbum(albumID, googleAlbumID: googleID, added: added)
                         progressed = progressed || !added.isEmpty
                     case let .fatal(kind, message):
                         fatal = (kind, message)
@@ -1325,7 +1387,7 @@ final class BackupEngine {
             default:
                 failedAlbums.insert(albumID)
                 lastError = "Could not add photos to a Google Photos album: \(message)"
-                model.log(.photos, lastError ?? message, problem: true)
+                logAlbumRefused(albumTitle, message)
                 return progressed ? .progressed : .nothing
             }
         }
