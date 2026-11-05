@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -78,11 +79,24 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
             var todo = candidates.Where(item => !state.Files.TryGetValue(item.Key, out var record)
                 || record.Fingerprint != item.Fingerprint || string.IsNullOrEmpty(record.MediaKey)).ToList();
             var completed = 0;
-            Emit(new BackupProgress("Uploading", completed, todo.Count, failed));
-            foreach (var batch in todo.Chunk(20))
+            var parallelism = options.ThreadsAutomatic ? UploadParallelism.Automatic() : UploadParallelism.Manual(options.Threads);
+            var meter = new ThroughputMeter();
+            BackupProgress Uploading(string? file = null, string? message = null)
+            {
+                var now = DateTimeOffset.UtcNow;
+                return new BackupProgress("Uploading", completed, todo.Count, failed, file, message,
+                    meter.BytesPerSecond(now), meter.SecondsLeft(todo.Count - completed, now), parallelism.Summary);
+            }
+            Emit(Uploading());
+            // No read-ahead stage (issue #58, item 3): a folder run's files are local and were hashed by the scan,
+            // and device media is staged by its own action before a run, so a batch has nothing left to prepare
+            // while the one before it uploads. The bridge hashes each file inside its upload thread.
+            foreach (var batch in todo.Chunk(options.BatchSize))
             {
                 await WaitWhilePausedAsync(linked.Token).ConfigureAwait(false);
-                var remaining = batch.ToList();
+                // The largest first, so a long video starts early instead of being the batch's tail (the Mac's
+                // StagingWindow.largestFirst); OrderByDescending is stable, so equal sizes keep the scan order.
+                var remaining = batch.OrderByDescending(item => item.Size).ToList();
                 for (var attempt = 1; attempt <= 3 && remaining.Count > 0; attempt++)
                 {
                     linked.Token.ThrowIfCancellationRequested();
@@ -91,14 +105,14 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                     var retryable = new HashSet<string>(StringComparer.Ordinal);
                     var failedEvents = new HashSet<string>(StringComparer.Ordinal);
                     string? fatalKind = null;
-                    var request = new JsonObject
-                    {
-                        ["command"] = "upload", ["auth_data"] = authData, ["quality"] = options.Quality, ["threads"] = options.Threads,
-                        ["items"] = new JsonArray(remaining.Select(item => (JsonNode)new JsonObject
-                        {
-                            ["id"] = item.Key, ["path"] = item.Path, ["filename"] = Path.GetFileName(item.Path)
-                        }).ToArray())
-                    };
+                    var sentBytes = 0L;
+                    var sentItems = 0;
+                    var serverFailures = 0;
+                    var rateLimited = false;
+                    var sentAt = Stopwatch.GetTimestamp();
+                    long? lastAnswerAt = null;
+                    var request = UploadRequest(authData, options.Quality, parallelism.Current,
+                        remaining.Select(item => (item.Key, item.Path)));
                     var code = await ExecuteBridgeAsync(request, message =>
                     {
                         var type = Text(message, "type");
@@ -107,7 +121,9 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                         if (id is null || !byId.TryGetValue(id, out var item)) return;
                         if (type == "progress")
                         {
-                            Emit(new BackupProgress("Uploading", completed, todo.Count, failed, Path.GetFileName(item.Path)));
+                            if (Text(message, "phase") == "uploading" && Number(message, "bytes_completed") is { } sent)
+                                meter.Sent(id, sent, DateTimeOffset.UtcNow);
+                            Emit(Uploading(Path.GetFileName(item.Path)));
                         }
                         else if (type == "item" && !confirmed.Contains(id))
                         {
@@ -119,17 +135,34 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                             state.Files[id] = new FileRecord { Fingerprint = item.Fingerprint, MediaKey = mediaKey };
                             Save(statePath, state);
                             confirmed.Add(id);
-                            if (status == "existing") existing++; else uploaded++;
+                            if (status == "existing") existing++;
+                            else
+                            {
+                                uploaded++;
+                                sentItems++;
+                                sentBytes += item.Size;
+                            }
                             completed++;
-                            Emit(new BackupProgress("Uploading", completed, todo.Count, failed, Path.GetFileName(item.Path)));
+                            lastAnswerAt = Stopwatch.GetTimestamp();
+                            meter.Finished(id, DateTimeOffset.UtcNow);
+                            Emit(Uploading(Path.GetFileName(item.Path)));
                         }
-                        else if (type == "item_failed" && !confirmed.Contains(id))
+                        else if (type == "item_failed" && !confirmed.Contains(id) && failedEvents.Add(id))
                         {
-                            failedEvents.Add(id);
-                            if (Boolean(message, "retryable")) retryable.Add(id);
+                            var bridgeRetryable = Boolean(message, "retryable");
+                            if (bridgeRetryable) retryable.Add(id);
+                            var failure = FailureClassifier.Classify(Text(message, "message"), bridgeRetryable);
+                            rateLimited |= failure == FailureClass.RateLimited;
+                            if (failure == FailureClass.Retryable) serverFailures++;
+                            lastAnswerAt = Stopwatch.GetTimestamp();
+                            meter.Finished(id, DateTimeOffset.UtcNow);
                         }
                     }, linked.Token).ConfigureAwait(false);
                     linked.Token.ThrowIfCancellationRequested();
+                    // Timed to the last item's answer, as on the Mac: an album step after the uploads is not upload time.
+                    parallelism.Measured(new UploadSample(sentBytes,
+                        Stopwatch.GetElapsedTime(sentAt, lastAnswerAt ?? Stopwatch.GetTimestamp()).TotalSeconds, sentItems,
+                        rateLimited || fatalKind == "rate_limit" || code == 6, serverFailures, bridge.LastRequestStartedBridge));
 
                     if (fatalKind is "auth" or "request" or "internal" || code is 1 or 2 or 4)
                         throw new InvalidOperationException(fatalKind == "auth" ? "Google sign-in needs attention." : "The uploader stopped early.");
@@ -143,7 +176,7 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                         {
                             failed++;
                             completed++;
-                            Emit(new BackupProgress("Uploading", completed, todo.Count, failed, Path.GetFileName(item.Path), "Upload failed; retry later."));
+                            Emit(Uploading(Path.GetFileName(item.Path), "Upload failed; retry later."));
                         }
                     }
                     remaining = next;
@@ -258,11 +291,12 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                     { throw ScanUnavailable(); }
                     if (!found.TryGetValue(path, out var candidate))
                     {
-                        string fingerprint;
+                        (string Hash, long Size) fingerprint;
                         try { fingerprint = await FingerprintAsync(path, ct).ConfigureAwait(false); }
                         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.Security.SecurityException)
                         { throw ScanUnavailable(); }
-                        candidate = new Candidate(Digest(Encoding.UTF8.GetBytes(OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path)), path, fingerprint);
+                        candidate = new Candidate(Digest(Encoding.UTF8.GetBytes(OperatingSystem.IsWindows() ? path.ToUpperInvariant() : path)),
+                            path, fingerprint.Hash, fingerprint.Size);
                         found[path] = candidate;
                     }
                     candidate.Roots.Add(rootKey);
@@ -273,11 +307,32 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
         return found.Values.ToList();
     }
 
-    private static async Task<string> FingerprintAsync(string path, CancellationToken ct)
+    private static async Task<(string Hash, long Size)> FingerprintAsync(string path, CancellationToken ct)
     {
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 128 * 1024,
             FileOptions.Asynchronous | FileOptions.SequentialScan);
-        return Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, ct).ConfigureAwait(false));
+        var hash = Convert.ToHexStringLower(await SHA256.HashDataAsync(stream, ct).ConfigureAwait(false));
+        // The bytes hashed, not a separate stat: the size the parallelism controller weighs matches the fingerprint.
+        return (hash, stream.Position);
+    }
+
+    /// <summary>
+    /// The one place an upload request is made. Quality goes as given and nothing else about it: the bridge's
+    /// upload_flags maps "original" to gpmc saver=False, use_quota=False (committed as a Pixel XL, free) whatever
+    /// the thread count, so more uploads at once can never move an item to another storage mode.
+    /// </summary>
+    public static JsonObject UploadRequest(string authData, string quality, int threads, IEnumerable<(string Id, string Path)> items)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(threads, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(threads, UploadParallelism.MaximumThreads);
+        return new JsonObject
+        {
+            ["command"] = "upload", ["auth_data"] = authData, ["quality"] = quality, ["threads"] = threads,
+            ["items"] = new JsonArray(items.Select(item => (JsonNode)new JsonObject
+            {
+                ["id"] = item.Id, ["path"] = item.Path, ["filename"] = Path.GetFileName(item.Path)
+            }).ToArray())
+        };
     }
 
     private static string CanonicalPath(string path)
@@ -301,7 +356,10 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
         ArgumentNullException.ThrowIfNull(options);
         if (options.Folders is null || options.Folders.Count == 0) throw new ArgumentException("Choose a folder to back up.", nameof(options));
         if (options.Quality is not ("original" or "saver" or "quota")) throw new ArgumentException("Choose a supported upload quality.", nameof(options));
-        if (options.Threads is < 1 or > 8) throw new ArgumentException("Threads must be between 1 and 8.", nameof(options));
+        if (options.Threads is < 1 or > UploadParallelism.MaximumThreads)
+            throw new ArgumentException($"Parallel uploads must be between 1 and {UploadParallelism.MaximumThreads}.", nameof(options));
+        if (options.BatchSize is < 1 or > BackupOptions.MaximumBatchSize)
+            throw new ArgumentException($"Items per batch must be between 1 and {BackupOptions.MaximumBatchSize}.", nameof(options));
         if (string.IsNullOrWhiteSpace(authData) || GoogleSignIn.Email(authData) is null)
             throw new InvalidOperationException("Sign in with Google before backing up.");
     }
@@ -384,6 +442,8 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
 
     private static string? Text(JsonObject item, string key) =>
         item[key] is JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+    private static long? Number(JsonObject item, string key) =>
+        item[key] is JsonValue value && value.TryGetValue<long>(out var number) ? number : null;
     private static bool Boolean(JsonObject item, string key) =>
         item[key] is JsonValue value && value.TryGetValue<bool>(out var result) && result;
 
@@ -395,11 +455,12 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
     }
     private static string Digest(byte[] input) => Convert.ToHexStringLower(SHA256.HashData(input));
 
-    private sealed class Candidate(string key, string path, string fingerprint)
+    private sealed class Candidate(string key, string path, string fingerprint, long size)
     {
         public string Key { get; } = key;
         public string Path { get; } = path;
         public string Fingerprint { get; } = fingerprint;
+        public long Size { get; } = size;
         public HashSet<string> Roots { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, string> RootNames { get; } = new(StringComparer.Ordinal);
     }
