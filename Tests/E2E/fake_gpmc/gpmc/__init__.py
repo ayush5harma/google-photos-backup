@@ -28,6 +28,8 @@ Scenario keys (all optional):
                                  answers 404, as Google does for a key it
                                  no longer has
   "delay": 0.2                   seconds each file takes (to test Stop)
+  "account_delay": {"<email>": 2.0}   seconds each file takes for that
+                                 account instead of "delay" (one slow account)
   "refuse_accounts": ["<email>"] sign-ins for these accounts answer 403
   "network": {...}               a simulated link, for measuring throughput;
                                  every key optional, seconds and MB/s:
@@ -420,8 +422,9 @@ class Client:
         size = path.stat().st_size
         sha1 = _sha1(path)
         report("hashing", size)
-        if scenario.get("delay"):
-            time.sleep(float(scenario["delay"]))
+        delay = scenario.get("account_delay", {}).get(self.account, scenario.get("delay"))
+        if delay:
+            time.sleep(float(delay))
 
         if not force:
             report("checking", 0)
