@@ -27,7 +27,7 @@ final class PickedFileTests: XCTestCase {
         var result: Result<ExportedAsset, Error>?
         var started: [String] = []
         await AssetExporter().export([id], includingHidden: includingHidden, pickedFiles: file.map { [id: $0] } ?? [:],
-                                     into: scratch.appendingPathComponent("batch"), shouldStop: { false },
+                                     into: scratch.appendingPathComponent("batch"), shouldStop: { _ in false },
                                      started: { _, name in started.append(name) }, finished: { _, outcome in result = outcome })
         return (result, started)
     }

@@ -172,6 +172,31 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         #expect(!StagingWindow.mayStage(batchesReady: 1, bytesReady: StagingWindow.bytesAhead))
     }
 
+    /// PR #52 review: an export ahead asks before each item, so one batch of
+    /// large videos cannot stage past the cap.
+    @Test func anItemGoesAheadOnlyIfItFitsUnderTheCap() {
+        let cap = StagingWindow.bytesAhead
+        #expect(StagingWindow.mayExportAhead(staged: 0, next: 600 * megabyte, freeSpace: nil))
+        #expect(StagingWindow.mayExportAhead(staged: cap - 600 * megabyte, next: 600 * megabyte, freeSpace: nil))
+        #expect(!StagingWindow.mayExportAhead(staged: cap - 600 * megabyte, next: 601 * megabyte, freeSpace: nil))
+        // One video larger than the whole window waits for its own turn.
+        #expect(!StagingWindow.mayExportAhead(staged: 0, next: cap + 1, freeSpace: nil))
+    }
+
+    @Test func anItemOfUnknownSizeGoesAheadOnlyWhileUnderTheCap() {
+        let cap = StagingWindow.bytesAhead
+        #expect(StagingWindow.mayExportAhead(staged: cap - 1, next: nil, freeSpace: nil))
+        #expect(!StagingWindow.mayExportAhead(staged: cap, next: nil, freeSpace: nil))
+    }
+
+    @Test func anExportAheadLeavesTheDiskItsFloor() {
+        let floor = StagingWindow.freeSpaceFloor
+        #expect(StagingWindow.mayExportAhead(staged: 0, next: 500 * megabyte, freeSpace: floor + 500 * megabyte))
+        #expect(!StagingWindow.mayExportAhead(staged: 0, next: 500 * megabyte, freeSpace: floor + 499 * megabyte))
+        #expect(!StagingWindow.mayExportAhead(staged: 0, next: nil, freeSpace: floor - 1))
+        #expect(StagingWindow.mayExportAhead(staged: 0, next: nil, freeSpace: floor))
+    }
+
     @Test func largeFilesGoFirstAndUnknownSizesLast() {
         let sizes: [(String, Int64?)] = [("a", 3), ("b", nil), ("c", 900), ("d", 3), ("e", 40)]
         #expect(StagingWindow.largestFirst(sizes, size: \.1).map(\.0) == ["c", "e", "a", "d", "b"])

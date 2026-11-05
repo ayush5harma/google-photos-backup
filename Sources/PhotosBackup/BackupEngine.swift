@@ -86,6 +86,9 @@ private struct StagedBatch {
     var directories: [URL]
     var ids: [String]
     var items: [BatchItem] = []
+    /// false when the export stopped before all of `ids` (a hold, the
+    /// staging cap, low disk, a stop); the step exports the rest itself.
+    var complete = true
 
     var bytes: Int64 { items.reduce(0) { $0 + ($1.size ?? 0) } }
 
@@ -93,6 +96,10 @@ private struct StagedBatch {
         directories += other.directories
         ids += other.ids
         items += other.items
+    }
+
+    func removeFiles() {
+        for directory in directories { try? FileManager.default.removeItem(at: directory) }
     }
 }
 
@@ -135,8 +142,13 @@ final class BackupEngine {
     /// and closed when the run ends.
     @ObservationIgnored private let bridge = BridgeSession()
     /// Upload steps of the current pass exported ahead of their turn, by
-    /// step index.
-    @ObservationIgnored private let ahead = ExportAhead<StagedBatch>(bytes: \.bytes)
+    /// step index. An export let go by a stop or a pass's end finishes its
+    /// item in progress on its own; its files go then.
+    @ObservationIgnored private let ahead = ExportAhead<StagedBatch>(bytes: \.bytes, isComplete: \.complete,
+                                                                     abandoned: { $0.removeFiles() })
+    /// What each upload step of the current pass exports ahead, by step
+    /// index, so a discard can stop the rows of the one still exporting.
+    @ObservationIgnored private var aheadSteps: [Int: (ids: [String], hidden: Bool)] = [:]
     /// Verification belongs to the run just like upload: Stop terminates it,
     /// and no orphan child can later make a deletion decision.
     @ObservationIgnored private let verifier = BridgeProcess()
@@ -309,6 +321,9 @@ final class BackupEngine {
         phase = .stopping
         waitReason = nil
         bridge.terminate()
+        // At once, not when the pass ends: a step may be waiting for its
+        // export ahead, whose item in progress can be a long iCloud download.
+        discardStagedAhead()
     }
 
     /// Stop, then wait (bounded) until the run has recorded what it got.
@@ -502,7 +517,7 @@ final class BackupEngine {
                 if halted { break }
             }
             // Pause, Stop or a halt can leave later steps exported and unsent.
-            await discardStagedAhead()
+            discardStagedAhead()
             if halted { return true }
             if !progressed, !retryRequested { break }
         }
@@ -685,24 +700,25 @@ final class BackupEngine {
         return await send(batch.items, album: album, category: .photos, auth: auth, runtime: runtime, settings: settings)
     }
 
-    /// Exports `assetIDs` from Photos into a new private staging folder. An
-    /// export ahead of its turn also stops for Pause, when discarded, and
-    /// whenever the run waits or a condition would hold it (offline, a
-    /// metered network...), so it never downloads iCloud originals the
-    /// settings say to hold; its step exports the rest on its turn. Its rows
-    /// wait as ready rather than look like they are uploading.
+    /// Exports `assetIDs` from Photos into a new private staging folder. Its
+    /// rows wait as ready when it runs ahead of its turn rather than look like
+    /// they are uploading; see stopsExport for when it stops part-way.
     private func stage(_ assetIDs: [String], includingHidden: Bool, ahead: Bool) async -> StagedBatch {
         let directory = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
         var batch = StagedBatch(directories: [directory], ids: assetIDs)
+        var stopped = false
         inFlight.formUnion(assetIDs)
         await AssetExporter().export(assetIDs, includingHidden: includingHidden,
-                                     pickedFiles: includingHidden ? pickedFiles : [:], into: directory, shouldStop: {
-            if self.phase == .stopping { return true }
-            guard ahead else { return false }
-            return Task.isCancelled || self.shouldHalt || self.phase == .waiting || self.holdingCondition() != nil
+                                     pickedFiles: includingHidden ? pickedFiles : [:], into: directory, shouldStop: { upcoming in
+            stopped = self.stopsExport(ahead: ahead, exported: batch.bytes, upcoming: upcoming)
+            return stopped
         }, started: { id, filename in
+            // Let go by a discard, which has already stopped these rows.
+            if ahead, Task.isCancelled { return }
             self.show(id, filename: filename, status: .exporting)
         }, finished: { id, result in
+            // The file goes with the folder; the next run finds the item again.
+            if ahead, Task.isCancelled { return }
             switch result {
             case let .success(file):
                 let force = self.model.state.forcedUploads?.contains(id) == true ? true : nil
@@ -715,13 +731,30 @@ final class BackupEngine {
                 self.fail(id, error.localizedDescription, retryable: false)
             }
         })
+        batch.complete = !stopped
         return batch
+    }
+
+    /// Whether an export stops before its next item, of `upcoming` bytes if
+    /// known, having written `exported`. Every export stops for Stop. One
+    /// ahead of its turn also stops for Pause, when discarded, and whenever
+    /// the run waits or a condition would hold it (offline, a metered
+    /// network...), so it never downloads iCloud originals the settings say
+    /// to hold; and when the item would take what waits on disk past
+    /// StagingWindow's cap or the disk below its floor. Its step exports the
+    /// rest on its turn.
+    private func stopsExport(ahead isAhead: Bool, exported: Int64, upcoming: Int64?) -> Bool {
+        if phase == .stopping { return true }
+        guard isAhead else { return false }
+        if Task.isCancelled || shouldHalt || phase == .waiting || holdingCondition() != nil { return true }
+        let free = try? model.paths.staging.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return !ahead.mayExport(upcoming, after: exported, freeSpace: free?.volumeAvailableCapacityForImportantUsage)
     }
 
     /// The batch is sent or given up: its files go, and Retry may take its items again.
     private func release(_ batch: StagedBatch) {
         inFlight.subtract(batch.ids)
-        for directory in batch.directories { try? FileManager.default.removeItem(at: directory) }
+        batch.removeFiles()
     }
 
     /// While step `index` uploads, exports the next upload steps of the pass,
@@ -734,22 +767,34 @@ final class BackupEngine {
         for next in steps.indices where next > index {
             if case let .upload(albumID, _, ids) = steps[next] { exports[next] = (ids, albumID == BackupPlanner.pickedAlbumID) }
         }
+        aheadSteps = exports
         ahead.stage(exports.keys.sorted()) { next in
             // Held since it was queued: nothing now; the step exports it all
             // on its turn, after its wait.
-            if self.phase == .waiting || self.holdingCondition() != nil { return StagedBatch(directories: [], ids: []) }
+            if self.phase == .waiting || self.holdingCondition() != nil { return StagedBatch(directories: [], ids: [], complete: false) }
             let export = exports[next, default: ([], false)]
             return await self.stage(export.ids, includingHidden: export.hidden, ahead: true)
         }
     }
 
-    /// Exports that ran ahead of a pass that ended first: their files go and
-    /// their rows show as stopped, like any item a stop leaves unsent.
-    private func discardStagedAhead() async {
-        for batch in await ahead.discard() {
+    /// Exports ahead that a stop or the pass's end let go, at once: their
+    /// files go and their rows show as stopped, like any item a stop leaves
+    /// unsent. PR #52 review: this used to wait for the export still running,
+    /// whose item in progress cannot be interrupted, so a stop during a large
+    /// iCloud download stayed on Stopping for minutes. That export now stops
+    /// before its next item, its rows stop here, and its folder goes when
+    /// PhotoKit has finished the item.
+    private func discardStagedAhead() {
+        let discarded = ahead.discard()
+        for batch in discarded.ready {
             markStopped(batch.items.map(\.id))
             release(batch)
         }
+        if let index = discarded.exporting, let ids = aheadSteps[index]?.ids {
+            inFlight.subtract(ids)
+            for id in ids { update(id) { if !$0.status.isFinished { $0.status = .stopped } } }
+        }
+        aheadSteps = [:]
     }
 
     private func upload(messages items: [MessagesMediaItem], auth: String,
