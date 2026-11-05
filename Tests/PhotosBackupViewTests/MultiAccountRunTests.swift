@@ -1044,4 +1044,47 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(model.diagnostics.runs.first?.trigger, .retry)
         XCTAssertEqual(model.engine.failedCount, 0)
     }
+
+    /// Review of PR #68, MEDIUM 2: Check Connections refiled a sign-in that
+    /// turned out to be another account's whenever it was not the active
+    /// account's, though with the accounts side by side every lane writes
+    /// its own record. A refile under a lane moved that record away and its
+    /// confirmations were dropped or filed in the wrong record.
+    func testCheckConnectionsNeverRefilesAnAccountARunIsWritingTo() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        let thirdID = GoogleSignIn.normalizedEmail(Self.third)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        XCTAssertEqual(model.activeAccountID, firstID)
+        // The second account's sign-in turns out to be the third's.
+        try keychain.save(Self.credential(Self.third), account: secondID)
+        // Slow enough that the run is still writing when the check answers.
+        try scenario(["per_account": true, "delay": 1.0])
+        let batch = try items(16, tag: "refile")
+        model.runner.turn = { _, trigger in
+            model.engine.standInsForTesting = batch
+            model.engine.start(trigger: trigger)
+        }
+        model.startBackupNow()
+        let deadline = Date().addingTimeInterval(30)
+        while !(model.engine.isActive && model.engine.lanes.contains { $0.account == secondID }), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        await model.checkAccount(secondID)
+        XCTAssertTrue(model.engine.isActive, "the check answered while the run was still going")
+        XCTAssertTrue(model.engine.lanes.contains { $0.account == secondID } && model.activeAccountID != secondID,
+                      "a lane that is not the active account")
+        XCTAssertTrue(model.accounts.contains { $0.id == secondID }, "not refiled while its lane writes its record")
+        XCTAssertFalse(model.accounts.contains { $0.id == thirdID })
+        XCTAssertNotNil(keychain.load(account: secondID))
+        XCTAssertEqual(model.status(of: secondID), .connected(email: Self.third))
+        try await settle(model)
+
+        // The run over, the next check files it under its own account.
+        try scenario(["per_account": true])
+        await model.checkAccount(secondID)
+        XCTAssertTrue(model.accounts.contains { $0.id == thirdID })
+        XCTAssertNil(keychain.load(account: secondID))
+    }
 }

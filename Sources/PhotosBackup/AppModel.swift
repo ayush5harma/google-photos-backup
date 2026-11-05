@@ -1263,9 +1263,13 @@ final class AppModel {
     private func refile(_ id: String, as email: String) {
         // Not while a run uses either account's record: refiling can hand
         // one account's record to the other, and the run would write the
-        // old one back over it.
+        // old one back over it. Any lane's account, not only the active one
+        // (review of PR #68): with the accounts side by side each lane
+        // writes its own record, and a refile under it dropped its
+        // confirmations or filed them in the wrong record.
         let busy = engine.isActive || engine.phase == .paused
-        let involved = activeAccountID == id || activeAccountID.map { GoogleSignIn.sameAccount($0, email) } == true
+        let writing = engine.lanes.map(\.account) + [activeAccountID].compactMap { $0 }
+        let involved = writing.contains { $0 == id || GoogleSignIn.sameAccount($0, email) }
         guard !(busy && involved) else {
             accountStatuses[id] = .connected(email: email)
             return
