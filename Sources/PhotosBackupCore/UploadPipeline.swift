@@ -20,9 +20,14 @@ public struct UploadSample: Equatable, Sendable {
     /// The run's first request, whose time includes the bridge's start-up
     /// and sign-in: it counts for pushback, not for speed.
     public var includesStartUp: Bool
+    /// False for a retry round: a request that carries only the items the
+    /// one before it just failed. Its share of failures is not the level's
+    /// (review of PR #68): 9 of 100 failing is noise, but 5 of those 9
+    /// failing again read as 56% and halved the level.
+    public var firstRound: Bool
 
     public init(bytes: Int64, seconds: TimeInterval, items: Int, rateLimited: Bool, serverFailures: Int,
-                includesStartUp: Bool = false, requested: Int = 0) {
+                includesStartUp: Bool = false, requested: Int = 0, firstRound: Bool = true) {
         self.bytes = bytes
         self.seconds = seconds
         self.items = items
@@ -30,6 +35,7 @@ public struct UploadSample: Equatable, Sendable {
         self.serverFailures = serverFailures
         self.includesStartUp = includesStartUp
         self.requested = requested
+        self.firstRound = firstRound
     }
 
     /// The share of the request's items that failed retryably, 0 to 1.
@@ -64,7 +70,9 @@ public struct UploadSample: Equatable, Sendable {
 /// ends the climb for the run. Retryable failures (5xx, timeouts) lower it in
 /// proportion to how much of the request failed (issue #66): not at all
 /// below two failures or below a tenth of the request's items, one off from
-/// there, and half when half or more failed. Measured 2026-11-05 on 0.6.1 at
+/// there, and half when half or more failed. Only a batch's first request
+/// is judged this way: a retry round carries only items that just failed,
+/// so its share says nothing about the level. Measured 2026-11-05 on 0.6.1 at
 /// 16 to one account: Google's commit call answered 500/503 about 190 times
 /// in 3.4 minutes across 104 files, and the first 100-photo batch saved 42
 /// (0.2 a second); at about 4 to 8 on 0.6.0 there were 12 such errors in 70
@@ -153,7 +161,9 @@ public struct UploadParallelism: Equatable, Sendable {
             backOff(to: current / 2, because: .rateLimited)
             return
         }
-        if sample.serverFailures >= Self.serverFailuresThatCount, sample.failureShare >= Self.serverFailureShare {
+        // A retry round's failures still keep the decision from being clean
+        // (below); only a first round's share says how the level fares.
+        if sample.firstRound, sample.serverFailures >= Self.serverFailuresThatCount, sample.failureShare >= Self.serverFailureShare {
             backOff(to: sample.failureShare >= Self.halvingShare ? current / 2 : current - 1, because: .serverTrouble)
             return
         }

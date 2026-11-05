@@ -1494,6 +1494,9 @@ final class BackupEngine {
         var retryAt: Date?
         var progressed = false
         var exhausted: [String] = []
+        // Later rounds carry only what the one before left: their share of
+        // failures is not the level's (UploadSample.firstRound).
+        var firstRound = true
         defer {
             // Counts only: a Messages id is a content hash, and Google's
             // words are in each row.
@@ -1530,7 +1533,8 @@ final class BackupEngine {
             var fatal: (FatalKind, String)?
             var albumLimited = false
             var missingKeys: [String] = []
-            var sample = UploadSample(bytes: 0, seconds: 0, items: 0, rateLimited: false, serverFailures: 0, requested: pending.count)
+            var sample = UploadSample(bytes: 0, seconds: 0, items: 0, rateLimited: false, serverFailures: 0, requested: pending.count,
+                                      firstRound: firstRound)
             let request = BridgeRequest.upload(lane.auth, items: bridgeItems, quality: settings.quality,
                                                threads: lane.parallelism.current, album: target)
             let sentAt = Date()
@@ -1621,6 +1625,7 @@ final class BackupEngine {
             sample.rateLimited = limited || fatal?.0 == .rateLimit
             sample.includesStartUp = lane.bridge.lastRequestStartedBridge
             adjustParallelism(after: sample, lane: lane, category: category)
+            firstRound = false
 
             if let (kind, message) = fatal {
                 switch kind {

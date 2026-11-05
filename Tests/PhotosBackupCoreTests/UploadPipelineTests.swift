@@ -207,6 +207,38 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         #expect(parallelism.summary == "1 at a time (Google had trouble keeping up)")
     }
 
+    /// Review of PR #68, MEDIUM 3: a retry round carries only the items that
+    /// just failed. 9 of 100 failing is noise; 5 of those 9 failing again
+    /// read as 56% and halved the level.
+    @Test func aRetryRoundsShareOfFailuresDoesNotLowerTheLevel() {
+        var parallelism = UploadParallelism(cap: 16, automatic: false)
+        parallelism.measured(sample(40, items: 91, serverFailures: 9, requested: 100))
+        #expect(parallelism.current == 16)
+        var retry = sample(2, items: 4, serverFailures: 5, requested: 9)
+        retry.firstRound = false
+        parallelism.measured(retry)
+        #expect(parallelism.current == 16, "5 of the 9 retried is not half the level failing")
+        // The next batch's first request is judged as before.
+        parallelism.measured(sample(40, items: 42, serverFailures: 58, requested: 100))
+        #expect(parallelism.current == 8)
+        // A 429 in a retry round still halves.
+        var limited = sample(2, items: 0, rateLimited: true, requested: 9)
+        limited.firstRound = false
+        parallelism.measured(limited)
+        #expect(parallelism.current == 4)
+    }
+
+    @Test func aRetryRoundsFailureKeepsTheDecisionFromBeingClean() {
+        var automatic = UploadParallelism(cap: 8, automatic: true)
+        automatic.measured(sample(40, items: 10, serverFailures: 2, requested: 12))
+        #expect(automatic.current == 3)
+        for _ in 1..<UploadParallelism.reprobeAfter { automatic.measured(sample(60)) }
+        var retry = sample(60, items: 1, serverFailures: 3, requested: 4)
+        retry.firstRound = false
+        automatic.measured(retry)
+        #expect(automatic.current == 3, "not lowered, and not a clean decision either")
+    }
+
     /// Issue #66: automatically, a level lowered for Google's trouble is
     /// tried one step higher after `reprobeAfter` clean decisions, and climbs
     /// on from there while each step is faster.
