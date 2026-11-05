@@ -192,10 +192,37 @@ enum LegacyStateFixture {
         let directory = try scratch()
         defer { try? FileManager.default.removeItem(at: directory) }
         try Data("{not json".utf8).write(to: directory.appendingPathComponent("state.json"))
-        let loaded = AccountsStore(directory: directory).load(legacyCredential: (exists: true, email: "me@example.com"))
+        let now = Date(timeIntervalSince1970: 1_793_872_800) // 2026-11-05 10:00:00 UTC
+        let loaded = AccountsStore(directory: directory).load(legacyCredential: (exists: true, email: "me@example.com"), now: now)
         #expect(loaded.unreadable["state.json"] != nil)
-        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("state.json.unreadable").path))
+        #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("state.json.20261105T100000Z.unreadable").path))
         #expect(loaded.library.primary?.id == "me@example.com")
+    }
+
+    /// Review of PR #53, MINOR 5: setting a file aside deleted the copy set
+    /// aside before it. Two failures, even in the same second, keep both.
+    @Test func aSecondUnreadableFileNeverReplacesTheFirstSetAside() throws {
+        let directory = try scratch()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AccountsStore(directory: directory)
+        let now = Date(timeIntervalSince1970: 1_793_872_800)
+        let first = Data("{first broken copy".utf8), second = Data("{second broken copy".utf8)
+        for broken in [first, second] {
+            try broken.write(to: directory.appendingPathComponent("state.json"))
+            try broken.write(to: store.indexURL)
+            try broken.write(to: store.indexCopyURL)
+            let loaded = store.load(legacyCredential: (exists: false, email: nil), now: now)
+            #expect(loaded.unreadable.keys.sorted() == ["accounts.json", "accounts.json.bak", "state.json"])
+        }
+        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path).filter { $0.hasSuffix(".unreadable") }
+        for file in ["state.json", "accounts.json", "accounts.json.bak"] {
+            let kept = names.filter { $0.hasPrefix(file + ".2026") }
+            #expect(kept.count == 2, "\(file): \(names)")
+            let contents = try Set(kept.map { try Data(contentsOf: directory.appendingPathComponent($0)) })
+            #expect(contents == [first, second])
+        }
+        #expect(names.contains("state.json.20261105T100000Z.unreadable"))
+        #expect(names.contains("state.json.20261105T100000Z-2.unreadable"))
     }
 
     /// Review finding: downgraded, the single-account version signed in to

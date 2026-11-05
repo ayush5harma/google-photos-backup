@@ -80,7 +80,7 @@ public struct AccountsStore: Sendable {
             var unclaimed: BackupState?
             for position in index.accounts.indices {
                 let account = index.accounts[position]
-                let state = readState(account.stateFile, &unreadable)
+                let state = readState(account.stateFile, &unreadable, now: now)
                 if let state, let owner = state.accountEmail, account.id != AccountLibrary.legacyKeychainAccount,
                    !GoogleSignIn.sameAccount(owner, account.email ?? account.id), account.stateFile == AccountLibrary.legacyStateFile {
                     // state.json holds another account's history: an older
@@ -90,16 +90,16 @@ public struct AccountsStore: Sendable {
                     reassigned.append(account.title)
                     unclaimed = state
                     index.accounts[position].stateFile = AccountLibrary.stateFile(for: account.id)
-                    states[account.id] = readState(index.accounts[position].stateFile, &unreadable) ?? BackupState()
+                    states[account.id] = readState(index.accounts[position].stateFile, &unreadable, now: now) ?? BackupState()
                     continue
                 }
                 states[account.id] = state ?? BackupState()
             }
             let referenced = index.accounts.contains { $0.stateFile == AccountLibrary.legacyStateFile }
-            if unclaimed == nil, !referenced { unclaimed = readState(AccountLibrary.legacyStateFile, &unreadable) }
+            if unclaimed == nil, !referenced { unclaimed = readState(AccountLibrary.legacyStateFile, &unreadable, now: now) }
             library = AccountLibrary(index: index, states: states, unclaimed: unclaimed)
         } else {
-            let legacy = readState(AccountLibrary.legacyStateFile, &unreadable)
+            let legacy = readState(AccountLibrary.legacyStateFile, &unreadable, now: now)
             // Only at the upgrade itself: a rebuilt index finds a state.json
             // that is no longer from before accounts.
             if legacy != nil, !indexLost { keepPreAccountsCopy() }
@@ -138,14 +138,14 @@ public struct AccountsStore: Sendable {
         return try? BackupStore(url: url).load()
     }
 
-    private func readState(_ file: String, _ unreadable: inout [String: String]) -> BackupState? {
+    private func readState(_ file: String, _ unreadable: inout [String: String], now: Date) -> BackupState? {
         let url = url(of: file)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         do {
             return try BackupStore(url: url).load()
         } catch {
             unreadable[file] = error.localizedDescription
-            setAside(url)
+            setAside(url, now: now)
             return nil
         }
     }
@@ -162,7 +162,7 @@ public struct AccountsStore: Sendable {
                 return try Self.decodeIndex(at: indexURL)
             } catch {
                 unreadable[Self.indexFile] = error.localizedDescription
-                setAside(indexURL)
+                setAside(indexURL, now: now)
                 damaged = true
             }
         }
@@ -178,7 +178,7 @@ public struct AccountsStore: Sendable {
             return index
         } catch {
             unreadable[Self.indexCopyFile] = error.localizedDescription
-            setAside(indexCopyURL)
+            setAside(indexCopyURL, now: now)
             lost = true
             return nil
         }
@@ -199,10 +199,19 @@ public struct AccountsStore: Sendable {
         return try decoder.decode(AccountsIndex.self, from: Data(contentsOf: url))
     }
 
-    private func setAside(_ url: URL) {
-        let aside = url.appendingPathExtension("unreadable")
-        try? FileManager.default.removeItem(at: aside)
-        try? FileManager.default.moveItem(at: url, to: aside)
+    /// Renamed for inspection, `<name>.<UTC time>.unreadable`. A name of its
+    /// own each time: deleting an earlier one to reuse its name threw away
+    /// the copy from the first failure (PR #53 review).
+    private func setAside(_ url: URL, now: Date) {
+        let fileManager = FileManager.default
+        let stamp = now.formatted(Date.ISO8601FormatStyle(dateSeparator: .omitted, timeSeparator: .omitted))
+        var aside = url.appendingPathExtension(stamp).appendingPathExtension("unreadable")
+        var attempt = 2
+        while fileManager.fileExists(atPath: aside.path) {
+            aside = url.appendingPathExtension("\(stamp)-\(attempt)").appendingPathExtension("unreadable")
+            attempt += 1
+        }
+        try? fileManager.moveItem(at: url, to: aside)
     }
 
     private static let encoder: JSONEncoder = {
