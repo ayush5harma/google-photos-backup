@@ -270,16 +270,26 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
     }
 
     /// A one-off step down leaves no rung under the level Google had
-    /// trouble at, so that level stays for the run.
-    @Test func aLevelSteppedDownOneIsNotTriedAgain() {
+    /// trouble at. That level is tried again only after `troubleMemory`
+    /// clean decisions in a row: a ceiling kept for the whole run let steps
+    /// down of one stack up over hours (0.6.1 went 4 to 2 in 14 minutes).
+    @Test func aLevelSteppedDownOneIsTriedAgainOnlyAfterALongCleanStretch() {
         var parallelism = UploadParallelism(cap: 8, automatic: true)
         parallelism.measured(sample(40, items: 10, serverFailures: 2, requested: 12))
         #expect(parallelism.current == 3)
-        #expect(parallelism.mayRise == false, "the timeline says for the rest of the backup")
-        for _ in 0..<(3 * UploadParallelism.reprobeAfter) { parallelism.measured(sample(60)) }
-        #expect(parallelism.current == 3)
-        #expect(parallelism.mayRise == false)
+        #expect(parallelism.mayRise, "it measures on, so the timeline does not say for the rest of the backup")
         #expect(parallelism.summary == "3 at a time (Google had trouble keeping up at 4)")
+        for _ in 0..<(UploadParallelism.troubleMemory - 1) { parallelism.measured(sample(60)) }
+        #expect(parallelism.current == 3)
+        // One failure, too small to lower the level, starts the count again.
+        parallelism.measured(sample(60, serverFailures: 1, requested: 20))
+        for _ in 0..<(UploadParallelism.troubleMemory - 1) { parallelism.measured(sample(60)) }
+        #expect(parallelism.current == 3)
+        parallelism.measured(sample(60))
+        #expect(parallelism.current == 4, "the long clean stretch lifts the ceiling: 4 is tried again")
+        parallelism.measured(sample(60))
+        #expect(parallelism.current == 3, "4 was no faster: back to 3 at once, as a recovery")
+        #expect(parallelism.isClimbing == false)
     }
 
     /// From 16 halved to 8, then `reprobeAfter` clean decisions at 8.
@@ -311,20 +321,28 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         #expect(parallelism.current == 13, "faster, so it climbs on")
         parallelism.measured(sample(100))
         #expect(parallelism.current == 13, "16 is where Google had trouble")
-        #expect(parallelism.mayRise == false)
+        #expect(parallelism.mayRise, "it measures on, so that the ceiling can lift")
         #expect(parallelism.summary == "13 at a time (Google had trouble keeping up at 16)")
-        for _ in 0..<(3 * UploadParallelism.reprobeAfter) { parallelism.measured(sample(400)) }
-        #expect(parallelism.current == 13, "not for the rest of the run either")
+        // 12 clean decisions since the trouble so far (10 at 8, one each at
+        // 10 and 13): 16 waits for the rest of the long clean stretch.
+        var levels: [Int] = []
+        for _ in 0..<UploadParallelism.troubleMemory {
+            parallelism.measured(sample(400))
+            levels.append(parallelism.current)
+        }
+        #expect(levels.prefix(UploadParallelism.troubleMemory - 14).allSatisfy { $0 == 13 }, "not before the stretch has passed")
+        #expect(levels.contains(16), "then the level Google had trouble at is tried again")
     }
 
     @Test func aLaterProbeNeverReachesTheLevelGoogleHadTroubleAt() {
         var parallelism = recoveringFromSixteen()
         parallelism.measured(sample(60))
         #expect(parallelism.current == 8)
-        // Settled at 8: the next probe climbs as usual, one miss on, but
+        // Settled at 8 with 11 clean decisions since the trouble: while the
+        // ceiling holds, the next probe climbs as usual, one miss on, but
         // never to 16.
         var levels: [Int] = []
-        for _ in 0..<(4 * UploadParallelism.reprobeAfter) {
+        for _ in 0..<(UploadParallelism.troubleMemory - 12) {
             parallelism.measured(sample(60))
             levels.append(parallelism.current)
         }
