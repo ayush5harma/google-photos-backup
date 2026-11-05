@@ -28,6 +28,7 @@ Scenario keys (all optional):
                                  answers 404, as Google does for a key it
                                  no longer has
   "delay": 0.2                   seconds each file takes (to test Stop)
+  "refuse_accounts": ["<email>"] sign-ins for these accounts answer 403
   "network": {...}               a simulated link, for measuring throughput;
                                  every key optional, seconds and MB/s:
       "startup"      importing gpmc (once per bridge process)
@@ -309,7 +310,7 @@ class Api:
             session.call(server=float(_network().get("auth", 0)))
         if attempt <= scenario.get("auth_rate_limit_first", 0) or auth == "rate_limit":
             raise _error("429", AUTH_URL)
-        if auth == "refuse":
+        if auth == "refuse" or self.account in scenario.get("refuse_accounts", []):
             raise _error("403", AUTH_URL)
         if auth == "network":
             raise ConnectionError("HTTPSConnectionPool(host='android.googleapis.com', port=443): Max retries exceeded")

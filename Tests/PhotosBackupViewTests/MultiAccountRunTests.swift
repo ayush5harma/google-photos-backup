@@ -196,4 +196,56 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(relaunched.record(of: secondID)?.uploaded.count, 3)
         XCTAssertEqual(relaunched.record(of: firstID)?.mirrors["album-1"]?.googleAlbumID, "fake-album-legacy")
     }
+
+    /// Two signed-in accounts, both through their storage check, no run yet.
+    private func twoAccounts() async throws -> AppModel {
+        let model = AppModel()
+        model.settings.automatic = false
+        await model.connect(pasted: Self.credential(Self.first))
+        await model.connect(pasted: Self.credential(Self.second))
+        model.confirmStorage(for: GoogleSignIn.normalizedEmail(Self.second))
+        try await settle(model)
+        XCTAssertEqual(model.runnableAccounts.map(\.id), [Self.first, Self.second].map(GoogleSignIn.normalizedEmail))
+        return model
+    }
+
+    /// A primary run that halts (here Google refuses the primary's sign-in)
+    /// leaves its Messages media queued in the engine. Found in review: the
+    /// next account's run sent all of it to the second account. Nothing that
+    /// only the primary takes may reach another account; it waits for the
+    /// primary instead.
+    func testWorkLeftQueuedByThePrimaryNeverGoesToAnotherAccount() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+
+        try scenario(["per_account": true, "refuse_accounts": [Self.first]])
+        let queued = try items(4, tag: "primary-only")
+        // The app's own turns: Messages media to the primary, the photo run
+        // (nothing to plan here, no Photos library) to every account.
+        model.runner.turn = { id, trigger in
+            if id == firstID {
+                model.engine.backUp(messages: queued, includingPhotos: true, trigger: trigger)
+            } else {
+                model.engine.start(trigger: trigger)
+            }
+        }
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(model.record(of: secondID)?.uploaded.count, 0, "the second account got the primary's Messages media")
+        XCTAssertFalse(try uploads().contains { ($0["account"] as? String) == Self.second })
+        XCTAssertTrue(model.engine.hasQueuedPrimaryOnlyWork, "the items wait for the primary")
+        XCTAssertEqual(model.activeAccountID, firstID)
+
+        // The primary's sign-in works again: they go to the primary, and only there.
+        try scenario(["per_account": true])
+        model.runner.turn = { _, trigger in model.engine.start(trigger: trigger) }
+        model.startBackupNow()
+        try await settle(model)
+        let primary = Set(model.record(of: firstID)?.uploaded.keys.map { $0 } ?? [])
+        XCTAssertTrue(Set(queued.map(\.id)).isSubset(of: primary))
+        XCTAssertFalse(model.engine.hasQueuedPrimaryOnlyWork)
+        XCTAssertEqual(model.record(of: secondID)?.uploaded.count, 0)
+    }
 }

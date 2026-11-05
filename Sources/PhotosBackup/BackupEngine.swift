@@ -183,6 +183,11 @@ final class BackupEngine {
     var isActive: Bool { phase == .running || phase == .pausing || phase == .stopping || phase == .waiting }
     /// Failed items that Retry would queue again.
     var failedCount: Int { failures.count }
+    /// Picks, Messages media or a device import still queued, as a run that
+    /// halted (a refused sign-in, a full account) leaves them. Only the
+    /// primary account takes these, so AccountRunner starts no other
+    /// account's run while any are queued: that run would send them first.
+    var hasQueuedPrimaryOnlyWork: Bool { !picked.isEmpty || !messages.isEmpty || !deviceItems.isEmpty }
     /// Google's words for each failed row, for the diagnostic report.
     var failureMessages: [String] { activity.compactMap { $0.isFailed ? ($0.detail ?? $0.status.label) : nil } }
 
