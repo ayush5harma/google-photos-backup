@@ -14,6 +14,10 @@ final class ICloudSource {
     private(set) var pending = 0
     private(set) var completed = 0
     private(set) var total = 0
+    /// "12.3 MB/s" while a backup is sending, nil before there is a speed.
+    private(set) var speed: String?
+    /// Uploads at once in the running backup.
+    private(set) var uploadsAtOnce: Int?
     private(set) var notice: String?
     private(set) var reclaimFiles: [String: String] = [:]
     var reclaimSelection: Set<String> = [] { didSet { reclaimToken = nil } }
@@ -145,12 +149,14 @@ final class ICloudSource {
             return
         }
         uploaded = 0; existing = 0; failed = 0; pending = 0; completed = 0; total = 0
+        speed = nil; uploadsAtOnce = nil
         notice = nil
         reclaimFiles = [:]; reclaimSelection = []; reclaimToken = nil
         phase = .backingUp
         start(.init(command: .backup, account: account, stateDir: stateDirectory.path,
                     stagingDir: stagingDirectory.path, authData: auth,
-                    confirmRecentlyDeleted: reclaimAfterBackup ? true : nil, reclaimAfterBackup: reclaimAfterBackup))
+                    confirmRecentlyDeleted: reclaimAfterBackup ? true : nil, reclaimAfterBackup: reclaimAfterBackup,
+                    threads: model.settings.threads, threadsAutomatic: model.settings.threadsAutomatic))
     }
 
     func previewReclaim() {
@@ -271,7 +277,15 @@ final class ICloudSource {
             notice = selectedSMSPhoneID == nil
                 ? (deviceAvailable ? "Enter the code shown on your trusted device, or request a text message." : "Choose a trusted phone and request a text message.")
                 : "Enter the code sent to your trusted phone."
-        case let .progress(done, count): completed = done; total = count
+        case let .progress(done, count, bytesPerSecond, threads):
+            completed = done; total = count
+            if let bytesPerSecond { speed = ThroughputMeter.speed(bytesPerSecond) }
+            if let threads { uploadsAtOnce = threads }
+            // ICloudSourceView already shows the notice line, empty while a
+            // backup runs, so the speed goes there.
+            if phase == .backingUp, let speed {
+                notice = "Sending \(speed), \(uploadsAtOnce ?? 1) at a time."
+            }
         case .item(let didUpload): if didUpload { uploaded += 1 } else { existing += 1 }
         case .itemFailed: failed += 1
         case let .done(sent, present, errors, remaining):

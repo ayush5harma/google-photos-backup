@@ -17,6 +17,10 @@ public struct ICloudRequest: Encodable, Sendable {
     public let previewToken: String?
     public let confirmRecentlyDeleted: Bool?
     public let reclaimAfterBackup: Bool?
+    /// Uploads at once for a backup (issue #60): with threadsAutomatic the
+    /// bridge finds the number itself, otherwise it uses exactly `threads`.
+    public let threads: Int?
+    public let threadsAutomatic: Bool?
 
     enum CodingKeys: String, CodingKey {
         case command, account, password, code
@@ -25,12 +29,14 @@ public struct ICloudRequest: Encodable, Sendable {
         case stagingDir = "staging_dir"
         case authData = "auth_data"
         case reclaimAfterBackup = "reclaim_after_backup"
+        case threads, threadsAutomatic = "threads_automatic"
         case assetIDs = "asset_ids", previewToken = "preview_token", confirmRecentlyDeleted = "confirm_recently_deleted"
     }
 
     public init(command: ICloudCommand, account: String?, stateDir: String, password: String? = nil,
                 code: String? = nil, phoneID: Int? = nil, stagingDir: String? = nil, authData: String? = nil, assetIDs: [String]? = nil,
-                previewToken: String? = nil, confirmRecentlyDeleted: Bool? = nil, reclaimAfterBackup: Bool? = nil) {
+                previewToken: String? = nil, confirmRecentlyDeleted: Bool? = nil, reclaimAfterBackup: Bool? = nil,
+                threads: Int? = nil, threadsAutomatic: Bool? = nil) {
         self.command = command
         self.account = account
         self.password = password
@@ -43,6 +49,8 @@ public struct ICloudRequest: Encodable, Sendable {
         self.previewToken = previewToken
         self.confirmRecentlyDeleted = confirmRecentlyDeleted
         self.reclaimAfterBackup = reclaimAfterBackup
+        self.threads = threads
+        self.threadsAutomatic = threadsAutomatic
     }
 
     public func encoded() throws -> Data {
@@ -129,7 +137,9 @@ public struct ICloudAccountState: Equatable, Sendable {
 
 public enum ICloudEvent: Equatable, Sendable {
     case auth(ICloudAuthStatus, phones: [ICloudTrustedPhone], deviceCodeAvailable: Bool)
-    case progress(completed: Int, total: Int)
+    /// bytesPerSecond: what Google is being sent, nil until the bridge has
+    /// five seconds of sending to measure; threads: uploads at once.
+    case progress(completed: Int, total: Int, bytesPerSecond: Double? = nil, threads: Int? = nil)
     case item(uploaded: Bool)
     case itemFailed
     case done(uploaded: Int, existing: Int, failed: Int, pending: Int)
@@ -156,7 +166,11 @@ public enum ICloudEvent: Equatable, Sendable {
             }
             return .auth(value, phones: phones, deviceCodeAvailable: object["device_code_available"] as? Bool ?? true)
         case "progress":
-            return .progress(completed: int("completed"), total: int("total"))
+            let speed = (object["bytes_per_second"] as? NSNumber)?.doubleValue
+            let threads = (object["threads"] as? NSNumber)?.intValue
+            return .progress(completed: int("completed"), total: int("total"),
+                             bytesPerSecond: speed.flatMap { $0 >= 0 ? $0 : nil },
+                             threads: threads.flatMap { $0 > 0 ? $0 : nil })
         case "item":
             return .item(uploaded: object["status"] as? String == "uploaded")
         case "item_failed": return .itemFailed
