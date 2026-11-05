@@ -103,6 +103,36 @@ private func event(_ json: String) throws -> BridgeEvent {
     }
 }
 
+@Suite struct ServeSessionProtocolTests {
+    @Test func aSessionOpensWithOneServeLineAndEachAnswerEndsWithServed() throws {
+        let json = try #require(JSONSerialization.jsonObject(with: BridgeRequest.serve.encoded()) as? [String: Any])
+        #expect(json as? [String: String] == ["command": "serve"])
+        #expect(try BridgeEvent.decode(Data(#"{"type":"served","v":1,"code":5}"#.utf8)) == .served(code: 5))
+        #expect(throws: BridgeEvent.DecodingError.self) { try BridgeEvent.decode(Data(#"{"type":"served","v":1}"#.utf8)) }
+    }
+
+    /// Requests go one per line: a request must never span two.
+    @Test func everyRequestIsOneLine() throws {
+        let request = BridgeRequest.upload("a\nb", items: [BridgeItem(id: "A", path: "/s/x\ny.HEIC", filename: "x\ny.HEIC")],
+                                           quality: .original, threads: 8, album: AlbumTarget(id: nil, name: "Line\nbreak"))
+        #expect(!(try request.encoded()).contains(UInt8(ascii: "\n")))
+    }
+
+    /// The free path: whatever else a request carries, Original quality is
+    /// sent to the bridge as "original" and nothing else (Bridge/gpmc_bridge.py
+    /// upload_flags turns that into saver=False, use_quota=False).
+    @Test func originalQualityIsSentAsOriginal() throws {
+        for threads in 1...UploadParallelism.automaticCap {
+            let request = BridgeRequest.upload("auth", items: [BridgeItem(id: "A", path: "/s/A.MOV", filename: "A.MOV", force: true)],
+                                               quality: .original, threads: threads, album: nil)
+            let json = try #require(JSONSerialization.jsonObject(with: request.encoded()) as? [String: Any])
+            #expect(json["quality"] as? String == "original")
+            #expect(Set(json.keys) == ["command", "auth_data", "items", "quality", "threads"])
+        }
+        #expect(UploadQuality.original.rawValue == "original")
+    }
+}
+
 @Suite struct LineSplitterTests {
     @Test func reassemblesLinesAcrossChunks() {
         var splitter = LineSplitter()

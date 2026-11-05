@@ -54,6 +54,12 @@ public struct DiagnosticSnapshot: Sendable {
     /// Google's words for the items that failed in this session.
     public var failureMessages: [String] = []
     public var lastError: String?
+    /// The run view's line ("12.3 MB/s, about 14 min left"), while it shows one.
+    public var uploadSpeed: String?
+    /// Bytes a second this run has sent since its first byte.
+    public var averageBytesPerSecond: Double?
+    /// How many uploads go at once now, and why (UploadParallelism.summary).
+    public var parallelUploads: String?
 
     public init() {}
 }
@@ -109,6 +115,11 @@ public enum DiagnosticReport {
         if let holding = snapshot.holding {
             lines.append("Holding: \(holding.title)\(snapshot.holdingSince.map { " since \(when($0))" } ?? "")")
         }
+        if snapshot.runActive {
+            if let speed = snapshot.uploadSpeed { lines.append("Uploading now: \(speed)") }
+            if let average = snapshot.averageBytesPerSecond { lines.append("Average upload speed this run: \(speed(average))") }
+            if let parallel = snapshot.parallelUploads { lines.append("Parallel uploads now: \(parallel)") }
+        }
         if let error = snapshot.lastError { lines.append("Last error: \(error)") }
 
         let storage = snapshot.storage
@@ -121,8 +132,10 @@ public enum DiagnosticReport {
         lines += ["", "Recent runs (newest first)"]
         lines += snapshot.runs.isEmpty ? ["None yet."] : snapshot.runs.prefix(20).map { run in
             let duration = run.duration.map { " \(Int($0.rounded())) s," } ?? ""
+            // Over the whole run, waits included: a figure to compare runs by.
+            let rate = run.duration.flatMap { $0 > 0 && run.bytes > 0 ? ", \(speed(Double(run.bytes) / $0))" : nil } ?? ""
             return "\(when(run.startedAt)) \(run.kind.title), \(run.trigger.title):\(duration) \(run.uploaded) uploaded, "
-                + "\(run.existing) already there, \(run.failed) failed, \(bytes(run.bytes)); \(outcome(run.outcome))"
+                + "\(run.existing) already there, \(run.failed) failed, \(bytes(run.bytes))\(rate); \(outcome(run.outcome))"
                 + (run.conditions.map { " [\($0)]" } ?? "")
         }
 
@@ -231,5 +244,10 @@ public enum DiagnosticReport {
 
     static func bytes(_ count: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
+    }
+
+    /// Megabytes a second, as the run view shows them.
+    static func speed(_ bytesPerSecond: Double) -> String {
+        String(format: "%.1f MB/s", bytesPerSecond / 1_000_000)
     }
 }
