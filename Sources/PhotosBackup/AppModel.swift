@@ -245,7 +245,17 @@ final class AppModel {
     /// panel read it many times per progress tick, so it is kept until the
     /// albums or the state change.
     @ObservationIgnored private var summaryCache: BackupSummary?
-    var stateError: String?
+    /// What loading the records found (a record set aside, the accounts list
+    /// restored or rebuilt), kept for the whole launch. It lived in the save
+    /// error, and the first successful save cleared it (PR #53 review).
+    private var launchNotice: String?
+    /// The last failed write of a record or the accounts list; a successful
+    /// write clears it.
+    private var saveFailure: String?
+    var stateError: String? {
+        let messages = [saveFailure, launchNotice].compactMap { $0 }
+        return messages.isEmpty ? nil : messages.joined(separator: " ")
+    }
     var settings: BackupSettings {
         didSet {
             settings.save()
@@ -323,7 +333,7 @@ final class AppModel {
             problems.append("The accounts list could not be read and was rebuilt: backups go only to \(only ?? "no account") "
                 + "until you include others in Settings > Account, where each first shows its storage check.")
         }
-        stateError = problems.isEmpty ? nil : problems.joined(separator: " ")
+        launchNotice = problems.isEmpty ? nil : problems.joined(separator: " ")
         indexChanged = indexChanged || indexLost || accountLibrary.index != loaded.library.index
         state = BackupState()
         // A crash mid-batch leaves exported copies behind, and picked hidden
@@ -345,6 +355,9 @@ final class AppModel {
            hasAuthData || !state.uploaded.isEmpty || !state.selectedAlbumIDs.isEmpty {
             settings.onboardingCompleted = true
         }
+        // In the timeline and the diagnostic report too, not only on screen
+        // for this launch.
+        for problem in problems { log(.account, problem, problem: true) }
     }
 
     /// A credential in the keychain that accounts.json does not show signed
@@ -572,7 +585,7 @@ final class AppModel {
         do {
             try accountsStore.save(accountLibrary.index)
         } catch {
-            stateError = "Could not save the accounts list: \(error.localizedDescription)"
+            saveFailure = "Could not save the accounts list: \(error.localizedDescription)"
         }
     }
 
@@ -884,9 +897,9 @@ final class AppModel {
                 accountLibrary.select(state.selectedAlbumIDs)
                 try accountsStore.save(accountLibrary.index)
             }
-            stateError = nil
+            saveFailure = nil
         } catch {
-            stateError = "Could not save the backup history: \(error.localizedDescription)"
+            saveFailure = "Could not save the backup history: \(error.localizedDescription)"
         }
     }
 
@@ -904,7 +917,7 @@ final class AppModel {
         do {
             try accountsStore.save(record, file: account.stateFile)
         } catch {
-            stateError = "Could not save the backup history: \(error.localizedDescription)"
+            saveFailure = "Could not save the backup history: \(error.localizedDescription)"
         }
     }
 

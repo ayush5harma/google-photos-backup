@@ -619,6 +619,13 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(Set(rebuilt.accounts.map(\.id)), [firstID, secondID])
         XCTAssertTrue(rebuilt.accounts.allSatisfy { !$0.storageChecked }, "each waits for its storage check")
         XCTAssertTrue(rebuilt.stateError?.contains("choose them again") == true, "\(rebuilt.stateError ?? "nil")")
+
+        // Second round, MINOR c: the notice lived in stateError, which the
+        // first successful save cleared, and never reached the timeline.
+        rebuilt.saveState()
+        XCTAssertTrue(rebuilt.stateError?.contains("choose them again") == true, "a save cleared the launch notice")
+        XCTAssertTrue(rebuilt.diagnostics.events.contains { $0.category == .account && $0.isProblem
+            && $0.message.contains("choose them again") }, "the launch problem is in the timeline")
     }
 
     /// A single-account record the size of the owner's (about 27,700
