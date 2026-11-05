@@ -430,13 +430,14 @@ class Uploads:
         self.active = self.most = 0
         self.target, self.hold, self.outcome = target, hold, outcome
         self.reached = False
-        self.calls, self.spans = [], []
+        self.calls, self.spans, self.starts = [], [], []
 
     def __call__(self, auth, item):
         with self.lock:
             self.active += 1
             self.most = max(self.most, self.active)
             self.calls.append(item)
+            self.starts.append(self.active)  # in flight as it starts, itself included
             started = time.monotonic()
         try:
             deadline = time.monotonic() + 2
@@ -555,8 +556,14 @@ class PipelineTests(unittest.TestCase):
         staging = Path(self.stage) / icloud_bridge.account_key("person@example.com")
         seen = []
 
+        def size(path):
+            try:
+                return path.stat().st_size if path.is_file() else 0
+            except FileNotFoundError:  # another part settled meanwhile
+                return 0
+
         def measure(item):
-            seen.append(sum(p.stat().st_size for p in staging.rglob("*") if p.is_file()))
+            seen.append(sum(size(p) for p in staging.rglob("*")))
             return "key-" + item["id"], "uploaded"
 
         assets = [SizedAsset(i, size=1000) for i in range(30)]
@@ -627,23 +634,26 @@ class PipelineTests(unittest.TestCase):
     def test_a_429_halves_automatic_and_never_climbs_again(self):
         hits = []
 
+        def halved():
+            return any(e.get("threads") == 2 for e in list(self.events) if e["type"] == "progress")
+
         def outcome(item):
             if not hits:
                 hits.append(item)
                 raise icloud_bridge.UploadFailed("rate_limit", True)
+            # The rest of the first four finish only once the run has
+            # reported the halved level, so every later start is at 2.
+            deadline = time.monotonic() + 2
+            while not halved() and time.monotonic() < deadline:
+                time.sleep(0.002)
             return "key-" + item["id"], "uploaded"
 
-        uploads = Uploads(target=4, hold=0.01, outcome=outcome)
+        uploads = Uploads(target=4, outcome=outcome)
         self.assertEqual(self.backup([SizedAsset(i) for i in range(16)], uploads, threads_automatic=True), 0)
         self.assertEqual(uploads.most, 4)
-        levels = [e["threads"] for e in self.of_type("progress")]
-        self.assertEqual(set(levels), {2})
-        # Once the four in flight at the 429 have drained, never more than 2.
-        spans = sorted(uploads.spans)
-        drained = max(end for _, end in spans[:4])
-        later = [(a, b) for a, b in spans if a > drained]
-        self.assertGreaterEqual(len(later), 6)
-        self.assertLessEqual(max(sum(1 for a, b in later if a <= s < b) for s, _ in later), 2)
+        self.assertEqual({e["threads"] for e in self.of_type("progress")}, {2})
+        self.assertEqual(len(uploads.starts), 16)
+        self.assertLessEqual(max(uploads.starts[4:]), 2)
 
     def test_a_429_leaves_manual_at_the_chosen_number(self):
         def outcome(item):
@@ -938,7 +948,7 @@ log = logging.getLogger("rich")
 log.info("Token=private-info")
 log.warning("Token=private-warning")
 log.error("Error uploading file /stage/a.jpg: 429 Client Error: Too Many Requests Token=private-error")
-print(failures.reasons["/stage/a.jpg"][:15], end="")
+print(failures.reasons[gpmc_bridge._path_key("/stage/a.jpg")][:15], end="")  # normalised on Windows
 """
         result = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(Path(icloud_bridge.__file__).parent)],
                                 capture_output=True, text=True, timeout=60)
