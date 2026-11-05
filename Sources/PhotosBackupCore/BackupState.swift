@@ -123,12 +123,15 @@ public struct BackupState: Codable, Equatable, Sendable {
 
     public mutating func recordUpload(assetID: String, mediaKey: String, existing: Bool, at date: Date = Date(), stamp: EditStamp? = nil) {
         forcedUploads?.remove(assetID)
-        // A re-uploaded edit that Google stored as a new item is not in the
-        // mirrored albums yet: forgetting the old membership makes the
-        // planner add the new media key to them.
+        // A re-uploaded edit that Google stored as a new item goes to the
+        // library only. Its linked albums keep the photo recorded, as known
+        // rather than added (the new key is not in them): the owner may have
+        // taken it out of a shared album by hand, so the new version is never
+        // sent there by itself.
         if let previous = uploaded[assetID], previous.mediaKey != mediaKey {
             for (albumID, mirror) in mirrors where mirror.addedAssetIDs.contains(assetID) {
                 mirrors[albumID]?.addedAssetIDs.remove(assetID)
+                if mirror.googleAlbumID != nil { mirrors[albumID]?.knownAssetIDs = (mirror.knownAssetIDs ?? []).union([assetID]) }
             }
         }
         uploaded[assetID] = BackupRecord(mediaKey: mediaKey, date: date, existing: existing, editStamp: stamp)
