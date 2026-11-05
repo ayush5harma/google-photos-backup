@@ -179,6 +179,9 @@ private struct PanelHero: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("This backup")
                 .accessibilityValue("\(engine.runDone) of \(engine.runTotal) items")
+                SpeedLine(engine: engine)
+                    .font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
         .padding(12)

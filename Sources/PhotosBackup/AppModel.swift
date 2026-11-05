@@ -6,8 +6,11 @@ import PhotosBackupCore
 
 struct BackupSettings: Codable, Equatable {
     var quality: UploadQuality = .original
-    /// gpmc upload threads per batch.
+    /// The most gpmc uploads at once when `threadsAutomatic` is off.
     var threads = 2
+    /// The engine finds how many uploads at once the link takes, up to the
+    /// bridge's 8, and uses fewer when Google pushes back (UploadParallelism).
+    var threadsAutomatic = true
     /// Assets exported and handed to gpmc per bridge run; also how much
     /// staging space a run needs at once.
     var batchSize = 20
@@ -53,7 +56,7 @@ struct BackupSettings: Codable, Equatable {
     init() {}
 
     private enum CodingKeys: String, CodingKey {
-        case quality, threads, batchSize, mirrorAlbums, automatic, messagesMedia, messagesCursor
+        case quality, threads, threadsAutomatic, batchSize, mirrorAlbums, automatic, messagesMedia, messagesCursor
         case showInDock, menuBarShowsProgress, notifyWhenFinished, notifyAboutProblems, onboardingCompleted
         case pauseOnExpensiveNetwork, pauseInLowDataMode, pauseOnBattery, pauseInLowPowerMode
         case reuploadEdits
@@ -68,6 +71,10 @@ struct BackupSettings: Codable, Equatable {
         }
         quality = try value(.quality, quality)
         threads = Self.threadRange.clamp(try value(.threads, threads))
+        // Settings saved before this key existed: 2 was the default (stored
+        // for everyone who never touched it) and becomes Automatic; a number
+        // someone chose stays the most a run uses.
+        threadsAutomatic = try value(.threadsAutomatic, threads == 2)
         batchSize = Self.batchRange.clamp(try value(.batchSize, batchSize))
         mirrorAlbums = try value(.mirrorAlbums, mirrorAlbums)
         automatic = try value(.automatic, automatic)
@@ -91,8 +98,13 @@ struct BackupSettings: Codable, Equatable {
         archiveSnapshotsToKeep = Self.snapshotRange.clamp(try value(.archiveSnapshotsToKeep, archiveSnapshotsToKeep))
     }
 
-    /// The bridge accepts 1-8 threads; batches outside 5-100 either thrash
-    /// the uploader start-up or stage too much at once.
+    /// The most uploads a run may have going at once.
+    var parallelUploadCap: Int { threadsAutomatic ? UploadParallelism.automaticCap : threads }
+
+    /// The bridge accepts 1-8 threads. One bridge serves a whole run, so a
+    /// small batch no longer pays its start-up, but under 5 the parallel
+    /// uploads still sit idle at each batch's end; over 100 stages too much
+    /// at once.
     static let threadRange = 1...8
     static let batchRange = 5...100
     static let snapshotRange = 0...30

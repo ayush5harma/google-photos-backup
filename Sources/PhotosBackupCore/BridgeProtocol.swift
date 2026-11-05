@@ -3,6 +3,8 @@ import Foundation
 /// The Swift half of the line protocol documented in Bridge/gpmc_bridge.py.
 public enum BridgeProtocol {
     public static let version = 1
+    /// The bridge's EXIT_STOPPED; after it a serve session has ended.
+    public static let stoppedStatus: Int32 = 5
 }
 
 /// What gpmc reports to Google as the uploading device, which decides the
@@ -115,6 +117,10 @@ public struct BridgeRequest: Encodable, Equatable, Sendable {
 
     public static let version = BridgeRequest(command: "version")
 
+    /// The first line of a serve session: the bridge then answers one
+    /// request per line, each followed by `served`, until stdin closes.
+    public static let serve = BridgeRequest(command: "serve")
+
     public static func checkAuth(_ authData: String) -> BridgeRequest {
         BridgeRequest(command: "check-auth", authData: authData)
     }
@@ -192,6 +198,9 @@ public enum BridgeEvent: Equatable, Sendable {
     /// The bridge honoured a SIGTERM; files not yet reported were abandoned.
     case stopped
     case fatal(kind: FatalKind, message: String)
+    /// A serve session finished answering one request; `code` is the exit
+    /// status a one-shot bridge would have had for it.
+    case served(code: Int32)
     case unknown(type: String)
 
     public struct DecodingError: Error, Equatable {
@@ -238,6 +247,9 @@ public enum BridgeEvent: Equatable, Sendable {
             return .stopped
         case "fatal":
             return .fatal(kind: FatalKind(rawValue: string("kind") ?? "") ?? .unknown, message: string("message") ?? "")
+        case "served":
+            guard let code = object["code"] as? NSNumber else { break }
+            return .served(code: code.int32Value)
         default:
             return .unknown(type: type)
         }

@@ -38,15 +38,16 @@ struct AssetExporter {
     }
 
     /// - Parameters:
-    ///   - shouldStop: checked before each asset; an export in progress (an
-    ///     iCloud download) cannot be interrupted.
+    ///   - shouldStop: checked before each asset, with its size when that is
+    ///     known before the export (see expectedSize); an export in progress
+    ///     (an iCloud download) cannot be interrupted.
     ///   - started: called with each asset's upload filename before its export.
     ///   - finished: called with each asset's result as soon as it has one.
     ///   - includingHidden: the owner picked these assets themselves.
     ///   - pickedFiles: files the picker handed over for picks PhotoKit
     ///     cannot see (PickedFile), used only when the lookup misses.
     func export(_ assetIDs: [String], includingHidden: Bool = false, pickedFiles: [String: URL] = [:], into directory: URL,
-                shouldStop: () -> Bool,
+                shouldStop: (_ upcoming: Int64?) -> Bool,
                 started: (String, String) -> Void,
                 finished: (String, Result<ExportedAsset, Error>) -> Void) async {
         var assets: [String: PHAsset] = [:]
@@ -54,7 +55,10 @@ struct AssetExporter {
             .enumerateObjects { asset, _, _ in assets[asset.localIdentifier] = asset }
 
         for (index, id) in assetIDs.enumerated() {
-            if shouldStop() { return }
+            let resources = assets[id].map { PHAssetResource.assetResources(for: $0) } ?? []
+            let resource = assets[id].flatMap { Self.rendition(of: $0, in: resources) }
+            let upcoming = assets[id] == nil ? pickedFiles[id].flatMap(Self.fileSize) : resource.flatMap(Self.expectedSize)
+            if shouldStop(upcoming) { return }
             guard let asset = assets[id] else {
                 if let file = pickedFiles[id] {
                     let captured = await PickedFile.capturedDate(of: file)
@@ -71,8 +75,7 @@ struct AssetExporter {
                 }
                 continue
             }
-            let resources = PHAssetResource.assetResources(for: asset)
-            guard let resource = Self.rendition(of: asset, in: resources) else {
+            guard let resource else {
                 finished(id, .failure(ExportError(errorDescription: "Photos has no file for this item")))
                 continue
             }
@@ -190,6 +193,21 @@ struct AssetExporter {
         case .video: return first(.fullSizeVideo, .video)
         default: return resources.first
         }
+    }
+
+    /// The bytes `resource` will take once written, read before the export so
+    /// an export ahead can keep within its window. PhotoKit has no public size
+    /// for a resource; its `fileSize` property is read where the resource has
+    /// one (responds(to:) first, since KVC on a missing key raises), and nil
+    /// otherwise, when the window may pass its cap by that one item.
+    static func expectedSize(_ resource: PHAssetResource) -> Int64? {
+        guard resource.responds(to: NSSelectorFromString("fileSize")),
+              let size = (resource.value(forKey: "fileSize") as? NSNumber)?.int64Value, size > 0 else { return nil }
+        return size
+    }
+
+    private static func fileSize(_ url: URL) -> Int64? {
+        (try? url.resourceValues(forKeys: [.fileSizeKey]))?.fileSize.map(Int64.init)
     }
 
     /// Photos keeps an edit's render as a full-size resource beside the original.

@@ -6,6 +6,8 @@ import PhotosBackupCore
 struct ActivityItem: Identifiable, Equatable {
     enum Status: Equatable {
         case exporting, hashing, checking
+        /// Exported ahead of its batch's turn, waiting for the uploads before it.
+        case ready
         case uploading(Double)
         case finalizing, uploaded, existing, stopped
         /// Holding before the next attempt; the text says why.
@@ -24,6 +26,7 @@ struct ActivityItem: Identifiable, Equatable {
             case .exporting: "Preparing from Photos..."
             case .hashing: "Checking..."
             case .checking: "Looking for it in Google Photos..."
+            case .ready: "Ready to upload"
             case let .uploading(fraction): "Uploading \(Int(fraction * 100))%"
             case .finalizing: "Finishing..."
             case .uploaded: "Backed up"
@@ -77,6 +80,29 @@ private struct SourceFingerprint: Equatable {
     let bytes: Int64
 }
 
+/// One upload step's photos, exported into private staging folders (a
+/// second one when an export ahead stopped part-way and the rest followed).
+private struct StagedBatch {
+    var directories: [URL]
+    var ids: [String]
+    var items: [BatchItem] = []
+    /// false when the export stopped before all of `ids` (a hold, the
+    /// staging cap, low disk, a stop); the step exports the rest itself.
+    var complete = true
+
+    var bytes: Int64 { items.reduce(0) { $0 + ($1.size ?? 0) } }
+
+    mutating func append(_ other: StagedBatch) {
+        directories += other.directories
+        ids += other.ids
+        items += other.items
+    }
+
+    func removeFiles() {
+        for directory in directories { try? FileManager.default.removeItem(at: directory) }
+    }
+}
+
 /// Runs backups: plans from the selected albums, exports each batch from
 /// Photos, uploads it through the bridge and records what Google confirmed.
 @MainActor
@@ -106,8 +132,23 @@ final class BackupEngine {
     /// Items that failed for their run, by id, until retried or backed up.
     private var failures: [String: FailureSource] = [:]
 
+    /// Upload speed and time left in this run.
+    private(set) var meter = ThroughputMeter()
+    /// How many uploads go at once, for the rest of this run.
+    private(set) var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap)
+
     @ObservationIgnored private unowned let model: AppModel
-    @ObservationIgnored private let bridge = BridgeProcess()
+    /// One bridge for the whole run (issue #50), started by its first request
+    /// and closed when the run ends.
+    @ObservationIgnored private let bridge = BridgeSession()
+    /// Upload steps of the current pass exported ahead of their turn, by
+    /// step index. An export let go by a stop or a pass's end finishes its
+    /// item in progress on its own; its files go then.
+    @ObservationIgnored private let ahead = ExportAhead<StagedBatch>(bytes: \.bytes, isComplete: \.complete,
+                                                                     abandoned: { $0.removeFiles() })
+    /// What each upload step of the current pass exports ahead, by step
+    /// index, so a discard can stop the rows of the one still exporting.
+    @ObservationIgnored private var aheadSteps: [Int: (ids: [String], hidden: Bool)] = [:]
     /// Verification belongs to the run just like upload: Stop terminates it,
     /// and no orphan child can later make a deletion decision.
     @ObservationIgnored private let verifier = BridgeProcess()
@@ -156,6 +197,14 @@ final class BackupEngine {
     var failedCount: Int { failures.count }
     /// Google's words for each failed row, for the diagnostic report.
     var failureMessages: [String] { activity.compactMap { $0.isFailed ? ($0.detail ?? $0.status.label) : nil } }
+
+    /// "12.3 MB/s, about 14 min left" while a run is uploading; nil before
+    /// there is a speed to show, and while it waits (the wait line says why).
+    func speedLine(at now: Date = Date()) -> String? {
+        guard phase == .running || phase == .pausing else { return nil }
+        return ThroughputMeter.describe(bytesPerSecond: meter.bytesPerSecond(at: now),
+                                        secondsLeft: meter.secondsLeft(remaining: remaining, at: now))
+    }
 
     // MARK: - Controls
 
@@ -272,6 +321,9 @@ final class BackupEngine {
         phase = .stopping
         waitReason = nil
         bridge.terminate()
+        // At once, not when the pass ends: a step may be waiting for its
+        // export ahead, whose item in progress can be a long iCloud download.
+        discardStagedAhead()
     }
 
     /// Stop, then wait (bounded) until the run has recorded what it got.
@@ -373,6 +425,8 @@ final class BackupEngine {
         failedAlbums = []
         retries = RetryTracker()
         tally = RunTally()
+        meter = ThroughputMeter()
+        parallelism = UploadParallelism(cap: model.settings.parallelUploadCap)
         rateLimiter.runStarted()
         // Assets are planned afresh, so their earlier failures are tried
         // again anyway; a pick or a Messages item is only if Retry queues it.
@@ -392,6 +446,7 @@ final class BackupEngine {
         }
         holdAwake()
         defer {
+            bridge.close()
             endQueues()
             endWait()
             allowSleep()
@@ -451,14 +506,19 @@ final class BackupEngine {
             announce(&announced, trigger: trigger)
 
             var progressed = false
-            for step in steps {
+            var halted = false
+            for (index, step) in steps.enumerated() {
                 if shouldHalt { break }
-                switch await execute(step, auth: auth, runtime: runtime, settings: settings) {
+                switch await execute(step, at: index, of: steps, auth: auth, runtime: runtime, settings: settings) {
                 case .progressed: progressed = true
                 case .nothing: break
-                case .halt: return true
+                case .halt: halted = true
                 }
+                if halted { break }
             }
+            // Pause, Stop or a halt can leave later steps exported and unsent.
+            discardStagedAhead()
+            if halted { return true }
             if !progressed, !retryRequested { break }
         }
         if phase == .pausing { phase = .paused }
@@ -510,7 +570,10 @@ final class BackupEngine {
         // No row may promise a wait the ended run will not finish: Retry
         // during a halted run, or an item held when the run gave up.
         for index in activity.indices {
-            if case .waiting = activity[index].status { activity[index].status = .stopped }
+            switch activity[index].status {
+            case .waiting, .ready: activity[index].status = .stopped
+            default: break
+            }
         }
         syncRunCounts()
         guard var record = currentRun else { return }
@@ -546,7 +609,8 @@ final class BackupEngine {
 
     private enum Outcome { case progressed, nothing, halt }
 
-    private func execute(_ step: PlannedStep, auth: String, runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
+    private func execute(_ step: PlannedStep, at index: Int, of steps: [PlannedStep], auth: String, runtime: BridgeRuntime,
+                         settings: BackupSettings) async -> Outcome {
         // An album call that failed may still have created the album on
         // Google's side (a lost response), so the rest of this run leaves the
         // album alone rather than create it again; the next run retries.
@@ -554,6 +618,7 @@ final class BackupEngine {
         case let .upload(albumID, albumTitle, assetIDs):
             let title = failedAlbums.contains(albumID) ? nil : albumTitle
             return await upload(assetIDs, album: title.map { (albumID, $0) }, includingHidden: albumID == BackupPlanner.pickedAlbumID,
+                                staged: await ahead.take(index), stageNext: { self.stageAhead(steps, after: index) },
                                 auth: auth, runtime: runtime, settings: settings)
         case let .addToAlbum(albumID, albumTitle, assetIDs, _):
             if failedAlbums.contains(albumID) { return .nothing }
@@ -604,41 +669,135 @@ final class BackupEngine {
 
     // MARK: - Batches
 
-    private func upload(_ assetIDs: [String], album: (id: String, title: String)?, includingHidden: Bool = false, auth: String,
+    /// - Parameters:
+    ///   - staged: this step's export, if it ran ahead while earlier steps uploaded.
+    ///   - stageNext: starts exporting later steps once this one is staged,
+    ///     so they export while this one uploads.
+    private func upload(_ assetIDs: [String], album: (id: String, title: String)?, includingHidden: Bool = false,
+                        staged: StagedBatch? = nil, stageNext: () -> Void = {}, auth: String,
                         runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
-        // iCloud originals download during the export, so it waits for the
-        // network like the upload does.
-        if let outcome = await clearance(retryAt: nil, holding: [], category: .photos) { return outcome }
-        let batch = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        inFlight = Set(assetIDs)
-        defer {
-            inFlight = []
-            try? FileManager.default.removeItem(at: batch)
+        var batch = staged ?? StagedBatch(directories: [], ids: [])
+        defer { release(batch) }
+        // Not exported yet: the whole step, or what an export ahead left when
+        // a hold stopped it part-way (it neither exported nor failed those).
+        let exported = Set(batch.items.map(\.id))
+        let missing = assetIDs.filter { !exported.contains($0) && !failedAssets.contains($0) }
+        if !missing.isEmpty {
+            // iCloud originals download during the export, so it waits for the
+            // network like the upload does.
+            if let outcome = await clearance(retryAt: nil, holding: [], category: .photos) {
+                markStopped(batch.items.map(\.id))
+                return outcome
+            }
+            batch.append(await stage(missing, includingHidden: includingHidden, ahead: false))
         }
+        if phase == .stopping {
+            markStopped(batch.items.map(\.id))
+            return .halt
+        }
+        guard !batch.items.isEmpty else { return .nothing }
+        stageNext()
+        return await send(batch.items, album: album, category: .photos, auth: auth, runtime: runtime, settings: settings)
+    }
 
-        var items: [BatchItem] = []
+    /// Exports `assetIDs` from Photos into a new private staging folder. Its
+    /// rows wait as ready when it runs ahead of its turn rather than look like
+    /// they are uploading; see stopsExport for when it stops part-way.
+    private func stage(_ assetIDs: [String], includingHidden: Bool, ahead: Bool) async -> StagedBatch {
+        let directory = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        var batch = StagedBatch(directories: [directory], ids: assetIDs)
+        var stopped = false
+        inFlight.formUnion(assetIDs)
         await AssetExporter().export(assetIDs, includingHidden: includingHidden,
-                                     pickedFiles: includingHidden ? pickedFiles : [:], into: batch, shouldStop: { self.phase == .stopping }, started: { id, filename in
+                                     pickedFiles: includingHidden ? pickedFiles : [:], into: directory, shouldStop: { upcoming in
+            stopped = self.stopsExport(ahead: ahead, exported: batch.bytes, upcoming: upcoming)
+            return stopped
+        }, started: { id, filename in
+            // Let go by a discard, which has already stopped these rows.
+            if ahead, Task.isCancelled { return }
             self.show(id, filename: filename, status: .exporting)
         }, finished: { id, result in
+            // The file goes with the folder; the next run finds the item again.
+            if ahead, Task.isCancelled { return }
             switch result {
             case let .success(file):
                 let force = self.model.state.forcedUploads?.contains(id) == true ? true : nil
-                items.append(BatchItem(bridgeItem: BridgeItem(id: id, path: file.url.path, filename: file.filename, force: force),
-                                       size: file.size, stamp: file.stamp, fingerprint: nil))
-                self.update(id) { $0.size = file.size; $0.status = .hashing }
+                batch.items.append(BatchItem(bridgeItem: BridgeItem(id: id, path: file.url.path, filename: file.filename, force: force),
+                                             size: file.size, stamp: file.stamp, fingerprint: nil))
+                self.update(id) { $0.size = file.size; $0.status = ahead ? .ready : .hashing }
             case let .failure(error):
                 // A missing asset or an unreadable original: sending it again
                 // within this run would fail the same way.
                 self.fail(id, error.localizedDescription, retryable: false)
             }
         })
-        if phase == .stopping {
-            markStopped(items.map(\.id))
-            return .halt
+        batch.complete = !stopped
+        return batch
+    }
+
+    /// Whether an export stops before its next item, of `upcoming` bytes if
+    /// known, having written `exported`. Every export stops for Stop. One
+    /// ahead of its turn also stops for Pause, when discarded, and whenever
+    /// the run waits or a condition would hold it (offline, a metered
+    /// network...), so it never downloads iCloud originals the settings say
+    /// to hold; and when the item would take what waits on disk past
+    /// StagingWindow's cap or the disk below its floor. Its step exports the
+    /// rest on its turn.
+    private func stopsExport(ahead isAhead: Bool, exported: Int64, upcoming: Int64?) -> Bool {
+        if phase == .stopping { return true }
+        guard isAhead else { return false }
+        if Task.isCancelled || shouldHalt || phase == .waiting || holdingCondition() != nil { return true }
+        let free = try? model.paths.staging.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return !ahead.mayExport(upcoming, after: exported, freeSpace: free?.volumeAvailableCapacityForImportantUsage)
+    }
+
+    /// The batch is sent or given up: its files go, and Retry may take its items again.
+    private func release(_ batch: StagedBatch) {
+        inFlight.subtract(batch.ids)
+        batch.removeFiles()
+    }
+
+    /// While step `index` uploads, exports the next upload steps of the pass,
+    /// one at a time in order, as far as StagingWindow allows. Not while the
+    /// run is held: iCloud originals download during an export, and the
+    /// step exports with its own wait once it is its turn.
+    private func stageAhead(_ steps: [PlannedStep], after index: Int) {
+        guard !shouldHalt, holdingCondition() == nil, rateLimiter.hold(at: Date()) == nil else { return }
+        var exports: [Int: (ids: [String], hidden: Bool)] = [:]
+        for next in steps.indices where next > index {
+            if case let .upload(albumID, _, ids) = steps[next] { exports[next] = (ids, albumID == BackupPlanner.pickedAlbumID) }
         }
-        guard !items.isEmpty else { return .nothing }
-        return await send(items, album: album, category: .photos, auth: auth, runtime: runtime, settings: settings)
+        aheadSteps = exports
+        ahead.stage(exports.keys.sorted()) { next in
+            // Discarded before it began: discardStagedAhead has already taken
+            // its items out of flight, and stage() would put them back.
+            if Task.isCancelled { return StagedBatch(directories: [], ids: [], complete: false) }
+            // Held since it was queued: nothing now; the step exports it all
+            // on its turn, after its wait.
+            if self.phase == .waiting || self.holdingCondition() != nil { return StagedBatch(directories: [], ids: [], complete: false) }
+            let export = exports[next, default: ([], false)]
+            return await self.stage(export.ids, includingHidden: export.hidden, ahead: true)
+        }
+    }
+
+    /// Exports ahead that a stop or the pass's end let go, at once: their
+    /// files go and their rows show as stopped, like any item a stop leaves
+    /// unsent. PR #52 review: this used to wait for the export still running,
+    /// whose item in progress cannot be interrupted, so a stop during a large
+    /// iCloud download stayed on Stopping for minutes. That export now stops
+    /// before its next item, its rows stop here, and its folder goes when
+    /// PhotoKit has finished the item.
+    private func discardStagedAhead() {
+        let discarded = ahead.discard()
+        for batch in discarded.ready {
+            markStopped(batch.items.map(\.id))
+            release(batch)
+        }
+        if let index = discarded.exporting, let ids = aheadSteps[index]?.ids {
+            inFlight.subtract(ids)
+            for id in ids { update(id) { if !$0.status.isFinished { $0.status = .stopped } } }
+        }
+        aheadSteps = [:]
     }
 
     private func upload(messages items: [MessagesMediaItem], auth: String,
@@ -647,9 +806,10 @@ final class BackupEngine {
         if let outcome = await clearance(retryAt: nil, holding: [], category: .messages) { return outcome }
         items.forEach { show($0.id, filename: $0.filename, status: .hashing) }
         let batch = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        inFlight = Set(items.map(\.id))
+        let ids = items.map(\.id)
+        inFlight.formUnion(ids)
         defer {
-            inFlight = []
+            inFlight.subtract(ids)
             try? FileManager.default.removeItem(at: batch)
         }
         let prepared = await Task.detached(priority: .utility) { () -> [BatchItem] in
@@ -689,9 +849,10 @@ final class BackupEngine {
                         runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
         if let outcome = await clearance(retryAt: nil, holding: [], category: .photos) { return outcome }
         let batch = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
-        inFlight = Set(items.map(\.id))
+        let ids = items.map(\.id)
+        inFlight.formUnion(ids)
         defer {
-            inFlight = []
+            inFlight.subtract(ids)
             try? FileManager.default.removeItem(at: batch)
         }
         do {
@@ -795,7 +956,7 @@ final class BackupEngine {
     private func send(_ items: [BatchItem], album: (id: String, title: String)?, category: EventCategory,
                       auth: String, runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
         let byID = Dictionary(items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        var pending = items.map(\.id)
+        var pending = StagingWindow.largestFirst(items, size: \.size).map(\.id)
         var retryAt: Date?
         var progressed = false
         var exhausted: [String] = []
@@ -827,20 +988,34 @@ final class BackupEngine {
             var fatal: (FatalKind, String)?
             var albumLimited = false
             var missingKeys: [String] = []
+            var sample = UploadSample(bytes: 0, seconds: 0, items: 0, rateLimited: false, serverFailures: 0)
             let request = BridgeRequest.upload(auth, items: pending.compactMap { byID[$0]?.bridgeItem }, quality: settings.quality,
-                                               threads: settings.threads, album: target)
+                                               threads: parallelism.current, album: target)
+            let sentAt = Date()
+            // The request's album step runs after its uploads: the
+            // parallelism controller is timed to the last item's answer.
+            var uploadsEndedAt: Date?
             let exit: Int32
             do {
                 exit = try await bridge.run(request, runtime: runtime, workDirectory: model.paths.logs, log: model.paths.bridgeLog) { event in
                     switch event {
                     case let .progress(id?, phase, completed, total) where sending.contains(id):
                         self.update(id) { $0.status = Self.status(for: phase, completed: completed, total: total, current: $0.status) }
+                        if phase == .uploading { self.meter.sent(id: id, total: completed, at: Date()) }
                     case let .item(id, mediaKey, existing) where sending.contains(id) && !answered.contains(id):
                         answered.insert(id)
                         confirmed.append(id)
+                        uploadsEndedAt = Date()
+                        self.meter.finished(id: id, at: Date())
+                        if !existing {
+                            sample.items += 1
+                            sample.bytes += byID[id]?.size ?? 0
+                        }
                         self.confirm(id, mediaKey: mediaKey, existing: existing, item: byID[id])
                     case let .itemFailed(id, message, retryable) where sending.contains(id) && !answered.contains(id):
                         answered.insert(id)
+                        uploadsEndedAt = Date()
+                        self.meter.finished(id: id, at: Date())
                         failed.append((id, message, retryable))
                     case let .missingMedia(keys):
                         missingKeys += keys
@@ -886,12 +1061,17 @@ final class BackupEngine {
             for failure in failed {
                 let kind = FailureClassifier.classify(message: failure.message, bridgeRetryable: failure.retryable)
                 limited = limited || kind == .rateLimited
+                if kind == .retryable { sample.serverFailures += 1 }
                 if retryLater(failure.id, kind, message: failure.message, next: &next, retryAt: &retryAt) == false {
                     fail(failure.id, failure.message, retryable: kind != .permanent)
                     if kind != .permanent { exhausted.append(failure.id) }
                 }
             }
             let unanswered = pending.filter { !answered.contains($0) }
+            sample.seconds = (uploadsEndedAt ?? Date()).timeIntervalSince(sentAt)
+            sample.rateLimited = limited || fatal?.0 == .rateLimit
+            sample.includesStartUp = bridge.lastRequestStartedBridge
+            adjustParallelism(after: sample, category: category)
 
             if let (kind, message) = fatal {
                 switch kind {
@@ -952,6 +1132,16 @@ final class BackupEngine {
 
     private static let rateLimitGiveUp = "\(EventPhrase.rateLimited) through \(RateLimiter.maximumHoldsPerRun) waits in a row, "
         + "so this run stopped; the next run tries again."
+
+    /// One request measured; a step down is worth a line in the timeline,
+    /// since it holds for the rest of the run.
+    private func adjustParallelism(after sample: UploadSample, category: EventCategory) {
+        let before = parallelism.current
+        parallelism.measured(sample)
+        if parallelism.current < before, sample.rateLimited || sample.serverFailures > 0 {
+            model.log(category, "Uploads go \(parallelism.summary) for the rest of this backup.")
+        }
+    }
 
     /// nil when the batch may go. Otherwise what the caller returns: Stop or
     /// Pause ended the wait (rows left as stopped, not failed), or the wait
@@ -1236,6 +1426,8 @@ final class BackupEngine {
     /// The item has failed for this run; Retry or the next run releases it.
     private func fail(_ id: String, _ message: String, retryable: Bool) {
         failedAssets.insert(id)
+        // Done for this batch, even one exported ahead: Retry may take it now.
+        inFlight.remove(id)
         tally.failed(id)
         syncRunCounts()
         if id.hasPrefix("messages:") {

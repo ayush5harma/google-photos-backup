@@ -53,16 +53,28 @@ class FakeGpmcEndToEndTests(unittest.TestCase):
         return items
 
     def popen(self, request):
+        return self.popen_text(json.dumps(request))
+
+    def popen_text(self, text):
         env = {key: os.environ[key] for key in ("PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP") if key in os.environ}
         env.update(HOME=str(self.root), USERPROFILE=str(self.root), LANG="en_US.UTF-8",
                    FAKE_GPMC_SCENARIO=str(self.scenario))
         flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         process = subprocess.Popen([sys.executable, "-I", "-B", str(self.bridge)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                    stderr=subprocess.PIPE, text=True, env=env, cwd=self.root, creationflags=flags)
-        process.stdin.write(json.dumps(request))
+        process.stdin.write(text)
         process.stdin.close()
         process.stdin = None
         return process
+
+    def serve_text(self, *requests):
+        return "".join(json.dumps(request) + "\n" for request in ({"command": "serve"}, *requests))
+
+    def serve(self, *requests):
+        """One bridge process for every request, as a Mac backup run uses it."""
+        process = self.popen_text(self.serve_text(*requests))
+        out, err = process.communicate(timeout=120)
+        return process.returncode, [json.loads(line) for line in out.splitlines()], err
 
     def send(self, request):
         process = self.popen(request)
@@ -186,6 +198,75 @@ class FakeGpmcEndToEndTests(unittest.TestCase):
         # Everything reported as confirmed is what the fake Google holds.
         uploaded = [u for u in self.ledger_data()["uploads"] if u["status"] == "uploaded"]
         self.assertGreaterEqual(len(uploaded), len(confirmed))
+
+    # Issue #50: one bridge per run, more threads, kept connections. None of
+    # it may change what the commit says: Original quality from a Pixel XL.
+
+    def request(self, items, **extra):
+        return {"command": "upload", "auth_data": AUTH, "items": items, **extra}
+
+    def test_a_serve_session_commits_every_upload_as_original_from_a_pixel_xl(self):
+        self.given(network={"rtt": 0.002, "handshake": 0.01})
+        names = [f"IMG_{n}.JPG" for n in range(30)]
+        batches = [self.stage(*names[start:start + 6]) for start in range(0, 30, 6)]
+        for item in batches[3]:
+            item["force"] = True
+        code, events, err = self.serve(
+            self.request(batches[0], threads=8), self.request(batches[1], threads=4, quality="original"),
+            self.request(batches[2], threads=1), self.request(batches[3], threads=8, force=True),
+            self.request(batches[4], threads=6, album={"name": "Trip"}))
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual([e["code"] for e in self.of_type(events, "served")], [0, 0, 0, 0, 0])
+        self.assertEqual(self.of_type(events, "item_failed"), [])
+        uploads = [u for u in self.ledger_data()["uploads"] if u["status"] == "uploaded"]
+        self.assertEqual(len(uploads), 30)
+        for upload in uploads:
+            self.assertEqual((upload["saver"], upload["use_quota"], upload["quality"], upload["model"]),
+                             (False, False, "original", "Pixel XL"), upload["filename"])
+        self.assertEqual(len({u["pid"] for u in uploads}), 1)
+        # One sign-in for the whole session, not one per batch.
+        self.assertEqual(self.ledger_data()["counters"]["auth"], 1)
+
+    def test_the_ledger_tells_the_paid_paths_apart(self):
+        # The guard above reads the same fields a saver or quota upload sets.
+        self.given()
+        _, events, _ = self.serve(self.request(self.stage("a.jpg"), quality="saver"),
+                                  self.request(self.stage("b.jpg"), quality="quota"))
+        models = {u["filename"]: (u["quality"], u["model"]) for u in self.ledger_data()["uploads"]}
+        self.assertEqual(models, {"a.jpg": ("saver", "Pixel 2"), "b.jpg": ("original", "Pixel 8")})
+
+    def test_a_serve_session_keeps_its_connections(self):
+        self.given(network={"rtt": 0.002, "handshake": 0.01})
+        names = [f"IMG_{n}.JPG" for n in range(24)]
+        requests = [self.request(self.stage(*names[start:start + 8]), threads=4) for start in range(0, 24, 8)]
+        code, _, err = self.serve(*requests)
+
+        self.assertEqual(code, 0, err)
+        uploads = [u for u in self.ledger_data()["uploads"] if u["status"] == "uploaded"]
+        # Four calls a file on fresh sessions would open 96 connections; kept
+        # ones open one per thread, plus the sign-in's.
+        self.assertLessEqual(max(u["connections"] for u in uploads), 4 + 1)
+
+    def test_stop_ends_a_serve_session(self):
+        self.given(delay=0.4)
+        first, second = self.stage("a.jpg", "b.jpg", "c.jpg", "d.jpg"), self.stage("e.jpg")
+        process = self.popen_text(self.serve_text(self.request(first, threads=1), self.request(second)))
+        events = []
+        for line in process.stdout:
+            events.append(json.loads(line))
+            if events[-1]["type"] == "item":
+                process.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGTERM)
+                break
+        events += [json.loads(line) for line in process.stdout]
+        process.wait(timeout=30)
+        process.stderr.close()
+        process.stdout.close()
+
+        self.assertEqual(process.returncode, 5)
+        self.assertEqual([e["type"] for e in events[-2:]], ["stopped", "served"])
+        self.assertEqual(events[-1]["code"], 5)
+        self.assertNotIn("e.jpg", {u["filename"] for u in self.ledger_data()["uploads"]})
 
 
 if __name__ == "__main__":

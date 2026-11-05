@@ -134,6 +134,28 @@ private func problem(_ message: String, hoursAgo: Double, _ category: EventCateg
         for secret in ["ann.lee", "aas_et/abc", "/Users/ann", "555"] { #expect(!text.contains(secret), "\(secret)") }
     }
 
+    @Test func aRunningBackupShowsItsSpeedAndEachRunItsAverage() {
+        var snapshot = healthy()
+        snapshot.runActive = true
+        snapshot.uploadSpeed = "12.3 MB/s, about 14 min left"
+        snapshot.averageBytesPerSecond = 9_140_000
+        snapshot.parallelUploads = "6 at a time (no faster at 7)"
+        var run = completedRun(hoursAgo: 1)
+        run.bytes = 600_000_000
+        snapshot.runs = [run]
+        let text = DiagnosticReport.build(snapshot, redactor: Redactor(homeDirectory: "/Users/ann"), timeZone: TimeZone(identifier: "UTC")!)
+
+        #expect(text.contains("Uploading now: 12.3 MB/s, about 14 min left"))
+        #expect(text.contains("Average upload speed this run: 9.1 MB/s"))
+        #expect(text.contains("Parallel uploads now: 6 at a time (no faster at 7)"))
+        // 600 MB over the run's 60 s.
+        #expect(text.contains("600 MB, 10.0 MB/s; completed"))
+
+        snapshot.runActive = false
+        let idle = DiagnosticReport.build(snapshot, redactor: Redactor(homeDirectory: "/Users/ann"), timeZone: TimeZone(identifier: "UTC")!)
+        #expect(!idle.contains("Uploading now"))
+    }
+
     @Test func everyTimeIsLocalISO8601WithItsOffset() throws {
         var snapshot = healthy()
         snapshot.runs = [completedRun(hoursAgo: 30)]
