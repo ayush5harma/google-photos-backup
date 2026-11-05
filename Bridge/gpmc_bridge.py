@@ -609,6 +609,13 @@ class ClientCache:
 # Whatever is left waits for the next request.
 ALBUM_REFUSAL_BUDGET = 128
 
+# Read-only lookups (Api.get_download_urls) a request may spend on keys
+# refused on their own when none of its adds went in, to tell dead keys from
+# a refusing album without re-adding anything. A lone dead key is the case
+# that needs it (one key per request, then one lookup); keys left unread wait
+# for the next request.
+ALBUM_READ_BUDGET = 16
+
 # Google's album calls fail now and then with a 5xx that a few seconds later
 # does not recur. Measured 2026-10-27 on 0.5.4: 7 of about 30 album steps
 # ended on a 500 or 503, and each one skipped its album for the rest of the
@@ -704,8 +711,10 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event, sto
     # went back in. Now only this request's own adds decide: the album is
     # alive once one of them goes in, and only then are keys refused on
     # their own reported missing. If none goes in (album gone, or every key
-    # dead) the refusal stays the album's and no key is reported, so nothing
-    # is uploaded again or re-added; the app says which album failed.
+    # dead) each key refused on its own is looked up read-only instead
+    # (_read_back): one that Google answers 404 for is dead and reported
+    # missing; if any reads back alive, or cannot be read, the refusal stays
+    # the album's. Nothing is ever re-added to find out.
     known = album.get("id") or None
     album_id = known
     added: list[str] = []
@@ -782,8 +791,51 @@ def _add_splitting_missing(client: Any, media_keys: list[str], album: Event, sto
             raise AlbumIncomplete(album_id, added, missing(), error) from error
         raise
     if refused_alone and not alive() and first_refusal is not None:
-        raise first_refusal
+        dead, settled = _read_back(client, refused_alone, stop, call)
+        if not settled:
+            if dead:
+                raise AlbumIncomplete(album_id, added, dead, first_refusal) from first_refusal
+            raise first_refusal
+        return album_id, added, dead
     return album_id, added, missing()
+
+
+def _read_back(client: Any, keys: list[str], stop: StopSignal | None,
+               call: Callable[..., Any]) -> tuple[list[str], bool]:
+    """Look up keys an album refused one by one, read-only, when nothing in
+    the request went in. Returns the keys Google answered 404 for, and
+    whether every key was read and found dead (only then is the refusal
+    the keys' rather than the album's).
+
+    A 404 is the only answer taken for dead. A key that comes back with a
+    download URL is alive; any other answer, or a key past ALBUM_READ_BUDGET,
+    proves nothing either way and is never reported, so the worst case is
+    an album that fails again next run, never a photo sent twice."""
+    dead: list[str] = []
+    settled = len(keys) <= ALBUM_READ_BUDGET
+    for key in keys[:ALBUM_READ_BUDGET]:
+        if stop is not None and stop.requested:
+            raise StopRequested
+        try:
+            answer = call(client.api.get_download_urls, media_key=key)
+        except Exception as error:
+            if _http_status(error) == 404:
+                dead.append(key)
+                continue
+            logging.getLogger(__name__).info("could not read back media key %s: %s", key, error)
+            settled = False
+            continue
+        if not _has_download_url(answer):
+            logging.getLogger(__name__).info("media key %s read back without a download URL", key)
+        settled = False
+    return dead, settled and len(dead) == len(keys)
+
+
+def _has_download_url(answer: Any) -> bool:
+    try:
+        return bool(answer["1"]["5"]["2"]["6"])
+    except (KeyError, TypeError, IndexError):
+        return False
 
 
 def _album_step(client: Any, media_keys: list[str], album: Event, emit: Emit, stop: StopSignal) -> None:

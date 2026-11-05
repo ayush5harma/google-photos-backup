@@ -501,8 +501,9 @@ final class MultiAccountRunTests: XCTestCase {
         model.settings.reuploadEdits = false
         let members = ["asset-a", "asset-b", "asset-c"]
         model.useAlbumsForTesting([LibraryAlbum(snapshot: AlbumSnapshot(id: "shared", title: "Shared With Family", kind: .user,
-                                                                        assetIDs: members), symbol: "rectangle.stack")])
-        model.state.selectedAlbumIDs = ["shared"]
+                                                                        assetIDs: members), symbol: "rectangle.stack")],
+                                  unlisted: [AlbumSnapshot(id: "emptied", title: "Emptied", kind: .user, assetIDs: [])])
+        model.state.selectedAlbumIDs = ["shared", "emptied"]
         model.saveState()
 
         var seen: [String: [PlannedStep]] = [:]
@@ -510,6 +511,7 @@ final class MultiAccountRunTests: XCTestCase {
             if turn.account == secondID {
                 for id in members { model.state.recordUpload(assetID: id, mediaKey: "second-\(id)", existing: false) }
                 model.state.mirrors["shared"] = AlbumMirror(googleAlbumID: "fake-album-shared", addedAssetIDs: [])
+                model.state.mirrors["emptied"] = AlbumMirror(googleAlbumID: "fake-album-emptied", addedAssetIDs: [])
             }
             seen[turn.account] = model.engine.planPass(settings: model.settings)
         }
@@ -519,11 +521,17 @@ final class MultiAccountRunTests: XCTestCase {
                        "a brand-new album is created with every member")
         XCTAssertEqual(seen[secondID], [], "nothing is re-added to the linked album")
         XCTAssertEqual(model.record(of: secondID)?.mirrors["shared"]?.knownAssetIDs, Set(members))
+        XCTAssertEqual(model.record(of: secondID)?.mirrors["emptied"]?.knownAssetIDs, [],
+                       "an album with nothing to list gets an empty record, so photos added later go in")
         let saved = try BackupStore(url: support.appendingPathComponent(AccountLibrary.stateFile(for: secondID))).load()
         XCTAssertEqual(saved.mirrors["shared"]?.knownAssetIDs, Set(members), "the new baseline is on disk")
-        let problems = model.diagnostics.events.filter { $0.isProblem && $0.message.contains("Shared With Family") }
-        XCTAssertEqual(problems.count, 1)
-        XCTAssertTrue(problems.first?.message.contains("3 photos") == true, problems.first?.message ?? "no event")
+        // Problems reach the shareable report: counts only, the title in a plain line (review MAJOR 4).
+        let problems = model.diagnostics.events.filter { $0.isProblem && $0.message.contains("had no record") }
+        XCTAssertEqual(problems.count, 2, "one per album re-baselined")
+        XCTAssertTrue(problems.contains { $0.message.contains("its 3 photos") }, problems.map(\.message).joined(separator: " / "))
+        XCTAssertFalse(model.diagnostics.events.contains { $0.isProblem && $0.message.contains("Shared With Family") },
+                       "an album title in a problem line")
+        XCTAssertTrue(model.diagnostics.events.contains { !$0.isProblem && $0.message.contains("Shared With Family") })
     }
 
     /// Guard C (2) on an added account: two albums it linked earlier have 30
@@ -573,7 +581,10 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(notices.first?.accountTitle, Self.second, "with several accounts, the notice names its account")
         let problems = model.diagnostics.events.filter { $0.isProblem && $0.message.contains("waiting to be added to") }
         XCTAssertEqual(problems.count, 2)
-        XCTAssertTrue(problems.contains { $0.message.hasPrefix("30 photos waiting to be added to \"Shared With Family\"") })
+        XCTAssertTrue(problems.contains { $0.message.hasPrefix("30 photos waiting to be added to an album") })
+        XCTAssertFalse(model.diagnostics.events.contains { $0.isProblem && ($0.message.contains("Shared With Family") || $0.message.contains("\"Other\"")) },
+                       "an album title in a problem line")
+        XCTAssertTrue(model.diagnostics.events.contains { !$0.isProblem && $0.message.contains("\"Shared With Family\"") })
 
         let addShared = try XCTUnwrap(notices.first { $0.held.albumID == "shared" })
         let skipOther = try XCTUnwrap(notices.first { $0.held.albumID == "other" })
@@ -590,6 +601,43 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(saved.mirrors["shared"]?.approvedAssetIDs, Set(shared))
         XCTAssertEqual(saved.mirrors["other"]?.knownAssetIDs, Set(other))
         XCTAssertEqual(saved.mirrors["other"]?.addedAssetIDs, Set(old), "skipped photos are not taken for added")
+    }
+
+    /// Review of feat/53-guards, minor 7: a hold the engine makes is kept and
+    /// shown until the owner chooses. Here 26 photos are held on the added
+    /// account; two are then taken out of the Apple album, which leaves 24,
+    /// under the limit, and they still wait instead of going in by themselves.
+    func testAHoldIsKeptUntilTheOwnerChooses() async throws {
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        model.settings.reuploadEdits = false
+        let old = (0..<3).map { "old-\($0)" }, new = (0..<26).map { "new-\($0)" }
+        func album(_ members: [String]) -> LibraryAlbum {
+            LibraryAlbum(snapshot: AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: members), symbol: "rectangle.stack")
+        }
+        model.useAlbumsForTesting([album(new + old)])
+        model.state.selectedAlbumIDs = ["shared"]
+        model.saveState()
+
+        var seen: [[PlannedStep]] = []
+        model.runner.turn = { turn, _ in
+            guard turn.account == secondID else { return }
+            if model.state.mirrors.isEmpty {
+                for id in old + new { model.state.recordUpload(assetID: id, mediaKey: "second-\(id)", existing: false) }
+                model.state.mirrors["shared"] = AlbumMirror(googleAlbumID: "fake-album-shared", addedAssetIDs: Set(old))
+            }
+            seen.append(model.engine.planPass(settings: model.settings))
+        }
+        model.startBackupNow(to: .only(secondID))
+        try await settle(model)
+        XCTAssertEqual(seen, [[]])
+
+        model.useAlbumsForTesting([album(Array(new.dropFirst(2)) + old)])
+        XCTAssertEqual(model.heldAlbumAdds.map(\.count), [24], "the hold is still shown")
+        model.startBackupNow(to: .only(secondID))
+        try await settle(model)
+        XCTAssertEqual(seen, [[], []], "the 24 left still wait for Add Them or Skip")
     }
 
     /// With every account left out, nothing runs and the status says why,

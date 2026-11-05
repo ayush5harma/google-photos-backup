@@ -60,17 +60,23 @@ public struct AlbumMirror: Codable, Equatable, Sendable {
     /// that stops part-way is not a re-add), and held members the owner
     /// chose to add. Dropped as they go in; nil when there are none.
     public var approvedAssetIDs: Set<String>?
+    /// Members a run held back (past BackupPlanner.linkedAlbumAddLimit),
+    /// kept until the owner chooses Add Them or Skip, so a hold whose cause
+    /// is gone by the next run (earlier adds in that run) never turns into
+    /// an add by itself. nil when there are none.
+    public var heldAssetIDs: Set<String>?
 
     public init(googleAlbumID: String? = nil, addedAssetIDs: Set<String> = [], knownAssetIDs: Set<String>? = nil,
-                approvedAssetIDs: Set<String>? = nil) {
+                approvedAssetIDs: Set<String>? = nil, heldAssetIDs: Set<String>? = nil) {
         self.googleAlbumID = googleAlbumID
         self.addedAssetIDs = addedAssetIDs
         self.knownAssetIDs = knownAssetIDs
         self.approvedAssetIDs = approvedAssetIDs
+        self.heldAssetIDs = heldAssetIDs
     }
 
     private enum CodingKeys: String, CodingKey {
-        case googleAlbumID, addedAssetIDs, knownAssetIDs, approvedAssetIDs
+        case googleAlbumID, addedAssetIDs, knownAssetIDs, approvedAssetIDs, heldAssetIDs
     }
 
     /// A mirror whose member list is missing (a hand edit, a damaged file)
@@ -83,7 +89,21 @@ public struct AlbumMirror: Codable, Equatable, Sendable {
         addedAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .addedAssetIDs) ?? []
         knownAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .knownAssetIDs)
         approvedAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .approvedAssetIDs)
+        heldAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .heldAssetIDs)
     }
+
+    /// Removes members from one of the optional sets, keeping nil for none.
+    mutating func drop(_ ids: Set<String>, from set: WritableKeyPath<AlbumMirror, Set<String>?>) {
+        guard let current = self[keyPath: set] else { return }
+        let rest = current.subtracting(ids)
+        self[keyPath: set] = rest.isEmpty ? nil : rest
+    }
+
+    /// Whether the mirror knows what its album held when linked: some member
+    /// added, or a known list, even an empty one (an album re-baselined
+    /// while empty). Without one, a linked album takes nothing until it is
+    /// re-baselined.
+    public var hasRecord: Bool { !addedAssetIDs.isEmpty || knownAssetIDs != nil }
 
     /// Every member this mirror has a record of, sent or only known.
     /// Read every pass for every linked album: without known members it is
@@ -123,12 +143,15 @@ public struct BackupState: Codable, Equatable, Sendable {
 
     public mutating func recordUpload(assetID: String, mediaKey: String, existing: Bool, at date: Date = Date(), stamp: EditStamp? = nil) {
         forcedUploads?.remove(assetID)
-        // A re-uploaded edit that Google stored as a new item is not in the
-        // mirrored albums yet: forgetting the old membership makes the
-        // planner add the new media key to them.
+        // A re-uploaded edit that Google stored as a new item goes to the
+        // library only. Its linked albums keep the photo recorded, as known
+        // rather than added (the new key is not in them): the owner may have
+        // taken it out of a shared album by hand, so the new version is never
+        // sent there by itself.
         if let previous = uploaded[assetID], previous.mediaKey != mediaKey {
             for (albumID, mirror) in mirrors where mirror.addedAssetIDs.contains(assetID) {
                 mirrors[albumID]?.addedAssetIDs.remove(assetID)
+                if mirror.googleAlbumID != nil { mirrors[albumID]?.knownAssetIDs = (mirror.knownAssetIDs ?? []).union([assetID]) }
             }
         }
         uploaded[assetID] = BackupRecord(mediaKey: mediaKey, date: date, existing: existing, editStamp: stamp)
@@ -140,23 +163,25 @@ public struct BackupState: Codable, Equatable, Sendable {
         uploaded[assetID]?.editStamp = stamp
     }
 
-    /// Google no longer has these media keys (an album call answered 404 for
-    /// them): forget the uploads they belong to, and their album membership,
-    /// so the planner sends those assets again and their new keys join the
-    /// albums. Returns the assets forgotten.
+    /// Google no longer has these media keys: the album call that was adding
+    /// `assetIDs` to `albumID` answered 404 for them. Forget those assets'
+    /// uploads (matched by asset, never another asset that shares a key) so
+    /// the planner sends them again. Only that album loses them from its
+    /// record, since it was adding them anyway; every other album keeps them
+    /// recorded and never gets the new key by itself, as the owner may have
+    /// taken the photo out of it by hand. Returns the assets forgotten.
     @discardableResult
-    public mutating func forgetUploads(withMediaKeys keys: some Sequence<String>) -> [String] {
+    public mutating func forgetUploads(withMediaKeys keys: some Sequence<String>, among assetIDs: some Sequence<String>,
+                                       reportedBy albumID: String?) -> [String] {
         let gone = Set(keys)
         guard !gone.isEmpty else { return [] }
-        let assetIDs = uploaded.compactMap { gone.contains($0.value.mediaKey) ? $0.key : nil }.sorted()
-        for assetID in assetIDs {
+        let forgotten = Set(assetIDs).filter { uploaded[$0].map { gone.contains($0.mediaKey) } ?? false }.sorted()
+        for assetID in forgotten {
             uploaded[assetID] = nil
             forcedUploads = (forcedUploads ?? []).union([assetID])
-            for (albumID, mirror) in mirrors where mirror.addedAssetIDs.contains(assetID) {
-                mirrors[albumID]?.addedAssetIDs.remove(assetID)
-            }
+            if let albumID { mirrors[albumID]?.addedAssetIDs.remove(assetID) }
         }
-        return assetIDs
+        return forgotten
     }
 
     /// The assets among `assetIDs` whose uploaded key is one of `mediaKeys`.
@@ -188,15 +213,31 @@ public struct BackupState: Codable, Equatable, Sendable {
         mirror.addedAssetIDs.formUnion(added)
         approved.subtract(mirror.addedAssetIDs)
         mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
+        mirror.drop(added, from: \.heldAssetIDs)
         mirrors[albumID] = mirror
         return counted
+    }
+
+    /// A run held these members back: they wait for the owner, across runs.
+    /// Returns whether any was not held already.
+    @discardableResult
+    public mutating func holdAlbumAdds(_ albumID: String, assetIDs: some Sequence<String>) -> Bool {
+        guard var mirror = mirrors[albumID], mirror.googleAlbumID != nil else { return false }
+        let held = mirror.heldAssetIDs ?? []
+        let more = held.union(assetIDs).subtracting(mirror.recordedAssetIDs)
+        guard more != held else { return false }
+        mirror.heldAssetIDs = more.isEmpty ? nil : more
+        mirrors[albumID] = mirror
+        return true
     }
 
     /// "Add them": the owner clears held members to go into the album.
     public mutating func approveAlbumAdds(_ albumID: String, assetIDs: some Sequence<String>) {
         guard var mirror = mirrors[albumID] else { return }
-        let approved = (mirror.approvedAssetIDs ?? []).union(assetIDs).subtracting(mirror.recordedAssetIDs)
+        let chosen = Set(assetIDs)
+        let approved = (mirror.approvedAssetIDs ?? []).union(chosen).subtracting(mirror.recordedAssetIDs)
         mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
+        mirror.drop(chosen, from: \.heldAssetIDs)
         mirrors[albumID] = mirror
     }
 
@@ -206,8 +247,8 @@ public struct BackupState: Codable, Equatable, Sendable {
         let skipped = Set(assetIDs)
         guard !skipped.isEmpty else { return }
         mirror.knownAssetIDs = (mirror.knownAssetIDs ?? []).union(skipped)
-        let approved = (mirror.approvedAssetIDs ?? []).subtracting(skipped)
-        mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
+        mirror.drop(skipped, from: \.approvedAssetIDs)
+        mirror.drop(skipped, from: \.heldAssetIDs)
         mirrors[albumID] = mirror
     }
 
@@ -221,12 +262,16 @@ public struct BackupState: Codable, Equatable, Sendable {
     /// re-baselined, for the timeline.
     public mutating func rebaselineUnknownMirrors(in albums: [AlbumSnapshot]) -> [RebaselinedAlbum] {
         var rebaselined: [RebaselinedAlbum] = []
-        for album in albums where album.kind == .user && selectedAlbumIDs.contains(album.id) && !album.assetIDs.isEmpty {
-            guard var mirror = mirrors[album.id], mirror.googleAlbumID != nil, mirror.recordedAssetIDs.isEmpty else { continue }
-            mirror.knownAssetIDs = Set(album.assetIDs)
+        for album in albums where album.kind == .user && selectedAlbumIDs.contains(album.id) {
+            guard var mirror = mirrors[album.id], mirror.googleAlbumID != nil, !mirror.hasRecord else { continue }
+            // Hidden members too: the listing leaves them out of assetIDs,
+            // and one unhidden later must not look newly added.
+            let members = Set(album.assetIDs).union(album.hiddenAssetIDs)
+            mirror.knownAssetIDs = members
             mirror.approvedAssetIDs = nil
+            mirror.heldAssetIDs = nil
             mirrors[album.id] = mirror
-            rebaselined.append(RebaselinedAlbum(albumID: album.id, title: album.title, count: album.assetIDs.count))
+            rebaselined.append(RebaselinedAlbum(albumID: album.id, title: album.title, count: members.count))
         }
         return rebaselined
     }

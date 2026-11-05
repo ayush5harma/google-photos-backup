@@ -585,7 +585,7 @@ final class BackupEngine {
     /// never into an album): another account never gets one.
     func planPass(settings: BackupSettings) -> [PlannedStep] {
         let albums = model.activeTakesSelection ? model.albums.map(\.snapshot) : []
-        if settings.mirrorAlbums { rebaselineUnknownMirrors(in: albums) }
+        if settings.mirrorAlbums, model.activeTakesSelection { rebaselineUnknownMirrors(in: albums + model.unlistedAlbums) }
         if settings.reuploadEdits { stampEarlierUploads(in: albums) }
         picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
         // What this run already confirmed is never planned again in it,
@@ -598,20 +598,27 @@ final class BackupEngine {
                                  excludingAssets: failedAssets.union(picked).union(tally.confirmedIDs),
                                  excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits,
                                  uploadsHidden: model.isPrimaryActive, albumAddsThisRun: albumAddsThisRun)
-        if settings.mirrorAlbums { logHeldAlbumAdds(in: albums) }
+        if settings.mirrorAlbums { holdAlbumAdds(in: albums) }
         return steps
     }
 
-    /// Guard C (2): adds held back from an album that already exists go in
-    /// the timeline as a problem, once per album and run; the Overview
+    /// Guard C (2): adds held back from an album that already exists are
+    /// kept in its record until the owner chooses (a hold caused by this
+    /// run's earlier adds would otherwise go in by itself next run), and go
+    /// in the timeline as a problem once per album and run; the Overview
     /// offers "Add them" and "Skip" for each (AppModel.heldAlbumAdds).
-    private func logHeldAlbumAdds(in albums: [AlbumSnapshot]) {
+    private func holdAlbumAdds(in albums: [AlbumSnapshot]) {
         let held = BackupPlanner.heldAlbumAdds(albums: albums, state: model.state, albumAddsThisRun: albumAddsThisRun)
-        for album in held where heldAlbumsLogged.insert(album.albumID).inserted {
-            let count = album.assetIDs.count
-            model.log(.photos, "\(count.formatted()) photo\(count == 1 ? "" : "s") waiting to be added to \"\(album.title)\": more than "
-                      + "\(BackupPlanner.linkedAlbumAddLimit) would have gone into a Google album that already exists, so none were sent. "
-                      + "Add them or skip them on the Overview.", problem: true)
+        // Only a hold that grew is news: one already waiting is on the
+        // Overview, and a problem line every run would bury the timeline.
+        let grown = held.filter { model.state.holdAlbumAdds($0.albumID, assetIDs: $0.assetIDs) }
+        if !grown.isEmpty { model.saveState() }
+        for album in grown where heldAlbumsLogged.insert(album.albumID).inserted {
+            let photos = Self.photos(album.assetIDs.count)
+            model.log(.photos, "\(photos) waiting to be added to an album: more than \(BackupPlanner.linkedAlbumAddLimit) would have "
+                      + "gone into a Google album that already exists, so none were sent. Add them or skip them on the Overview.",
+                      problem: true)
+            model.log(.photos, "Waiting for Add Them or Skip: \(photos) for \"\(album.title)\".")
         }
     }
 
@@ -620,8 +627,16 @@ final class BackupEngine {
     /// the album holds (which could put back one removed by hand), so nothing
     /// is uploaded again; the timeline names the album for the owner to look.
     private func logAlbumRefused(_ title: String, _ message: String) {
-        model.log(.photos, "Google Photos refused to add photos to \"\(title)\" (\(message)). Its Google album may have been "
+        model.log(.photos, "Google Photos refused to add photos to an album (\(message)). Its Google album may have been "
                   + "deleted; nothing was sent again, and the next backup tries once more.", problem: true)
+        model.log(.photos, "The album Google Photos refused is \"\(title)\".")
+    }
+
+    /// Problem lines reach the shareable report (DiagnosticReport keeps the
+    /// last 30), so they carry counts only; each album's title goes in a
+    /// plain line beside it, which stays in the timeline.
+    private static func photos(_ count: Int) -> String {
+        "\(count.formatted()) photo\(count == 1 ? "" : "s")"
     }
 
     /// Records what an album call put in, and counts it against the run's
@@ -643,9 +658,10 @@ final class BackupEngine {
         guard !rebaselined.isEmpty else { return }
         model.saveState()
         for album in rebaselined {
-            let photos = "\(album.count.formatted()) photo\(album.count == 1 ? "" : "s")"
-            model.log(.photos, "The Google album for \"\(album.title)\" had no record of what it holds, so nothing was added to it: "
-                      + "its \(photos) are taken as already there, and only photos added to the album from now on go in.", problem: true)
+            let photos = Self.photos(album.count)
+            model.log(.photos, "A Google album had no record of what it holds, so nothing was added to it: its \(photos) are "
+                      + "taken as already there, and only photos added to the album from now on go in.", problem: true)
+            model.log(.photos, "The album taken as already holding its \(photos) is \"\(album.title)\".")
         }
     }
 
@@ -1171,13 +1187,13 @@ final class BackupEngine {
                 }
             } catch {
                 // Confirmations already read are on disk before the run ends.
-                forgetMissing(missingKeys)
+                forgetMissing(missingKeys, among: confirmed, album: album?.id)
                 model.saveState()
                 lastError = error.localizedDescription
                 markStopped(pending)
                 return .halt
             }
-            forgetMissing(missingKeys)
+            forgetMissing(missingKeys, among: confirmed, album: album?.id)
             model.saveState()
             if !confirmed.isEmpty { progressed = true }
 
@@ -1359,14 +1375,14 @@ final class BackupEngine {
                     }
                 }
             } catch {
-                forgetMissing(missingKeys)
+                forgetMissing(missingKeys, among: pending, album: albumID)
                 model.saveState()
                 lastError = error.localizedDescription
                 return .halt
             }
             // Forgotten photos are planned for upload on the next pass, so a
             // call that only found dead keys still moved the run on.
-            progressed = forgetMissing(missingKeys) > 0 || progressed
+            progressed = forgetMissing(missingKeys, among: pending, album: albumID) > 0 || progressed
             model.saveState()
             guard let (kind, message) = fatal else { return progressed ? .progressed : .nothing }
             if phase == .stopping { return .halt }
@@ -1526,8 +1542,8 @@ final class BackupEngine {
     /// run already sent waits for the next backup, since the planner never
     /// sends an asset twice in a run. Returns how many uploads were forgotten.
     @discardableResult
-    private func forgetMissing(_ keys: [String]) -> Int {
-        let forgotten = model.state.forgetUploads(withMediaKeys: keys)
+    private func forgetMissing(_ keys: [String], among assetIDs: [String], album albumID: String?) -> Int {
+        let forgotten = model.state.forgetUploads(withMediaKeys: keys, among: assetIDs, reportedBy: albumID)
         guard !forgotten.isEmpty else { return 0 }
         let later = forgotten.filter { tally.confirmedIDs.contains($0) }.count
         let now = forgotten.count - later

@@ -119,29 +119,43 @@ private let live = AlbumSnapshot(id: "live", title: "Live Photos", kind: .smart,
         var state = state(selected: ["trip"], uploaded: ["a", "b", "d"],
                           mirrors: ["trip": AlbumMirror(googleAlbumID: "g1", addedAssetIDs: ["a", "b"])])
 
-        #expect(state.forgetUploads(withMediaKeys: ["key-b", "key-d", "key-unknown"]) == ["b", "d"])
-        #expect(state.uploaded.keys.sorted() == ["a"])
-        #expect(state.mirrors["trip"]?.addedAssetIDs == ["a"])
+        // "b" and "d" were being added to the album when their keys came back dead.
+        #expect(state.forgetUploads(withMediaKeys: ["key-d", "key-unknown"], among: ["d"], reportedBy: "trip") == ["d"])
+        #expect(state.uploaded.keys.sorted() == ["a", "b"])
+        #expect(state.mirrors["trip"]?.addedAssetIDs == ["a", "b"])
         #expect(state.albumTarget(for: "trip", title: "Trip").id == "g1")
         #expect(BackupPlanner.plan(albums: [trip], state: state, mirrorAlbums: true, batchSize: 10)
-            == [.upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["b", "d"])])
-        #expect(state.forgetUploads(withMediaKeys: []) == [])
+            == [.upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["d"])])
+        #expect(state.forgetUploads(withMediaKeys: [String](), among: ["a"], reportedBy: "trip") == [])
     }
 
-    /// Guard C: when every member the album had went dead, its record is
-    /// empty, and an empty record is re-baselined rather than refilled.
-    @Test func anAlbumWhoseEveryKeyDiedIsNotRefilled() {
-        var state = state(selected: ["trip"], uploaded: ["b", "d"],
-                          mirrors: ["trip": AlbumMirror(googleAlbumID: "g1", addedAssetIDs: ["b"])])
-        state.forgetUploads(withMediaKeys: ["key-b", "key-d"])
-        #expect(state.mirrors["trip"]?.addedAssetIDs.isEmpty == true)
-        #expect(BackupPlanner.plan(albums: [trip], state: state, mirrorAlbums: true, batchSize: 10)
-            == [.upload(albumID: "trip", albumTitle: nil, assetIDs: ["b", "d"])])
+    /// Review of feat/53-guards, MAJOR 2: a dead key one album's call reports
+    /// is forgotten for that asset only (not another sharing the key), and
+    /// only that album loses it; another linked album, perhaps shared, keeps
+    /// it recorded and never gets the new key by itself.
+    @Test func aDeadKeyReportedByOneAlbumNeverReturnsToAnother() {
+        var state = state(selected: ["shared", "other"], uploaded: ["p"], mirrors: [
+            "shared": AlbumMirror(googleAlbumID: "g-shared", addedAssetIDs: ["old"]),
+            "other": AlbumMirror(googleAlbumID: "g-other", addedAssetIDs: ["p", "x"]),
+        ])
+        state.recordUpload(assetID: "q", mediaKey: "key-p", existing: true)
+        #expect(state.forgetUploads(withMediaKeys: ["key-p"], among: ["p"], reportedBy: "shared") == ["p"])
+        #expect(state.uploaded["q"]?.mediaKey == "key-p", "another asset sharing the key is left alone")
+        #expect(state.mirrors["other"]?.addedAssetIDs == ["p", "x"])
+
+        state.recordUpload(assetID: "p", mediaKey: "key-p2", existing: false)
+        state.recordUpload(assetID: "old", mediaKey: "key-old", existing: false)
+        state.recordUpload(assetID: "x", mediaKey: "key-x", existing: false)
+        let shared = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: ["p", "old"])
+        let other = AlbumSnapshot(id: "other", title: "Other", kind: .user, assetIDs: ["p", "x"])
+        #expect(BackupPlanner.plan(albums: [shared, other], state: state, mirrorAlbums: true, batchSize: 10)
+            == [.addToAlbum(albumID: "shared", albumTitle: "Shared", assetIDs: ["p"], mediaKeys: ["key-p2"])],
+                "only the album that was adding it gets the new key")
     }
 
     @Test func photosGoogleLostGoUpAgainWithoutTheHashCheckOnce() {
         var state = state(selected: ["trip"], uploaded: ["b", "d"])
-        state.forgetUploads(withMediaKeys: ["key-b"])
+        state.forgetUploads(withMediaKeys: ["key-b"], among: ["b"], reportedBy: nil)
         #expect(state.forcedUploads == ["b"])
         state.recordUpload(assetID: "b", mediaKey: "key-b2", existing: false)
         #expect(state.forcedUploads?.isEmpty == true)

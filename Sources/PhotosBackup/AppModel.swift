@@ -240,6 +240,9 @@ final class AppModel {
         }
     }
     private(set) var albumsLoaded = false
+    /// User albums with nothing to list (PhotoLibrary.Listing.unlisted):
+    /// read only by the re-baseline, never shown.
+    @ObservationIgnored private(set) var unlistedAlbums: [AlbumSnapshot] = []
     private(set) var photosStatus: PHAuthorizationStatus
     var state: BackupState {
         didSet {
@@ -718,7 +721,9 @@ final class AppModel {
 
     func reloadAlbums() async {
         guard library.isAuthorized else { return }
-        albums = await PhotoLibrary.loadAlbums()
+        let listing = await PhotoLibrary.loadAlbums()
+        unlistedAlbums = listing.unlisted
+        albums = listing.albums
         albumsLoaded = true
     }
 
@@ -1333,7 +1338,8 @@ final class AppModel {
 
     /// Tests only: a library to plan against, keeping the accounts as they
     /// are (applyFixture replaces them).
-    func useAlbumsForTesting(_ albums: [LibraryAlbum]) {
+    func useAlbumsForTesting(_ albums: [LibraryAlbum], unlisted: [AlbumSnapshot] = []) {
+        unlistedAlbums = unlisted
         self.albums = albums
         albumsLoaded = true
     }

@@ -18,10 +18,12 @@ public struct AlbumSnapshot: Equatable, Sendable, Identifiable {
     /// Each asset's PHAsset.modificationDate, read during the same
     /// enumeration; an asset without one is never taken for edited.
     public let modified: [String: Date]
-    /// Members Photos marks hidden (PHAsset.isHidden), read in the same
-    /// enumeration. The listing leaves hidden photos out already; the
-    /// planner checks this as well, so a change of fetch options can never
-    /// put a hidden photo in a Google album or in another account.
+    /// Members Photos marks hidden (PHAsset.isHidden). The listing leaves
+    /// hidden photos out of assetIDs; for user albums PhotoLibrary also looks
+    /// them up on their own, so a re-baseline records them and one unhidden
+    /// later never looks newly added. The planner checks this set as well,
+    /// so a change of fetch options can never put a hidden photo in a Google
+    /// album or in another account. Members here need not be in assetIDs.
     public let hiddenAssetIDs: Set<String>
 
     public init(id: String, title: String, kind: AlbumKind, assetIDs: [String], modified: [String: Date] = [:],
@@ -275,15 +277,17 @@ public enum BackupPlanner {
         guard let mirror = state.mirrors[album.id], mirror.googleAlbumID != nil else {
             return AlbumAdmission(admitted: Set(visible), held: [])
         }
+        guard mirror.hasRecord else { return AlbumAdmission(admitted: [], held: []) }
         let recorded = mirror.recordedAssetIDs
-        guard !recorded.isEmpty else { return AlbumAdmission(admitted: [], held: []) }
         let newcomers = visible.filter { !recorded.contains($0) }
         let approved = mirror.approvedAssetIDs ?? []
-        let counted = newcomers.filter { !approved.contains($0) }
-        guard !counted.isEmpty, counted.count + addsThisRun > linkedAlbumAddLimit else {
-            return AlbumAdmission(admitted: Set(newcomers), held: [])
-        }
-        return AlbumAdmission(admitted: Set(newcomers.filter { approved.contains($0) }), held: counted)
+        // Held by an earlier run: they wait for the owner whatever the count.
+        let kept = mirror.heldAssetIDs ?? []
+        let counted = newcomers.filter { !approved.contains($0) && !kept.contains($0) }
+        let overLimit = !counted.isEmpty && counted.count + addsThisRun > linkedAlbumAddLimit
+        let held = newcomers.filter { !approved.contains($0) && (kept.contains($0) || overLimit) }
+        let waiting = Set(held)
+        return AlbumAdmission(admitted: Set(newcomers.filter { !waiting.contains($0) }), held: held)
     }
 
     /// The photos waiting for the owner, per selected album that already

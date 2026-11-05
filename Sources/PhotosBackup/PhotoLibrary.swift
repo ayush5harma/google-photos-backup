@@ -53,9 +53,19 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         DispatchQueue.main.async { self.onChange?() }
     }
 
-    /// Every offered album with its asset identifiers, newest first. Runs off
-    /// the main thread: a large library takes a noticeable moment.
-    static func loadAlbums() async -> [LibraryAlbum] {
+    /// What one read of the library finds.
+    struct Listing {
+        /// Every offered album with its asset identifiers, newest first.
+        var albums: [LibraryAlbum]
+        /// User albums with nothing to list, kept out of the window but
+        /// still read by the re-baseline (BackupState.rebaselineUnknownMirrors):
+        /// an album empty when its record was lost gets an empty record, so
+        /// photos added later go in instead of all being taken as known.
+        var unlisted: [AlbumSnapshot]
+    }
+
+    /// Runs off the main thread: a large library takes a noticeable moment.
+    static func loadAlbums() async -> Listing {
         await Task.detached(priority: .utility) { readAlbums() }.value
     }
 
@@ -75,7 +85,7 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
         return options
     }
 
-    private static func readAlbums() -> [LibraryAlbum] {
+    private static func readAlbums() -> Listing {
         let options = listing
 
         // The modification date comes with the asset row PhotoKit already
@@ -111,15 +121,32 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
             albums.append(LibraryAlbum(snapshot: album, symbol: symbol))
         }
 
+        // A user album's hidden members, looked up on their own (read-only,
+        // ids only) so the re-baseline can record them; never uploaded. With
+        // the Hidden album locked PhotoKit hands out none (measured
+        // 2026-10-28, PickedFile), so this then finds nothing.
+        let hiddenOnly = PHFetchOptions()
+        hiddenOnly.includeHiddenAssets = true
+        hiddenOnly.includeAssetSourceTypes = [.typeUserLibrary]
+        hiddenOnly.predicate = NSPredicate(format: "isHidden == YES")
+        func withHidden(_ album: AlbumSnapshot, in collection: PHAssetCollection) -> AlbumSnapshot {
+            var hidden = album.hiddenAssetIDs
+            PHAsset.fetchAssets(in: collection, options: hiddenOnly).enumerateObjects { asset, _, _ in hidden.insert(asset.localIdentifier) }
+            guard hidden != album.hiddenAssetIDs else { return album }
+            return AlbumSnapshot(id: album.id, title: album.title, kind: album.kind, assetIDs: album.assetIDs, modified: album.modified,
+                                 hiddenAssetIDs: hidden)
+        }
+
         var user: [LibraryAlbum] = []
+        var unlisted: [AlbumSnapshot] = []
         PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
             .enumerateObjects { collection, _, _ in
-                let album = snapshot(id: collection.localIdentifier, title: collection.localizedTitle ?? "Untitled", kind: .user,
-                                     PHAsset.fetchAssets(in: collection, options: options))
-                guard !album.assetIDs.isEmpty else { return }
+                let album = withHidden(snapshot(id: collection.localIdentifier, title: collection.localizedTitle ?? "Untitled", kind: .user,
+                                                PHAsset.fetchAssets(in: collection, options: options)), in: collection)
+                guard !album.assetIDs.isEmpty else { return unlisted.append(album) }
                 user.append(LibraryAlbum(snapshot: album, symbol: "rectangle.stack"))
             }
         user.sort { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-        return albums + user
+        return Listing(albums: albums + user, unlisted: unlisted)
     }
 }

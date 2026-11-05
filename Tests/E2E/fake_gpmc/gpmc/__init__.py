@@ -331,6 +331,15 @@ class Api:
             session.call()
         return _album(media_keys, name=album_name, account=self.account)
 
+    def get_download_urls(self, media_key: str) -> dict:
+        # Read-only, as the bridge uses it to tell a dead key from a refusing
+        # album: a key in dead_media_keys answers 404 like an album call.
+        with self._new_session() as session:
+            session.call()
+        if media_key in _scenario().get("dead_media_keys", []):
+            raise _error("404", "https://photosdata-pa.googleapis.com/$rpc/PhotosPrepareDownload")
+        return {"1": {"5": {"2": {"6": f"https://lh3.googleusercontent.com/fake/{media_key}=d"}}}}
+
     def find_remote_media_by_hash(self, sha1_hash: bytes) -> str | None:
         with self._new_session() as session:
             session.call()
