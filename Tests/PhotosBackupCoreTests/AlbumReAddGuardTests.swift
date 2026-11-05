@@ -90,3 +90,148 @@ private let shared = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, a
         ])
     }
 }
+
+private func ids(_ prefix: String, _ count: Int) -> [String] { (0..<count).map { "\(prefix)\($0)" } }
+
+/// A linked album holding "old0"..."old9", plus `newcomers` photos added to
+/// the Apple album since, all backed up.
+private func linked(newcomers: Int, approved: Set<String>? = nil) -> (AlbumSnapshot, BackupState) {
+    let old = ids("old", 10), new = ids("new", newcomers)
+    let album = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: new + old)
+    let state = state(selected: ["shared"], uploaded: new + old,
+                      mirrors: ["shared": AlbumMirror(googleAlbumID: "g-shared", addedAssetIDs: Set(old), approvedAssetIDs: approved)])
+    return (album, state)
+}
+
+private func added(_ steps: [PlannedStep]) -> [String] {
+    steps.flatMap { step -> [String] in
+        switch step {
+        case let .addToAlbum(_, _, assetIDs, _): assetIDs
+        case let .upload(_, .some, assetIDs): assetIDs
+        default: []
+        }
+    }
+}
+
+/// Guard C (2) and (3): one run never adds more than 25 photos by itself to
+/// a Google album that was linked before it; past that, the adds wait for
+/// the owner ("Add them" or "Skip"), whatever made them (new members, a
+/// re-add after dead keys).
+@Suite struct ALinkedAlbumNeverTakesABulkReAddTests {
+    @Test func upToTheLimitPhotosAddedSinceGoInAsBefore() {
+        let (album, state) = linked(newcomers: BackupPlanner.linkedAlbumAddLimit)
+        let steps = BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 10, uploadsHidden: true)
+        #expect(added(steps) == ids("new", 25))
+        #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: state).isEmpty)
+    }
+
+    @Test func pastTheLimitNothingGoesInAndTheAddsAreHeld() {
+        let (album, state) = linked(newcomers: 26)
+        #expect(BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 10, uploadsHidden: true).isEmpty)
+        #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: state)
+            == [HeldAlbumAdds(albumID: "shared", title: "Shared", assetIDs: ids("new", 26))])
+    }
+
+    @Test func heldPhotosNotBackedUpYetStillGoToTheLibrary() {
+        let new = ids("new", 30)
+        let album = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: new + ["old"])
+        let state = state(selected: ["shared"], uploaded: ["old"],
+                          mirrors: ["shared": AlbumMirror(googleAlbumID: "g-shared", addedAssetIDs: ["old"])])
+        let steps = BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 100, uploadsHidden: true)
+        #expect(steps == [.upload(albumID: "shared", albumTitle: nil, assetIDs: new)])
+    }
+
+    @Test func addsEarlierInTheRunCountTowardsTheLimit() {
+        let (album, state) = linked(newcomers: 6)
+        #expect(added(BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 10,
+                                         uploadsHidden: true, albumAddsThisRun: ["shared": 19])) == ids("new", 6))
+        #expect(BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 10,
+                                   uploadsHidden: true, albumAddsThisRun: ["shared": 20]).isEmpty)
+        #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: state, albumAddsThisRun: ["shared": 20]).first?.assetIDs.count == 6)
+    }
+
+    @Test func addThemSendsTheHeldPhotosAndOnlyThose() {
+        var (album, state) = linked(newcomers: 40)
+        state.approveAlbumAdds("shared", assetIDs: ids("new", 40) + ["old0"])
+        #expect(state.mirrors["shared"]?.approvedAssetIDs == Set(ids("new", 40)), "a member already in stays out")
+        let steps = BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 10, uploadsHidden: true)
+        #expect(added(steps) == ids("new", 40))
+        #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: state).isEmpty)
+
+        // Approved adds are not counted, and are dropped once they are in.
+        #expect(state.recordAlbum("shared", googleAlbumID: "g-shared", added: ids("new", 40)) == 0)
+        #expect(state.mirrors["shared"]?.approvedAssetIDs == nil)
+        // A later photo past the limit is held again.
+        album = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: album.assetIDs + ids("late", 30))
+        for id in ids("late", 30) { state.recordUpload(assetID: id, mediaKey: "key-\(id)", existing: false) }
+        #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: state).first?.assetIDs == ids("late", 30))
+    }
+
+    @Test func skipRecordsTheHeldPhotosAsKnownWithoutSendingThem() {
+        var (album, state) = linked(newcomers: 30, approved: ["new0"])
+        state.skipAlbumAdds("shared", assetIDs: ids("new", 30))
+        #expect(state.mirrors["shared"]?.knownAssetIDs == Set(ids("new", 30)))
+        #expect(state.mirrors["shared"]?.approvedAssetIDs == nil)
+        #expect(state.mirrors["shared"]?.addedAssetIDs == Set(ids("old", 10)), "skipped photos are not taken for added (or probes)")
+        #expect(BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 10, uploadsHidden: true).isEmpty)
+        #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: state).isEmpty)
+        // A photo added after the skip goes in as usual.
+        state.recordUpload(assetID: "after", mediaKey: "key-after", existing: false)
+        album = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: ["after"] + album.assetIDs)
+        #expect(added(BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 10, uploadsHidden: true)) == ["after"])
+    }
+
+    @Test func onlyAddsToAnAlbumLinkedBeforeAreCounted() {
+        var state = state(selected: ["shared"])
+        #expect(state.recordAlbum("shared", googleAlbumID: "g", added: ["a", "b"], members: ["a", "b", "c", "d"]) == 0)
+        #expect(state.mirrors["shared"]?.approvedAssetIDs == ["c", "d"])
+        #expect(state.recordAlbum("shared", googleAlbumID: "g", added: ["c", "e", "f"]) == 2, "e and f were neither in nor approved")
+        #expect(state.mirrors["shared"]?.approvedAssetIDs == ["d"])
+    }
+
+    /// The first run on a newly added account creates the album with its
+    /// first batch and stops (sleep, Stop, a lost network): the next run
+    /// still fills it, since that is not a re-add.
+    @Test func aNewAlbumWhoseFirstRunStoppedIsStillFilled() {
+        let members = ids("m", 60)
+        let album = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: members)
+        var state = state(selected: ["shared"])
+        let first = BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 10, uploadsHidden: true)
+        #expect(added(first) == members, "a brand-new album takes every member")
+        for id in members.prefix(10) { state.recordUpload(assetID: id, mediaKey: "key-\(id)", existing: false) }
+        state.recordAlbum("shared", googleAlbumID: "g-new", added: members.prefix(10), members: members)
+
+        let next = BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 100, uploadsHidden: true)
+        #expect(next == [.upload(albumID: "shared", albumTitle: "Shared", assetIDs: Array(members.dropFirst(10)))])
+        #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: state).isEmpty)
+    }
+
+    /// Guard C (3): photos uploaded again after Google lost their keys are
+    /// re-adds like any other: a few go back in, a bulk is held.
+    @Test func reAddsAfterDeadKeysFollowTheSameLimit() {
+        let members = ids("m", 40)
+        let album = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: members)
+        var few = state(selected: ["shared"], uploaded: members,
+                        mirrors: ["shared": AlbumMirror(googleAlbumID: "g-shared", addedAssetIDs: Set(members))])
+        var bulk = few
+        few.forgetUploads(withMediaKeys: members.prefix(3).map { "key-\($0)" })
+        #expect(BackupPlanner.plan(albums: [album], state: few, mirrorAlbums: true, batchSize: 10, uploadsHidden: true)
+            == [.upload(albumID: "shared", albumTitle: "Shared", assetIDs: Array(members.prefix(3)))])
+
+        bulk.forgetUploads(withMediaKeys: members.prefix(30).map { "key-\($0)" })
+        #expect(BackupPlanner.plan(albums: [album], state: bulk, mirrorAlbums: true, batchSize: 100, uploadsHidden: true)
+            == [.upload(albumID: "shared", albumTitle: nil, assetIDs: Array(members.prefix(30)))])
+        #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: bulk).first?.assetIDs == Array(members.prefix(30)))
+    }
+
+    @Test func aStateWithoutTheNewFieldsLoadsAndSavesAsBefore() throws {
+        let json = #"{"mirrors":{"trip":{"addedAssetIDs":["b"],"googleAlbumID":"g1"}},"selectedAlbumIDs":["trip"],"uploaded":{}}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let state = try decoder.decode(BackupState.self, from: Data(json.utf8))
+        #expect(state.mirrors["trip"] == AlbumMirror(googleAlbumID: "g1", addedAssetIDs: ["b"]))
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        #expect(String(data: try encoder.encode(state.mirrors), encoding: .utf8) == #"{"trip":{"addedAssetIDs":["b"],"googleAlbumID":"g1"}}"#)
+    }
+}

@@ -14,6 +14,7 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: Metrics.sectionSpacing) {
                 // The hero carries the sign-in button for a missing account.
                 SetupBanners(section: $section, hiding: model.hasAuthData ? [] : ["sign-in"])
+                HeldAlbumBanners()
                 OverviewHero()
                 if model.accounts.count > 1 { AccountsOverview() }
                 stats
@@ -507,6 +508,54 @@ struct PickPhotosButton<Label: View>: View {
 
 /// What still stands between the person and a working backup, and the
 /// last error a run left.
+/// Guard C (2): photos held back from a Google album that already exists,
+/// one row per album, with the two ways forward. Nothing is sent until the
+/// owner picks one.
+struct HeldAlbumBanners: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let notices = model.heldAlbumAdds
+        if !notices.isEmpty {
+            VStack(spacing: 8) {
+                ForEach(notices) { row($0) }
+            }
+        }
+    }
+
+    private func row(_ notice: AppModel.HeldAlbumNotice) -> some View {
+        let photos = "\(notice.count.formatted()) photo\(notice.count == 1 ? "" : "s")"
+        let account = notice.accountTitle.map { " in \($0)" } ?? ""
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "rectangle.stack.badge.plus")
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 20))
+                .foregroundStyle(.orange)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(photos) waiting to be added to \u{201C}\(notice.held.title)\u{201D}").font(.headline)
+                Text("More than \(BackupPlanner.linkedAlbumAddLimit) photos would have gone at once into a Google album that "
+                     + "already exists\(account), so none were sent. If the album is shared, everyone in it would see them.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button("Skip") { model.skipHeldPhotos(notice) }
+                .help("Keep these photos out of the Google album; photos added to the album later still go in")
+            Button("Add Them") { model.addHeldPhotos(notice) }
+                .help("Add these photos to the Google album")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: Metrics.panelRadius, style: .continuous)
+                .fill(Color.orange.opacity(0.09))
+                .strokeBorder(Color.orange.opacity(0.22), lineWidth: 1)
+        }
+    }
+}
+
 struct SetupBanners: View {
     @Environment(AppModel.self) private var model
     @Binding var section: AppSection

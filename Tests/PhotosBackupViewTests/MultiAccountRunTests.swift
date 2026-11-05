@@ -526,6 +526,72 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertTrue(problems.first?.message.contains("3 photos") == true, problems.first?.message ?? "no event")
     }
 
+    /// Guard C (2) on an added account: two albums it linked earlier have 30
+    /// and 26 photos it has backed up but not filed. Nothing goes into
+    /// either; the timeline and the Overview say so per album and account;
+    /// "Add them" sends one album's photos on that account's next turn and
+    /// "Skip" records the other's as known, both kept on disk. The primary,
+    /// whose albums are new, still creates them with every member.
+    func testBulkAddsToALinkedAlbumWaitForTheOwner() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        model.settings.reuploadEdits = false
+        let old = (0..<5).map { "old-\($0)" }
+        let shared = (0..<30).map { "shared-\($0)" }, other = (0..<26).map { "other-\($0)" }
+        model.useAlbumsForTesting([
+            LibraryAlbum(snapshot: AlbumSnapshot(id: "shared", title: "Shared With Family", kind: .user, assetIDs: shared + old),
+                         symbol: "rectangle.stack"),
+            LibraryAlbum(snapshot: AlbumSnapshot(id: "other", title: "Other", kind: .user, assetIDs: other + old), symbol: "rectangle.stack"),
+        ])
+        model.state.selectedAlbumIDs = ["shared", "other"]
+        model.saveState()
+
+        var seen: [String: [PlannedStep]] = [:]
+        model.runner.turn = { turn, _ in
+            if turn.account == secondID, model.state.mirrors.isEmpty {
+                for id in old + shared + other { model.state.recordUpload(assetID: id, mediaKey: "second-\(id)", existing: false) }
+                model.state.mirrors["shared"] = AlbumMirror(googleAlbumID: "fake-album-shared", addedAssetIDs: Set(old))
+                model.state.mirrors["other"] = AlbumMirror(googleAlbumID: "fake-album-other", addedAssetIDs: Set(old))
+            }
+            seen[turn.account] = model.engine.planPass(settings: model.settings)
+        }
+        model.startBackupNow()
+        try await settle(model)
+        let intoAlbums = (seen[firstID] ?? []).flatMap { step -> [String] in
+            if case let .upload(albumID, title?, ids) = step { return ids.map { "\(albumID)/\(title)/\($0)" } }
+            return []
+        }
+        XCTAssertEqual(intoAlbums, (shared + old).map { "shared/Shared With Family/\($0)" } + other.map { "other/Other/\($0)" },
+                       "brand-new albums take every member")
+        XCTAssertEqual(seen[secondID], [], "nothing goes into either linked album")
+        let notices = model.heldAlbumAdds
+        XCTAssertEqual(notices.map(\.account), [secondID, secondID])
+        XCTAssertEqual(notices.map(\.held.albumID), ["shared", "other"])
+        XCTAssertEqual(notices.map(\.count), [30, 26])
+        XCTAssertEqual(notices.first?.accountTitle, Self.second, "with several accounts, the notice names its account")
+        let problems = model.diagnostics.events.filter { $0.isProblem && $0.message.contains("waiting to be added to") }
+        XCTAssertEqual(problems.count, 2)
+        XCTAssertTrue(problems.contains { $0.message.hasPrefix("30 photos waiting to be added to \"Shared With Family\"") })
+
+        let addShared = try XCTUnwrap(notices.first { $0.held.albumID == "shared" })
+        let skipOther = try XCTUnwrap(notices.first { $0.held.albumID == "other" })
+        model.skipHeldPhotos(skipOther)
+        seen = [:]
+        model.addHeldPhotos(addShared)
+        try await settle(model)
+        XCTAssertEqual(seen[secondID], [.addToAlbum(albumID: "shared", albumTitle: "Shared With Family", assetIDs: shared,
+                                                    mediaKeys: shared.map { "second-\($0)" })],
+                       "Add them sends that album's photos, on that account, and nothing for the skipped album")
+        XCTAssertNil(seen[firstID], "Add them runs only the account the photos wait for")
+        XCTAssertTrue(model.heldAlbumAdds.isEmpty)
+        let saved = try BackupStore(url: support.appendingPathComponent(AccountLibrary.stateFile(for: secondID))).load()
+        XCTAssertEqual(saved.mirrors["shared"]?.approvedAssetIDs, Set(shared))
+        XCTAssertEqual(saved.mirrors["other"]?.knownAssetIDs, Set(other))
+        XCTAssertEqual(saved.mirrors["other"]?.addedAssetIDs, Set(old), "skipped photos are not taken for added")
+    }
+
     /// With every account left out, nothing runs and the status says why,
     /// instead of "Everything is backed up".
     func testNoAccountIncludedRunsNothingAndSaysSo() async throws {

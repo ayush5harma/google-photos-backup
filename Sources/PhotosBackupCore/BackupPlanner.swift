@@ -75,9 +75,32 @@ public struct BackupSummary: Equatable, Sendable {
     public var total: Int { backedUp + pending }
 }
 
+/// Photos held back from a Google album that already exists: more than
+/// BackupPlanner.linkedAlbumAddLimit would have gone into it at once.
+public struct HeldAlbumAdds: Equatable, Sendable, Identifiable {
+    public let albumID: String
+    public let title: String
+    public let assetIDs: [String]
+
+    public var id: String { albumID }
+
+    public init(albumID: String, title: String, assetIDs: [String]) {
+        self.albumID = albumID
+        self.title = title
+        self.assetIDs = assetIDs
+    }
+}
+
 public enum BackupPlanner {
     /// Google Photos takes at most 500 media keys per add-to-album call.
     public static let albumBatchSize = 500
+
+    /// The most photos one run adds by itself to a Google album that was
+    /// linked before it. More than that is a bulk re-add far likelier
+    /// (a reset record, keys gone dead en masse) than photos the owner put
+    /// in the Photos album since, and the app cannot see which members the
+    /// owner took out of the Google album: those adds wait for "Add them".
+    public static let linkedAlbumAddLimit = 25
 
     /// Mirrored user albums go first so an asset in one is uploaded straight
     /// into it, then smart albums, then the whole library for the rest.
@@ -99,6 +122,8 @@ public enum BackupPlanner {
     ///   - uploadsHidden: the account is the primary, whose library may take
     ///     a hidden photo a snapshot lists (never an album). Any other
     ///     account is never sent one, new or edited.
+    ///   - albumAddsThisRun: per album, the adds this run already counted
+    ///     against linkedAlbumAddLimit (BackupState.recordAlbum's result).
     public static func plan(
         albums: [AlbumSnapshot],
         state: BackupState,
@@ -107,10 +132,12 @@ public enum BackupPlanner {
         excludingAssets: Set<String> = [],
         excludingAlbums: Set<String> = [],
         reuploadEdits: Bool = false,
-        uploadsHidden: Bool = false
+        uploadsHidden: Bool = false,
+        albumAddsThisRun: [String: Int] = [:]
     ) -> [PlannedStep] {
         let steps = planNew(albums: albums, state: state, mirrorAlbums: mirrorAlbums, batchSize: batchSize,
-                            excludingAssets: excludingAssets, excludingAlbums: excludingAlbums, uploadsHidden: uploadsHidden)
+                            excludingAssets: excludingAssets, excludingAlbums: excludingAlbums, uploadsHidden: uploadsHidden,
+                            albumAddsThisRun: albumAddsThisRun)
         guard reuploadEdits else { return steps }
         let changed = changedAssets(albums: albums, state: state, excluding: excludingAssets, includingHidden: uploadsHidden)
         return steps + changed.chunked(max(1, batchSize)).map { .reupload(assetIDs: $0) }
@@ -193,7 +220,8 @@ public enum BackupPlanner {
         batchSize: Int,
         excludingAssets: Set<String>,
         excludingAlbums: Set<String>,
-        uploadsHidden: Bool
+        uploadsHidden: Bool,
+        albumAddsThisRun: [String: Int]
     ) -> [PlannedStep] {
         let batchSize = max(1, batchSize)
         var planned = excludingAssets
@@ -203,9 +231,9 @@ public enum BackupPlanner {
             let mirrored = mirrorAlbums && album.kind == .user && !excludingAlbums.contains(album.id)
             let toUpload = members(of: album, includingHidden: uploadsHidden).filter { state.uploaded[$0] == nil && !planned.contains($0) }
             planned.formUnion(toUpload)
-            // The rest go to the library only: hidden members, and members
-            // a linked album already had when it was linked.
-            let admitted = mirrored ? admitted(album, state: state) : []
+            // The rest go to the library only: hidden members, members a
+            // linked album already had when it was linked, and held ones.
+            let admitted = mirrored ? admission(album, state: state, addsThisRun: albumAddsThisRun[album.id] ?? 0).admitted : []
             let intoAlbum = toUpload.filter { admitted.contains($0) }
             let libraryOnly = toUpload.filter { !admitted.contains($0) }
             for batch in intoAlbum.chunked(batchSize) {
@@ -226,19 +254,48 @@ public enum BackupPlanner {
         return steps
     }
 
+    struct AlbumAdmission: Equatable {
+        /// May go into the Google album in this pass.
+        var admitted: Set<String>
+        /// Would go in, but wait for the owner, in album order.
+        var held: [String]
+    }
+
     /// The members of a mirrored album that may go into its Google album:
     /// never a hidden one; for an album not created yet, every other one;
     /// for a linked album, only those that joined the Photos album since
     /// (the app cannot see what the owner took out of the Google album, so
-    /// what it has a record of is never sent again). A linked album with
-    /// no record at all takes nothing: rebaselineUnknownMirrors gives it
-    /// one before planning, and the planner never refills it meanwhile.
-    static func admitted(_ album: AlbumSnapshot, state: BackupState) -> Set<String> {
+    /// what it has a record of is never sent again), and of those no more
+    /// than linkedAlbumAddLimit in one run unless approved; past it, every
+    /// unapproved one is held. A linked album with no record at all takes
+    /// nothing: rebaselineUnknownMirrors gives it one before planning, and
+    /// the planner never refills it meanwhile.
+    static func admission(_ album: AlbumSnapshot, state: BackupState, addsThisRun: Int) -> AlbumAdmission {
         let visible = album.visibleAssetIDs
-        guard let mirror = state.mirrors[album.id], mirror.googleAlbumID != nil else { return Set(visible) }
+        guard let mirror = state.mirrors[album.id], mirror.googleAlbumID != nil else {
+            return AlbumAdmission(admitted: Set(visible), held: [])
+        }
         let recorded = mirror.recordedAssetIDs
-        guard !recorded.isEmpty else { return [] }
-        return Set(visible.filter { !recorded.contains($0) })
+        guard !recorded.isEmpty else { return AlbumAdmission(admitted: [], held: []) }
+        let newcomers = visible.filter { !recorded.contains($0) }
+        let approved = mirror.approvedAssetIDs ?? []
+        let counted = newcomers.filter { !approved.contains($0) }
+        guard !counted.isEmpty, counted.count + addsThisRun > linkedAlbumAddLimit else {
+            return AlbumAdmission(admitted: Set(newcomers), held: [])
+        }
+        return AlbumAdmission(admitted: Set(newcomers.filter { approved.contains($0) }), held: counted)
+    }
+
+    /// The photos waiting for the owner, per selected album that already
+    /// has a Google album, in planning order. Only meaningful while albums
+    /// are mirrored.
+    public static func heldAlbumAdds(albums: [AlbumSnapshot], state: BackupState,
+                                     albumAddsThisRun: [String: Int] = [:]) -> [HeldAlbumAdds] {
+        order(albums).compactMap { album in
+            guard album.kind == .user, state.selectedAlbumIDs.contains(album.id) else { return nil }
+            let held = admission(album, state: state, addsThisRun: albumAddsThisRun[album.id] ?? 0).held
+            return held.isEmpty ? nil : HeldAlbumAdds(albumID: album.id, title: album.title, assetIDs: held)
+        }
     }
 
     /// The album id of a hand-picked upload step: the only steps whose

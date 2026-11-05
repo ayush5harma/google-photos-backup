@@ -176,6 +176,12 @@ final class BackupEngine {
     @ObservationIgnored private var messagesOnly = false
     @ObservationIgnored private var failedAssets = Set<String>()
     @ObservationIgnored private var failedAlbums = Set<String>()
+    /// Guard C (2): per album, the photos this run added by itself to a
+    /// Google album linked before it (BackupState.recordAlbum's count),
+    /// which BackupPlanner.linkedAlbumAddLimit caps.
+    @ObservationIgnored private var albumAddsThisRun: [String: Int] = [:]
+    /// Albums whose held adds this run already put in the timeline.
+    @ObservationIgnored private var heldAlbumsLogged = Set<String>()
     /// The batch being exported or sent; Retry leaves these alone.
     @ObservationIgnored private var inFlight = Set<String>()
     @ObservationIgnored private var retries = RetryTracker()
@@ -477,6 +483,8 @@ final class BackupEngine {
         lastError = nil
         failedAssets = []
         failedAlbums = []
+        albumAddsThisRun = [:]
+        heldAlbumsLogged = []
         retries = RetryTracker()
         tally = RunTally()
         meter = ThroughputMeter()
@@ -584,12 +592,38 @@ final class BackupEngine {
         // not even as an edit (Photos' analysis or a favourite can move
         // its date mid-run), so every asset goes to Google at most once
         // per run and re-uploads cannot keep the passes going.
-        return BackupPlanner.plan(picked: picked, state: model.state, batchSize: settings.batchSize)
+        let steps = BackupPlanner.plan(picked: picked, state: model.state, batchSize: settings.batchSize)
             + BackupPlanner.plan(albums: albums, state: model.state, mirrorAlbums: settings.mirrorAlbums,
                                  batchSize: settings.batchSize,
                                  excludingAssets: failedAssets.union(picked).union(tally.confirmedIDs),
                                  excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits,
-                                 uploadsHidden: model.isPrimaryActive)
+                                 uploadsHidden: model.isPrimaryActive, albumAddsThisRun: albumAddsThisRun)
+        if settings.mirrorAlbums { logHeldAlbumAdds(in: albums) }
+        return steps
+    }
+
+    /// Guard C (2): adds held back from an album that already exists go in
+    /// the timeline as a problem, once per album and run; the Overview
+    /// offers "Add them" and "Skip" for each (AppModel.heldAlbumAdds).
+    private func logHeldAlbumAdds(in albums: [AlbumSnapshot]) {
+        let held = BackupPlanner.heldAlbumAdds(albums: albums, state: model.state, albumAddsThisRun: albumAddsThisRun)
+        for album in held where heldAlbumsLogged.insert(album.albumID).inserted {
+            let count = album.assetIDs.count
+            model.log(.photos, "\(count.formatted()) photo\(count == 1 ? "" : "s") waiting to be added to \"\(album.title)\": more than "
+                      + "\(BackupPlanner.linkedAlbumAddLimit) would have gone into a Google album that already exists, so none were sent. "
+                      + "Add them or skip them on the Overview.", problem: true)
+        }
+    }
+
+    /// Records what an album call put in, and counts it against the run's
+    /// limit for albums linked before the call. A call that creates the
+    /// album passes its visible members, which may all follow uncounted.
+    private func recordAlbum(_ albumID: String, googleAlbumID: String, added: [String]) {
+        let members = model.state.mirrors[albumID]?.googleAlbumID == nil
+            ? model.albums.first { $0.id == albumID }?.snapshot.visibleAssetIDs ?? []
+            : []
+        let counted = model.state.recordAlbum(albumID, googleAlbumID: googleAlbumID, added: added, members: members)
+        if counted > 0 { albumAddsThisRun[albumID, default: 0] += counted }
     }
 
     /// Guard C (1): a linked album found with no record of its members is
@@ -1103,7 +1137,7 @@ final class BackupEngine {
                     case let .album(googleID, _, addedKeys):
                         if let album {
                             let added = addedKeys.map { self.model.state.assets(confirmed, withMediaKeys: $0) } ?? confirmed
-                            self.model.state.recordAlbum(album.id, googleAlbumID: googleID, added: added)
+                            self.recordAlbum(album.id, googleAlbumID: googleID, added: added)
                         }
                     case let .albumFailed(message):
                         guard let album else { break }
@@ -1306,7 +1340,7 @@ final class BackupEngine {
                         missingKeys += keys
                     case let .album(googleID, _, addedKeys):
                         let added = addedKeys.map { self.model.state.assets(pending, withMediaKeys: $0) } ?? pending
-                        self.model.state.recordAlbum(albumID, googleAlbumID: googleID, added: added)
+                        self.recordAlbum(albumID, googleAlbumID: googleID, added: added)
                         progressed = progressed || !added.isEmpty
                     case let .fatal(kind, message):
                         fatal = (kind, message)

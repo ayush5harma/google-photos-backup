@@ -51,19 +51,27 @@ public struct AlbumMirror: Codable, Equatable, Sendable {
     /// as probes, since the bridge re-adds a probe to the album.
     public var addedAssetIDs: Set<String>
     /// Members taken as known without being sent: the whole album when its
-    /// record of members was found empty (rebaselineUnknownMirrors). Never
-    /// sent to the album and never a probe. nil when there are none, so a
-    /// record that never needed it is written exactly as before.
+    /// record of members was found empty (rebaselineUnknownMirrors), and
+    /// held members the owner chose to skip. Never sent to the album and
+    /// never a probe. nil when there are none, so a record that never
+    /// needed it is written exactly as before.
     public var knownAssetIDs: Set<String>?
+    /// Members cleared to go into the linked album whatever their number:
+    /// the ones the album was created with, until they are in (a first run
+    /// that stops part-way is not a re-add), and held members the owner
+    /// chose to add. Dropped as they go in; nil when there are none.
+    public var approvedAssetIDs: Set<String>?
 
-    public init(googleAlbumID: String? = nil, addedAssetIDs: Set<String> = [], knownAssetIDs: Set<String>? = nil) {
+    public init(googleAlbumID: String? = nil, addedAssetIDs: Set<String> = [], knownAssetIDs: Set<String>? = nil,
+                approvedAssetIDs: Set<String>? = nil) {
         self.googleAlbumID = googleAlbumID
         self.addedAssetIDs = addedAssetIDs
         self.knownAssetIDs = knownAssetIDs
+        self.approvedAssetIDs = approvedAssetIDs
     }
 
     private enum CodingKeys: String, CodingKey {
-        case googleAlbumID, addedAssetIDs, knownAssetIDs
+        case googleAlbumID, addedAssetIDs, knownAssetIDs, approvedAssetIDs
     }
 
     /// A mirror whose member list is missing (a hand edit, a damaged file)
@@ -75,6 +83,7 @@ public struct AlbumMirror: Codable, Equatable, Sendable {
         googleAlbumID = try container.decodeIfPresent(String.self, forKey: .googleAlbumID)
         addedAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .addedAssetIDs) ?? []
         knownAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .knownAssetIDs)
+        approvedAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .approvedAssetIDs)
     }
 
     /// Every member this mirror has a record of, sent or only known.
@@ -152,10 +161,49 @@ public struct BackupState: Codable, Equatable, Sendable {
         return assetIDs.filter { uploaded[$0].map { keys.contains($0.mediaKey) } ?? false }
     }
 
-    public mutating func recordAlbum(_ albumID: String, googleAlbumID: String, added assetIDs: some Sequence<String>) {
+    /// - Parameter members: the Photos album's visible members, read when
+    ///   this call creates the Google album: they may all still go in on a
+    ///   later pass or run without counting as re-adds.
+    /// - Returns: how many of `assetIDs` went into an album that was linked
+    ///   already without being approved, which the run counts against
+    ///   BackupPlanner.linkedAlbumAddLimit.
+    @discardableResult
+    public mutating func recordAlbum(_ albumID: String, googleAlbumID: String, added assetIDs: some Sequence<String>,
+                                     members: [String] = []) -> Int {
         var mirror = mirrors[albumID] ?? AlbumMirror()
+        let added = Set(assetIDs)
+        var approved = mirror.approvedAssetIDs ?? []
+        let counted: Int
+        if mirror.googleAlbumID == nil {
+            approved.formUnion(members)
+            counted = 0
+        } else {
+            counted = added.subtracting(mirror.addedAssetIDs).subtracting(approved).count
+        }
         mirror.googleAlbumID = googleAlbumID
-        mirror.addedAssetIDs.formUnion(assetIDs)
+        mirror.addedAssetIDs.formUnion(added)
+        approved.subtract(mirror.addedAssetIDs)
+        mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
+        mirrors[albumID] = mirror
+        return counted
+    }
+
+    /// "Add them": the owner clears held members to go into the album.
+    public mutating func approveAlbumAdds(_ albumID: String, assetIDs: some Sequence<String>) {
+        guard var mirror = mirrors[albumID] else { return }
+        let approved = (mirror.approvedAssetIDs ?? []).union(assetIDs).subtracting(mirror.recordedAssetIDs)
+        mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
+        mirrors[albumID] = mirror
+    }
+
+    /// "Skip": held members are recorded as known, and never sent.
+    public mutating func skipAlbumAdds(_ albumID: String, assetIDs: some Sequence<String>) {
+        guard var mirror = mirrors[albumID] else { return }
+        let skipped = Set(assetIDs)
+        guard !skipped.isEmpty else { return }
+        mirror.knownAssetIDs = (mirror.knownAssetIDs ?? []).union(skipped)
+        let approved = (mirror.approvedAssetIDs ?? []).subtracting(skipped)
+        mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
         mirrors[albumID] = mirror
     }
 
@@ -172,6 +220,7 @@ public struct BackupState: Codable, Equatable, Sendable {
         for album in albums where album.kind == .user && selectedAlbumIDs.contains(album.id) && !album.assetIDs.isEmpty {
             guard var mirror = mirrors[album.id], mirror.googleAlbumID != nil, mirror.recordedAssetIDs.isEmpty else { continue }
             mirror.knownAssetIDs = Set(album.assetIDs)
+            mirror.approvedAssetIDs = nil
             mirrors[album.id] = mirror
             rebaselined.append(RebaselinedAlbum(albumID: album.id, title: album.title, count: album.assetIDs.count))
         }

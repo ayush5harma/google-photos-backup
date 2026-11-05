@@ -236,11 +236,19 @@ final class AppModel {
         didSet {
             summaryCache = nil
             accountSummaries = [:]
+            heldCache = nil
         }
     }
     private(set) var albumsLoaded = false
     private(set) var photosStatus: PHAuthorizationStatus
-    var state: BackupState { didSet { summaryCache = nil } }
+    var state: BackupState {
+        didSet {
+            summaryCache = nil
+            heldCache = nil
+        }
+    }
+    /// heldAlbumAdds, kept like the summary; keyed by what else it reads.
+    @ObservationIgnored private var heldCache: (key: [String], notices: [HeldAlbumNotice])?
     /// The summary walks every selected asset; the menu bar label and the
     /// panel read it many times per progress tick, so it is kept until the
     /// albums or the state change.
@@ -605,6 +613,54 @@ final class AppModel {
 
     var selectedAlbums: [LibraryAlbum] { albums.filter { state.selectedAlbumIDs.contains($0.id) } }
 
+    /// Guard C (2): photos held back from a Google album that already
+    /// exists, per account and album, each waiting for "Add them" or
+    /// "Skip". Empty while albums are not mirrored.
+    struct HeldAlbumNotice: Identifiable, Equatable {
+        let account: String
+        /// The account's address, when there are several to tell apart.
+        let accountTitle: String?
+        let held: HeldAlbumAdds
+
+        var id: String { account + "\u{1F}" + held.albumID }
+        var count: Int { held.assetIDs.count }
+    }
+
+    var heldAlbumAdds: [HeldAlbumNotice] {
+        let albums = albums, state = state, accounts = accounts, mirrored = settings.mirrorAlbums
+        let key = accounts.map(\.id) + [mirrored ? "mirrored" : "unmirrored"]
+        if let heldCache, heldCache.key == key { return heldCache.notices }
+        var notices: [HeldAlbumNotice] = []
+        if mirrored {
+            let snapshots = albums.map(\.snapshot)
+            for account in accounts {
+                guard var record = record(of: account.id) else { continue }
+                record.selectedAlbumIDs = state.selectedAlbumIDs
+                notices += BackupPlanner.heldAlbumAdds(albums: snapshots, state: record).map {
+                    HeldAlbumNotice(account: account.id, accountTitle: accounts.count > 1 ? account.title : nil, held: $0)
+                }
+            }
+        }
+        heldCache = (key, notices)
+        return notices
+    }
+
+    /// "Add them": the held photos go into the album, starting now when
+    /// nothing is running (a running pass picks them up at its next one).
+    func addHeldPhotos(_ notice: HeldAlbumNotice) {
+        changeRecord(of: notice.account) { $0.approveAlbumAdds(notice.held.albumID, assetIDs: notice.held.assetIDs) }
+        log(.photos, "Adding the \(notice.count.formatted()) held photo\(notice.count == 1 ? "" : "s") to \"\(notice.held.title)\", as asked.")
+        if !isBackingUp { backUpPhotosNow(to: .only(notice.account), trigger: .manual) }
+    }
+
+    /// "Skip": the held photos are recorded as known and never sent to the
+    /// album; photos added to it later still go in.
+    func skipHeldPhotos(_ notice: HeldAlbumNotice) {
+        changeRecord(of: notice.account) { $0.skipAlbumAdds(notice.held.albumID, assetIDs: notice.held.assetIDs) }
+        log(.photos, "Skipped the \(notice.count.formatted()) held photo\(notice.count == 1 ? "" : "s") for \"\(notice.held.title)\": "
+            + "they stay out of its Google album.")
+    }
+
     func progress(of album: LibraryAlbum) -> AlbumProgress {
         BackupPlanner.progress(of: album.snapshot, state: state, includingHidden: isPrimaryActive)
     }
@@ -917,6 +973,7 @@ final class AppModel {
         change(&record)
         accountLibrary.update(record, for: id)
         accountSummaries[id] = nil
+        heldCache = nil
         do {
             try accountsStore.save(record, file: account.stateFile)
         } catch {
