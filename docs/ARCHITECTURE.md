@@ -39,8 +39,12 @@ permanent; `RetryPolicy` and `RetryTracker` give three attempts with a capped
 backoff; `RateLimiter` holds every upload after an HTTP 429; `ConditionsEvaluator`
 turns network and power conditions plus the four pause settings into one wait
 reason; `EditStamp` in the backup state tells whether a photo was edited after
-its backup; `RunTally` counts each item once per run. The `BackupEngine` in the
-app calls them between bridge runs.
+its backup; `RunTally` counts each item once per run; `UploadParallelism` picks
+how many uploads go at once from each batch's speed and Google's pushback,
+`ThroughputMeter` turns the bridge's progress into MB/s and time left, and
+`StagingWindow` bounds how far the export runs ahead. The `BackupEngine` in the
+app calls them between bridge requests, all sent to one bridge process per run
+(`BridgeSession`), while `ExportAhead` exports the next batches.
 
 **Conditions.** `ConditionsMonitor` watches the network path and power state
 and feeds `ConditionsEvaluator`. An automatic run that is blocked never starts;

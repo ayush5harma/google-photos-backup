@@ -16,13 +16,15 @@ struct FakeRuntime {
     let logs: URL
     let log: URL
 
-    init() throws {
+    /// - Parameter bridge: another gpmc_bridge.py to run (the benchmark's
+    ///   baseline is an earlier release's); the repository's by default.
+    init(bridge: URL? = nil) throws {
         let files = FileManager.default
         root = files.temporaryDirectory.appendingPathComponent("photos-backup-tests-\(UUID().uuidString)", isDirectory: true)
         let repo = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let bridgeDirectory = root.appendingPathComponent("runtime", isDirectory: true)
         try files.createDirectory(at: bridgeDirectory, withIntermediateDirectories: true)
-        try files.copyItem(at: repo.appendingPathComponent("Bridge/gpmc_bridge.py"), to: bridgeDirectory.appendingPathComponent("gpmc_bridge.py"))
+        try files.copyItem(at: bridge ?? repo.appendingPathComponent("Bridge/gpmc_bridge.py"), to: bridgeDirectory.appendingPathComponent("gpmc_bridge.py"))
         try files.copyItem(at: repo.appendingPathComponent("Tests/E2E/fake_gpmc"), to: bridgeDirectory.appendingPathComponent("site-packages"))
         runtime = BridgeRuntime(python: URL(fileURLWithPath: Self.python), script: bridgeDirectory.appendingPathComponent("gpmc_bridge.py"))
         staging = root.appendingPathComponent("staging", isDirectory: true)

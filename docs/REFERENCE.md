@@ -58,12 +58,21 @@ Apple Photos ──PhotoKit──▶ Photos Backup.app ──JSON over a pipe─
    shows into a staging folder: the edited rendition if there is one,
    otherwise the original. Originals still in iCloud ("Optimize Mac Storage")
    are downloaded first. Each file's modification date is set to its capture
-   date, because gpmc sends that as the timestamp.
-3. **Upload.** `Bridge/gpmc_bridge.py` hands the batch to gpmc one file at a
-   time. gpmc hashes each file and asks Google whether it already has those
-   bytes ("Already backed up"), uploads the rest, and returns a media key for
-   every item. The app records each key as soon as Google confirms it. That
-   hash check is also why resetting the history never uploads anything twice.
+   date, because gpmc sends that as the timestamp. While one batch uploads, the
+   next two are exported ("Ready to upload"), one at a time, and the next export
+   starts only while less than 2 GB waits, so the network does not wait on
+   Photos. An export ahead stops whenever the run waits or a pause setting
+   applies; its batch exports the rest on its turn.
+3. **Upload.** One `Bridge/gpmc_bridge.py` process serves the whole run and
+   hands each batch to gpmc one file at a time, the largest first, several at
+   once (see Parallel uploads). gpmc hashes each file and asks Google whether
+   it already has those bytes ("Already backed up"), uploads the rest, and
+   returns a media key for every item. The bridge keeps its connections to
+   Google open between files and batches. The app records each key as soon as
+   Google confirms it. That hash check is also why resetting the history
+   never uploads anything twice. Every upload, whatever the parallelism, goes
+   to gpmc with the same two flags for the chosen quality; Original is the
+   Pixel XL commit.
 4. **Albums.** If "Recreate my albums" is on, each of your own albums gets a
    Google Photos album of the same name. It is created by its first batch, and
    later batches and later runs append to it. Smart albums and All Photos only
@@ -101,6 +110,15 @@ refusing, and is at most 600 s; it returns to 60 s after a batch gets through.
 A run sits through at most five holds with nothing getting through in between
 (1, 2, 4, 8 and 10 minutes); the next 429 ends the run as failed, so a run cannot
 hold forever and keep automatic runs from starting.
+
+**Parallel uploads.** With "Choose parallel uploads automatically" on, a run
+starts with 4 uploads at once and adds one after each batch that was at least
+10% faster in bytes a second, up to 8; the first step that is not faster goes
+back to the best level and stays there. A 429 halves the level and two or more
+retryable failures in one batch take one off, for the rest of the run. With it
+off, the number chosen is the most a run uses. The Activity window and the menu
+bar panel show the speed and the time left, and the diagnostic report adds the
+average speed, the current level and why, and each past run's MB/s.
 
 **Conditions.** Four settings pause uploads (see Backup settings). They apply to
 automatic runs only: launch, timer, library change, wake, a cleared condition,
@@ -216,7 +234,8 @@ outside its range is clamped when settings load.
 | Setting (UI) | Key | Default | Range |
 |---|---|---|---|
 | Upload quality | `quality` | Pixel XL original quality (`original`) | `original`, `saver` (Storage saver), `quota` (Original, counts against storage). Google controls actual storage accounting. |
-| Parallel uploads | `threads` | 2 | 1 to 8 |
+| Choose parallel uploads automatically | `threadsAutomatic` | on | Starts at 4 uploads at once, adds one while that is at least 10% faster, up to 8; a 429 halves it and repeated server errors take one off, for the rest of the run. Settings saved before it existed decode as on when Parallel uploads was the old default of 2, and keep the chosen number otherwise. |
+| At most, uploads at once | `threads` | 2 | 1 to 8; used when automatic is off, as the most a run uses |
 | Items per batch | `batchSize` | 20 | 5 to 100, in steps of 5 |
 | Recreate my albums in Google Photos | `mirrorAlbums` | on | |
 | Back up edits again | `reuploadEdits` | on | |
@@ -418,7 +437,18 @@ swift test                                                # Swift Testing
 python3 -B -m unittest discover -s Bridge/tests           # bridge tests against a fake gpmc
 SNAPSHOT_FIXTURE=1 scripts/snapshots.sh /tmp/shots        # fixture screenshots
 scripts/e2e.py --app "build/Photos Backup.app"            # end-to-end run
+git show v0.5.7:Bridge/gpmc_bridge.py > /tmp/gpmc_bridge_0.5.7.py
+PHOTOS_BACKUP_BENCH=1 PHOTOS_BACKUP_BENCH_BASELINE_BRIDGE=/tmp/gpmc_bridge_0.5.7.py \
+  swift test --filter UplinkBenchmarkTests                # ~500 items over a simulated link
 ```
+
+**Release check: Original stays free.** Every upload path sends Original as
+gpmc's `saver=False, use_quota=False` (tests in `Bridge/tests/test_uplink.py`,
+`test_original_real_gpmc.py` with `GPMC_SITE_PACKAGES` set), but only Google
+decides what counts against storage. Before a release, note the account's
+storage figure at one.google.com/storage, back up one new video of a few
+hundred MB at Original quality, and check the next day that the figure has not
+grown by that much.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for what each layer covers and what the
 end-to-end run needs.
@@ -431,8 +461,9 @@ end-to-end run needs.
   runner, the engine, Keychain, SwiftUI views, the menu bar panel and the
   Settings tabs.
 - `Bridge/gpmc_bridge.py`: the line protocol. Its docstring is the
-  specification: one JSON request on stdin, NDJSON events on stdout, logs on
-  stderr. The pinned gpmc version is in `Bridge/requirements.txt`.
+  specification: one JSON request on stdin (or, from the Mac app, a serve
+  session of one request per line), NDJSON events on stdout, logs on stderr.
+  The pinned gpmc version is in `Bridge/requirements.txt`.
 - The bridge log is `~/Library/Application Support/io.github.ayush5harma.PhotosBackup/Logs/bridge.log`
   (Settings > Advanced > Show Logs in Finder).
 
