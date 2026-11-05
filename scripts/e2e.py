@@ -4,6 +4,8 @@ fake Google.
 
     scripts/e2e.py --app <Photos Backup.app built by scripts/build-app.sh> [--work <dir>] [--only s1,s2]
 
+Several Google accounts (#49): --only launch,connect,photos,migrate,accounts,choice
+
 What it does:
   1. Builds the debug binary and puts it in a copy of the given bundle (which
      carries the Python runtime), signed with the same identity, so the copy
@@ -46,6 +48,27 @@ BUNDLE_ID = "io.github.ayush5harma.PhotosBackup"
 LSREGISTER = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 FAKE_AUTH = ("androidId=0123456789abcdef&app=com.google.android.apps.photos&client_sig=0&"
              "Email=e2e.tester%40example.com&service=oauth2&Token=aas_et/E2E-FAKE-TOKEN-NOT-A-SECRET")
+# A second made-up account, for the several-accounts scenarios.
+FAKE_AUTH_2 = FAKE_AUTH.replace("e2e.tester%40example.com", "e2e.second%40example.com")
+FIRST_ACCOUNT, SECOND_ACCOUNT = "e2e.tester@example.com", "e2e.second@example.com"
+SANDBOX_KEYCHAIN = BUNDLE_ID + ".auth-data.sandbox"
+
+
+def clear_sandbox_keychain() -> None:
+    """Every item of the sandbox keychain service: one per account since #49,
+    and the "gpmc" item from before. Never the app's own service."""
+    for _ in range(20):
+        if subprocess.run(["security", "delete-generic-password", "-s", SANDBOX_KEYCHAIN], capture_output=True).returncode != 0:
+            break
+
+
+def sandbox_keychain_has(account: str) -> bool:
+    return subprocess.run(["security", "find-generic-password", "-s", SANDBOX_KEYCHAIN, "-a", account],
+                          capture_output=True).returncode == 0
+
+
+def quoted(auth: str) -> str:
+    return auth.replace("&", "%26").replace("=", "%3D")
 
 
 class Harness:
@@ -89,8 +112,7 @@ class Harness:
         self.sandbox.mkdir(parents=True)
         run([str(REPO / "Tests/E2E/make_fake_runtime.sh"), str(self.runtime)])
         subprocess.run(["defaults", "delete", BUNDLE_ID + ".sandbox"], capture_output=True)
-        subprocess.run(["security", "delete-generic-password", "-s", BUNDLE_ID + ".auth-data.sandbox", "-a", "gpmc"],
-                       capture_output=True)
+        clear_sandbox_keychain()
         self.scenario({})
 
     def scenario(self, values: dict[str, Any]) -> None:
@@ -405,7 +427,10 @@ def s_controls(h: Harness) -> None:
     album, count = s_recheck(h)
     h.scenario({"delay": 1.5})
     h.launch("open")
-    h.settings(threads=1, batchSize=5)
+    # Serial on purpose: with automatic parallelism (on by default since #50)
+    # threads=1 is ignored, four uploads finish the first batch at once and the
+    # export-ahead batch starts before the Pause lands (6 of 6, 2026-11-05).
+    h.settings(threads=1, threadsAutomatic=False, batchSize=5)
     h.link("backup/photos")
     h.wait("the run to start uploading", lambda s: s["phase"] == "running" and s["runDone"] >= 1, timeout=180, poll=1)
     h.link("pause")
@@ -424,7 +449,7 @@ def s_controls(h: Harness) -> None:
     h.check("no uploader left running after Stop",
             subprocess.run(["pgrep", "-f", str(h.runtime / "gpmc_bridge.py")], capture_output=True).returncode != 0)
     h.scenario({})
-    h.settings(threads=2, batchSize=20)
+    h.settings(threads=2, threadsAutomatic=True, batchSize=20)
 
 
 def s_conditions(h: Harness) -> None:
@@ -543,10 +568,167 @@ def s_diagnostics(h: Harness) -> None:
     h.check("persisted events are redacted", "aas_et/E2E" not in events and "e2e.tester@example.com" not in events)
 
 
+def account(state: dict[str, Any], email: str) -> dict[str, Any] | None:
+    return next((a for a in state.get("accounts", []) if a.get("email") == email), None)
+
+
+def newest_run(state: dict[str, Any]) -> str | None:
+    """The newest run's id (the dump lists at most 20, newest first)."""
+    return state["runs"][0].get("id") if state.get("runs") else None
+
+
+def s_accounts(h: Harness) -> None:
+    """A second Google account (#49): it waits for its storage check, then
+    gets the same album in its own Google account, one account after the
+    other, as Original quality; Remove and signing in again lose nothing and
+    create no second album. Runs after connect and photos."""
+    # migrate relaunches the app just before this; reading the album list
+    # before it has loaded again found no album (StopIteration, 2026-11-05).
+    s = h.wait("albums to load", lambda s: s["albumsLoaded"] and s.get("selectedAlbumIDs"), timeout=180)
+    album_id = s["selectedAlbumIDs"][0]
+    count = next(a["count"] for a in s["albums"] if a["id"] == album_id)
+    first = account(s, FIRST_ACCOUNT)
+    h.check("the first account holds the photos run", first is not None and first["uploadedCount"] >= count)
+    first_album = first["mirrors"][album_id]["googleAlbumID"]
+    # From here each account is a Google account of its own in the fake.
+    h.scenario({"per_account": True})
+
+    h.link(f"debug/connect?auth={quoted(FAKE_AUTH_2)}")
+    s = h.wait("the second account", lambda s: account(s, SECOND_ACCOUNT) is not None, timeout=60)
+    second = account(s, SECOND_ACCOUNT)
+    h.check("a second account is added next to the first", [a["email"] for a in s["accounts"]] == [FIRST_ACCOUNT, SECOND_ACCOUNT])
+    h.check("each account has its own keychain item", sandbox_keychain_has(FIRST_ACCOUNT) and sandbox_keychain_has(SECOND_ACCOUNT))
+    h.check("the added account waits for its storage check", second["storageChecked"] is False and second["uploadedCount"] == 0)
+
+    newest = newest_run(s)
+    h.link("backup/photos")
+    s = h.wait("a run that skips the unchecked account", lambda s: idle(s) and not s["passRunning"] and newest_run(s) != newest, timeout=300)
+    h.check("no upload goes to an account before its storage check", account(s, SECOND_ACCOUNT)["uploadedCount"] == 0)
+
+    h.link(f"debug/confirm-storage?account={SECOND_ACCOUNT}")
+    s = h.wait("the second account's first backup",
+               lambda s: idle(s) and not s["passRunning"] and account(s, SECOND_ACCOUNT)["summary"]["pending"] == 0, timeout=900)
+    second = account(s, SECOND_ACCOUNT)
+    first = account(s, FIRST_ACCOUNT)
+    ledger = h.ledger()
+    sent = [u for u in ledger["uploads"] if u.get("account") == SECOND_ACCOUNT and u["status"] == "uploaded"]
+    h.check("the second account receives every item", second["summary"]["backedUp"] == count and len(sent) == count,
+            f"{len(sent)} uploads for {count} items")
+    h.check("the second account gets an album of its own", bool(second["mirrors"].get(album_id, {}).get("googleAlbumID"))
+            and second["mirrors"][album_id]["googleAlbumID"] != first_album)
+    h.check("the first account's album link is untouched", first["mirrors"][album_id]["googleAlbumID"] == first_album)
+    h.check("every upload is Original quality on the Pixel XL path",
+            all(u.get("saver") is False and u.get("use_quota") is False for u in ledger["uploads"] if "saver" in u))
+    h.check("the run is recorded with its account", any(r.get("account") == SECOND_ACCOUNT for r in s["runs"]))
+    h.check("the primary account is active again", s["activeAccount"] == FIRST_ACCOUNT)
+
+    h.link(f"debug/remove?account={SECOND_ACCOUNT}")
+    s = h.wait("the second account to be removed", lambda s: account(s, SECOND_ACCOUNT) is None, timeout=30)
+    h.check("Remove leaves the first account alone", account(s, FIRST_ACCOUNT)["uploadedCount"] == first["uploadedCount"]
+            and sandbox_keychain_has(FIRST_ACCOUNT) and not sandbox_keychain_has(SECOND_ACCOUNT))
+
+    h.link(f"debug/connect?auth={quoted(FAKE_AUTH_2)}")
+    s = h.wait("the second account again", lambda s: account(s, SECOND_ACCOUNT) is not None, timeout=60)
+    again = account(s, SECOND_ACCOUNT)
+    h.check("signing in again restores its record", again["uploadedCount"] == second["uploadedCount"] and again["storageChecked"])
+    albums_before = len(h.ledger().get("accounts", {}).get(SECOND_ACCOUNT, {}).get("albums", {}))
+    uploads_before = len(h.ledger()["uploads"])
+    newest = newest_run(s)
+    h.link("backup/photos")
+    h.wait("another pass", lambda s: idle(s) and not s["passRunning"] and newest_run(s) != newest, timeout=300)
+    after = h.ledger()
+    h.check("no album is created twice", len(after.get("accounts", {}).get(SECOND_ACCOUNT, {}).get("albums", {})) == albums_before)
+    h.check("nothing is uploaded twice", len([u for u in after["uploads"][uploads_before:] if u["status"] == "uploaded"]) == 0)
+    h.scenario({})
+
+
+def s_choice(h: Harness) -> None:
+    """Back up to (#49, the owner's choice), with the real Photos library:
+    with the primary left out, backup/photos goes to the chosen account
+    only; ?account= sends a one-off to the account left out without
+    changing the choice; an unknown address is logged and ignored. Runs
+    after accounts (two accounts, both past their storage check)."""
+    h.scenario({"per_account": True})
+    s = h.state()
+    h.check("two accounts to choose from", [a["email"] for a in s["accounts"]] == [FIRST_ACCOUNT, SECOND_ACCOUNT])
+    h.check("backups go to all accounts by default", s.get("backUpTo") == "all")
+    # Re-check both, so each has the whole album to back up again (the
+    # fake answers "already there" for what its account holds).
+    h.link(f"debug/recheck?account={FIRST_ACCOUNT}")
+    h.link(f"debug/recheck?account={SECOND_ACCOUNT}")
+    h.link(f"debug/include?account={FIRST_ACCOUNT}&on=0")
+    s = h.wait("the primary left out", lambda s: s.get("backUpTo") == "chosen" and account(s, FIRST_ACCOUNT)["uploadedCount"] == 0
+               and account(s, SECOND_ACCOUNT)["uploadedCount"] == 0, timeout=30)
+    h.check("only the second account is included",
+            account(s, FIRST_ACCOUNT)["included"] is False and account(s, SECOND_ACCOUNT)["included"] is True)
+
+    newest = newest_run(s)
+    h.link("backup/photos")
+    s = h.wait("a backup to the chosen account", lambda s: idle(s) and not s["passRunning"] and newest_run(s) != newest
+               and account(s, SECOND_ACCOUNT)["summary"]["pending"] == 0, timeout=600)
+    h.check("the chosen account gets the album", account(s, SECOND_ACCOUNT)["summary"]["pending"] == 0)
+    h.check("the account left out gets nothing", account(s, FIRST_ACCOUNT)["uploadedCount"] == 0)
+    h.check("the run is the chosen account's", s["runs"][0].get("account") == SECOND_ACCOUNT)
+
+    newest = newest_run(s)
+    h.link(f"backup/photos?account={FIRST_ACCOUNT}")
+    s = h.wait("a one-off to the account left out", lambda s: idle(s) and not s["passRunning"] and newest_run(s) != newest
+               and account(s, FIRST_ACCOUNT)["summary"]["pending"] == 0, timeout=600)
+    h.check("a link naming an account backs up to it", account(s, FIRST_ACCOUNT)["summary"]["pending"] == 0)
+    h.check("and to no other", s["runs"][0].get("account") == FIRST_ACCOUNT
+            and (len(s["runs"]) < 2 or s["runs"][1].get("account") == SECOND_ACCOUNT))
+    h.check("the choice is unchanged", s["backUpTo"] == "chosen" and account(s, FIRST_ACCOUNT)["included"] is False)
+    h.check("every upload is Original quality on the Pixel XL path",
+            all(u.get("saver") is False and u.get("use_quota") is False for u in h.ledger()["uploads"] if "saver" in u))
+
+    newest = newest_run(s)
+    h.link("backup?account=nobody%40example.com")
+    s = h.wait("the unknown account to be logged",
+               lambda s: any("which is not an account signed in here" in e["message"] for e in s["events"]), timeout=30)
+    time.sleep(2)
+    s = h.state()
+    h.check("an unknown account is ignored, never guessed", newest_run(s) == newest and not s["passRunning"])
+
+    h.link("debug/back-up-to?choice=all")
+    s = h.wait("all accounts again", lambda s: s.get("backUpTo") == "all", timeout=30)
+    h.check("All accounts includes both", all(a["included"] for a in s["accounts"]))
+    h.scenario({})
+
+
+def s_migrate(h: Harness) -> None:
+    """The upgrade from one account: state.json as the last single-account
+    version left it and the "gpmc" keychain item. Runs after photos."""
+    support = h.sandbox / "Support"
+    state_path = support / "state.json"
+    pre_accounts = support / "state.json.pre-accounts"
+    h.quit()
+    # The copy beside accounts.json too: left in place, the next launch
+    # restores the list from it instead of migrating. And the one-time copy
+    # of state.json, which is written only when none exists.
+    for leftover in [support / "accounts.json", support / "accounts.json.bak", pre_accounts, *support.glob("state-*.json")]:
+        leftover.unlink(missing_ok=True)
+    before = state_path.read_bytes()
+    clear_sandbox_keychain()
+    # -A: the test copy reads it without a keychain prompt, as the app's own
+    # item would be readable by the app that wrote it.
+    run(["security", "add-generic-password", "-A", "-s", SANDBOX_KEYCHAIN, "-a", "gpmc", "-w", FAKE_AUTH])
+    h.launch("open")
+    s = h.wait("the account to load", lambda s: s.get("accounts"), timeout=60)
+    first = account(s, FIRST_ACCOUNT)
+    h.check("state.json becomes the first account's record", first is not None and first["stateFile"] == "state.json")
+    h.check("the gpmc item moves to its account", sandbox_keychain_has(FIRST_ACCOUNT) and not sandbox_keychain_has("gpmc"))
+    h.check("state.json is byte for byte what it was", state_path.read_bytes() == before)
+    h.check("the album links survive", all(m.get("googleAlbumID") for m in first["mirrors"].values()) and bool(first["mirrors"]))
+    h.check("accounts.json is written", (support / "accounts.json").exists())
+    h.check("state.json.pre-accounts is the state.json from before the upgrade",
+            pre_accounts.exists() and pre_accounts.read_bytes() == before)
+
+
 SCENARIOS: dict[str, Callable[[Harness], None]] = {
     "guard": s_guard, "launch": s_launch, "connect": s_connect, "photos": s_photos, "retry": s_retry, "rate-limit": s_rate_limit,
     "controls": s_controls, "conditions": s_conditions, "shell": s_shell,
     "messages-no-access": s_messages_without_access, "messages": s_messages, "diagnostics": s_diagnostics,
+    "migrate": s_migrate, "accounts": s_accounts, "choice": s_choice,
 }
 
 
@@ -590,8 +772,7 @@ def main() -> int:
             subprocess.run([LSREGISTER, "-u", str(harness.app)], capture_output=True)
             shutil.rmtree(harness.app, ignore_errors=True)
             subprocess.run(["defaults", "delete", BUNDLE_ID + ".sandbox"], capture_output=True)
-            subprocess.run(["security", "delete-generic-password", "-s", BUNDLE_ID + ".auth-data.sandbox", "-a", "gpmc"],
-                           capture_output=True)
+            clear_sandbox_keychain()
     return harness.report()
 
 

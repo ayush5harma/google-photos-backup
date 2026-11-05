@@ -140,7 +140,7 @@ final class ICloudSource {
             notice = "The iCloud helper is unavailable. Reinstall Photos Backup and try again."
             return
         }
-        guard let auth = model.authData else {
+        guard let auth = model.primaryAuthData else {
             notice = "Connect your Google Photos account before starting this backup."
             return
         }
@@ -154,7 +154,7 @@ final class ICloudSource {
     }
 
     func previewReclaim() {
-        guard operation == nil, hasConfirmedSelection, let auth = model.authData,
+        guard operation == nil, hasConfirmedSelection, let auth = model.primaryAuthData,
               !reclaimSelection.isEmpty, reclaimSelection.count <= 100 else { return }
         reclaimAuth = auth; reclaimAccount = account; reclaimToken = nil
         phase = .backingUp
@@ -164,7 +164,7 @@ final class ICloudSource {
 
     func reclaimVerifiedCopies() {
         guard operation == nil, let token = reclaimToken, reclaimCount > 0,
-              hasConfirmedSelection, account == reclaimAccount, let auth = model.authData,
+              hasConfirmedSelection, account == reclaimAccount, let auth = model.primaryAuthData,
               auth == reclaimAuth else { reclaimToken = nil; return }
         reclaimToken = nil
         phase = .backingUp

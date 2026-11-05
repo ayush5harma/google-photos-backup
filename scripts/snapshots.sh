@@ -6,7 +6,7 @@
 #
 #   scripts/snapshots.sh <out-dir>
 #   SNAPSHOT_AUTH='androidId=...&Token=bogus' scripts/snapshots.sh <out-dir>
-#   SNAPSHOT_FIXTURE=1 scripts/snapshots.sh <out-dir> [sections,settings,onboarding,menubar,links]
+#   SNAPSHOT_FIXTURE=1 scripts/snapshots.sh <out-dir> [sections,settings,accounts,onboarding,menubar,links]
 #
 # SNAPSHOT_AUTH goes through Settings' save path; use a throwaway value.
 # Needs build/Photos Backup.app from scripts/build-app.sh for the runtime.

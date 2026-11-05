@@ -77,8 +77,9 @@ Apple Photos ──PhotoKit──▶ Photos Backup.app ──JSON over a pipe─
    Google Photos album of the same name. It is created by its first batch, and
    later batches and later runs append to it. Smart albums and All Photos only
    upload their items.
-5. **Record.** Media keys and album links go to
-   `~/Library/Application Support/io.github.ayush5harma.PhotosBackup/state.json`
+5. **Record.** Media keys and album links go to the account's record in
+   `~/Library/Application Support/io.github.ayush5harma.PhotosBackup/`
+   (`state.json` for the first account, `state-<hash>.json` for each one added)
    after every batch, and the staging copies are deleted.
 
 With **Back up automatically** on, a run starts at launch, 30 seconds after the
@@ -113,7 +114,7 @@ hold forever and keep automatic runs from starting.
 
 **Parallel uploads.** With "Choose parallel uploads automatically" on, a run
 starts with 4 uploads at once and adds one after each batch that was at least
-10% faster in bytes a second, up to 8; the first step that is not faster goes
+10% faster in bytes a second, up to 16; the first step that is not faster goes
 back to the best level and stays there. A 429 halves the level and two or more
 retryable failures in one batch take one off, for the rest of the run. With it
 off, the number chosen is the most a run uses. The Activity window and the menu
@@ -159,9 +160,47 @@ What happens underneath follows [gotohp](https://github.com/xob0t/gotohp)
 The sign-in page runs in a web view with a throwaway session; the web view
 identifies itself as Safari, whose engine it is, because Google turns away
 sign-ins from web views it takes for embedded browsers. Only the resulting
-`auth_data` is kept, in your login keychain. Signing in to a different Google
-account resets the backup history, because media keys and albums belong to
-the account that holds them.
+`auth_data` is kept, in your login keychain.
+
+### Several Google accounts
+
+**Add Account** in Settings > Account runs the same sign-in for another
+account, and the selected albums are backed up to every account, one account
+after another (one uploader at a time, all at the chosen quality; Original
+quality is the free Pixel XL path for each of them). Each account has a record
+of its own, so media keys and Google album links never move between accounts:
+switching, removing and signing in again never recreate an album. An account
+added next to another waits for its storage check: Settings shows how many
+selected items it lacks and roughly how large they are, whether the quality
+counts against its storage, and a link to its Google One storage page (Google
+does not tell the app an account's free space). **Remove** signs one account
+out and deletes its keychain item; the others are not touched and its record is
+kept for a later sign-in. Messages media, chosen photos, connected-device
+imports and iCloud go to the first (primary) account only. One keychain item per
+account: the app's service with the account's address as the account name; the
+single item from before (account name `gpmc`) moves to its account at launch.
+
+**Back up to** (Settings > Account, shown with more than one account) decides
+where Back Up Now, automatic backups and `photosbackup://backup` go:
+
+- **All accounts**: every signed-in account, an account added later included.
+  This is the default, and what an upgrade from one account or from an earlier
+  multi-account build starts with.
+- **Only the accounts I choose**: the accounts whose **Include in backups** is
+  ticked (in Settings and as a switch on the Overview's Google accounts card).
+  Choosing starts with every account ticked; unticking an account while backups
+  go to all of them switches to choosing, with the others kept. An account added
+  later is not ticked until its storage check's **Start Backing Up**, or a tick.
+
+An account left out reads "Not included", and the ring, "To back up" and the
+status count only the accounts a run goes to; with every account left out the
+status says so. The arrow next to **Back Up Now** (also the menu bar panel's
+accounts button and **Backup > Back Up To**) backs up once to all accounts or to
+one, whatever the choice, without changing it. The primary account keeps taking
+Messages media, chosen photos, device imports and iCloud even when it is left
+out of photo backups: then its turn in a backup carries Messages media alone,
+and a pick or device import uploads only what was picked, never the selected
+albums. The choice is stored in `accounts.json` next to the shared selection.
 
 If the in-app page will not work, **Other ways to connect** accepts the
 `oauth_token` cookie copied from Safari's Web Inspector, or a whole `auth_data`
@@ -234,8 +273,8 @@ outside its range is clamped when settings load.
 | Setting (UI) | Key | Default | Range |
 |---|---|---|---|
 | Upload quality | `quality` | Pixel XL original quality (`original`) | `original`, `saver` (Storage saver), `quota` (Original, counts against storage). Google controls actual storage accounting. |
-| Choose parallel uploads automatically | `threadsAutomatic` | on | Starts at 4 uploads at once, adds one while that is at least 10% faster, up to 8; a 429 halves it and repeated server errors take one off, for the rest of the run. Settings saved before it existed decode as on when Parallel uploads was the old default of 2, and keep the chosen number otherwise. |
-| At most, uploads at once | `threads` | 2 | 1 to 8; used when automatic is off, as the most a run uses |
+| Choose parallel uploads automatically | `threadsAutomatic` | on | Starts at 4 uploads at once, adds one while that is at least 10% faster, up to 16; a 429 halves it and repeated server errors take one off, for the rest of the run. Settings saved before it existed decode as on when Parallel uploads was the old default of 2, and keep the chosen number otherwise. |
+| At most, uploads at once | `threads` | 2 | 1 to 16; used when automatic is off, as the most a run uses |
 | Items per batch | `batchSize` | 20 | 5 to 100, in steps of 5 |
 | Recreate my albums in Google Photos | `mirrorAlbums` | on | |
 | Back up edits again | `reuploadEdits` | on | |
@@ -343,7 +382,9 @@ folder.
 
 | File (Application Support) | Holds | Limit |
 |---|---|---|
-| `state.json` | media keys, album links, edit stamps | none |
+| `state.json` | the first account's media keys, album links, edit stamps | none |
+| `state-<hash>.json` | the same for each added account | none |
+| `accounts.json` | the accounts in run order, the shared album selection, "Back up to" and each account's tick, storage checks | none |
 | `history.json` | run history: trigger, counts, bytes, outcome, conditions | 40 runs |
 | `events.json` | event timeline | 400 events, none older than 14 days |
 | `messages-archive.json` | summary of the last archive run | one |
@@ -372,7 +413,15 @@ folder.
 See the table in the README. A link runs the same code as the matching button.
 `photosbackup://open/home` still works and means `overview`. Backing up needs a
 signed-in account; `backup/photos` also needs Photos access; `archive` needs the
-archive turned on. A link that cannot run is recorded in the timeline. Every run
+archive turned on. `backup` and `backup/photos` go where **Back up to** says;
+`?account=<address>` (for example `photosbackup://backup?account=me@example.com`)
+sends either one to that account only, once, without changing the choice, and
+compares the address as Google does (case, and Gmail's dots and
+`googlemail.com`, do not matter). A link whose `account` is empty, is not one
+address, is given twice, or is on `backup/messages-media` (only the primary takes
+Messages media) is not followed; an address no signed-in account has is logged
+and ignored, never matched to another account. A link that cannot run is
+recorded in the timeline. Every run
 a link starts is recorded with the trigger "Shortcut or link". The table lives in
 `Sources/PhotosBackupCore/AutomationCommand.swift` and the actions in
 `Sources/PhotosBackup/Automation.swift`.

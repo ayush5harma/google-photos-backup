@@ -141,6 +141,21 @@ class OriginalQualityOnRealGpmcTests(unittest.TestCase):
         self.assertEqual(self.calls, 1 + 4 * 24)
         self.assertLessEqual(len(self.adapters_used), 8 + 1)
 
+    def test_sixteen_threads_commit_original_over_gpmcs_real_sessions(self):
+        # The 16-stream ceiling: real requests Sessions and HTTPAdapters (only
+        # send is replaced), one session a thread, kept for the next request.
+        code, events = self.serve(self.upload(self.stage(48), threads=16),
+                                  self.upload(self.stage(16, offset=48), threads=16))
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual([e for e in events if e["type"] == "item_failed"], [])
+        self.assertEqual(len(self.commits), 64)
+        for commit in self.commits:
+            self.assertEqual(commit["2"]["3"], "Pixel XL")
+            self.assertEqual(commit["1"]["7"], QUALITY_FIELD["original"])
+        self.assertEqual(self.calls, 1 + 4 * 64)
+        self.assertLessEqual(len(self.adapters_used), 16 + 1)
+
     def test_a_token_that_expires_during_a_request_is_renewed_once(self):
         # PR #52 review: gpmc 0.9.0 renews an expired token with no lock, so
         # eight upload threads finding it expired signed in eight times.

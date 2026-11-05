@@ -52,10 +52,21 @@ extension AppModel {
         photosStatus == .authorized || photosStatus == .limited || library.isAuthorized
     }
 
+    /// The primary account's address; `state` may be another account's
+    /// while a pass is on it.
     var accountEmail: String? {
-        if case let .connected(email) = account { return email ?? state.accountEmail }
-        return state.accountEmail
+        if case let .connected(email?) = account { return email }
+        return primaryAccount?.email
     }
+
+    /// Where the run in progress is going, when there is more than one
+    /// account to tell apart.
+    var runningAccountEmail: String? {
+        guard accounts.count > 1, let id = runner.current else { return nil }
+        return accounts.first { $0.id == id }?.title
+    }
+
+    static let noAccountHeadline = "No account is included in backups"
 
     /// AppModel.describe words a full Google account this way.
     var isStorageFull: Bool {
@@ -64,7 +75,7 @@ extension AppModel {
 
     var status: MenuBarStatus {
         let engine = engine
-        let summary = summary
+        let summary = overallSummary
         let activity: MenuBarStatus.Activity = switch engine.phase {
         case .idle: .idle
         case .running: .running
@@ -74,10 +85,10 @@ extension AppModel {
         case .waiting: .waiting(engine.waitReason)
         }
         let accountProblem = if case .failed = account { true } else { false }
+        let problem = isStorageFull ? "Google storage is full" : (noAccountIncluded ? Self.noAccountHeadline : nil)
         return MenuBarStatus(.init(signedIn: hasAuthData, accountProblem: accountProblem, activity: activity,
                                    remaining: engine.remaining, pending: summary.pending, total: summary.total,
-                                   failed: engine.failedCount, problem: isStorageFull ? "Google storage is full" : nil,
-                                   archiving: archive.isRunning))
+                                   failed: engine.failedCount, problem: problem, archiving: archive.isRunning))
     }
 
     var iCloudMenuStatus: ICloudMenuStatus {
@@ -106,14 +117,15 @@ extension AppModel {
     /// else the share of the selection Google has.
     var displayFraction: Double {
         if engine.isActive, engine.runTotal > 0 { return engine.runFraction }
-        let summary = summary
+        let summary = overallSummary
         return summary.total == 0 ? 0 : Double(summary.backedUp) / Double(summary.total)
     }
 
     /// The selection's share in Google Photos, rounded down: 99.6% must
-    /// not read as 100% while items are still missing.
+    /// not read as 100% while items are still missing. With several
+    /// accounts, the share of every copy the accounts are to hold.
     var coverageText: String {
-        let summary = summary
+        let summary = overallSummary
         guard summary.total > 0 else { return "0%" }
         let percent = summary.pending == 0 ? 100 : min(99, summary.backedUp * 100 / summary.total)
         return "\(percent)%"
@@ -133,6 +145,8 @@ extension AppModel {
         case .attention:
             if !hasAuthData { return "Not signed in" }
             if isStorageFull || account.isFailed { return "Backups are stopped" }
+            // Messages media still goes to the primary when it is on.
+            if noAccountIncluded { return "Photo backups are stopped" }
             return "\(engine.failedCount.formatted()) need another try"
         }
     }
@@ -166,6 +180,11 @@ extension AppModel {
                                        detail: "Turn on Photos Backup in Privacy & Security.", actionTitle: "Open Settings",
                                        action: .openPhotosPrivacy))
             }
+        }
+        if noAccountIncluded {
+            items.append(Attention(id: "no-account", symbol: "person.crop.circle.badge.xmark", title: Self.noAccountHeadline,
+                                   detail: "Tick Include in backups for an account, or back up to all accounts.",
+                                   actionTitle: "Choose Accounts…", action: .openSettings(.account)))
         }
         if isStorageFull {
             items.append(Attention(id: "storage", symbol: "exclamationmark.triangle.fill", title: "Google storage is full",

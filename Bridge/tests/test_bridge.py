@@ -31,8 +31,16 @@ class FakeHTTPError(Exception):
         self.response = type("Response", (), {"status_code": status})()
 
 
-# The Mac app's album: split dead keys out, with a key the album already holds.
+# The Mac app's album: split dead keys out. "member" is a key the album
+# already holds, which apps before 0.6.0 sent as a probe; the bridge must
+# never send it (re-adding it would put back a photo removed by hand).
 SPLIT_ALBUM = {"id": "album-1", "split_missing": True, "probe_media_keys": ["member"]}
+
+
+def keys_outside_request(client, media_keys):
+    """Keys any album call sent that the request itself was not adding."""
+    asked = set(media_keys)
+    return sorted({key for call in client.album_calls for key in call[2]} - asked)
 
 
 class FakeApi:
@@ -81,13 +89,25 @@ class FakeApi:
             raise self.photos_error
         return None
 
+    def get_download_urls(self, media_key):
+        # Read-only: what Google would hand out to download the item. A key
+        # Google no longer has answers 404, as an album call does.
+        self.client.read_calls.append(media_key)
+        if self.client.read_error:
+            raise self.client.read_error
+        if media_key in self.client.dead_keys:
+            raise FakeHTTPError(404)
+        return {"1": {"5": {"2": {"6": f"https://lh3.googleusercontent.com/{media_key}=d"}}}}
+
 
 class FakeClient:
     """Behaves like gpmc.Client for the calls the bridge makes."""
 
     def __init__(self, existing=(), failing=(), auth_error=None, album_error=None, on_album=None, odd_keys=None,
-                 dead_keys=(), album_gone=False, append_error=None, on_append=None, flaky=()):
+                 dead_keys=(), album_gone=False, append_error=None, on_append=None, flaky=(), read_error=None):
         self.api = FakeApi(auth_error)
+        self.read_calls = []
+        self.read_error = read_error
         self.dead_keys = set(dead_keys)
         self.album_gone = album_gone
         self.append_error = append_error
@@ -336,40 +356,117 @@ class UploadTests(unittest.TestCase):
 
         self.assertEqual(code, gpmc_bridge.EXIT_OK)
         live = [key for key in keys if key not in ("k7", "k900")]
-        accepted = sum((call[2] for call in client.album_calls if not set(call[2]) & client.dead_keys and call[2] != ["member"]), [])
+        accepted = sum((call[2] for call in client.album_calls if not set(call[2]) & client.dead_keys), [])
         self.assertEqual(accepted, live)
         self.assertEqual(of_type(events, "missing_media"), [{"type": "missing_media", "v": 1, "media_keys": ["k7", "k900"]}])
         self.assertEqual(of_type(events, "album"), [{"type": "album", "v": 1, "album_id": "album-1", "added": 1198, "media_keys": live}])
-        # One album check, then about two calls per halving for each dead key.
-        self.assertLess(len(client.album_calls), 3 + 1 + 2 * 2 * 10)
+        self.assertEqual(keys_outside_request(client, keys), [])
+        # About two calls per halving for each dead key.
+        self.assertLess(len(client.album_calls), 3 + 2 * 2 * 10)
 
-    def test_a_single_dead_key_on_a_live_album_is_reported_missing(self):
+    def test_one_dead_key_among_live_ones_adds_the_live_ones_and_reports_only_it(self):
+        # Liveness comes from the request's own adds: once one goes in, a
+        # key refused on its own is a dead key, to be uploaded again.
         client = FakeClient(dead_keys={"gone"})
-        code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["gone"], "album": SPLIT_ALBUM}, client)
-
-        self.assertEqual(code, gpmc_bridge.EXIT_OK)
-        self.assertEqual(client.album_calls, [("id", "album-1", ["gone"]), ("id", "album-1", ["member"])])
-        self.assertEqual(of_type(events, "missing_media")[0]["media_keys"], ["gone"])
-        self.assertEqual(of_type(events, "album")[0]["media_keys"], [])
-
-    def test_a_deleted_album_fails_after_one_check_without_splitting(self):
-        client = FakeClient(album_gone=True)
-        keys = [f"k{i}" for i in range(500)]
+        keys = ["k0", "gone", "k2", "k3"]
         code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": keys, "album": SPLIT_ALBUM}, client)
 
-        self.assertEqual(code, gpmc_bridge.EXIT_INTERNAL)
-        self.assertEqual(len(client.album_calls), 2)
-        self.assertEqual(of_type(events, "missing_media"), [])
-        self.assertIn("404", events[-1]["message"])
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual(of_type(events, "missing_media"), [{"type": "missing_media", "v": 1, "media_keys": ["gone"]}])
+        self.assertEqual(of_type(events, "album"), [{"type": "album", "v": 1, "album_id": "album-1", "added": 3,
+                                                     "media_keys": ["k0", "k2", "k3"]}])
+        self.assertEqual(keys_outside_request(client, keys), [], "a key the album already holds was sent")
 
-    def test_with_nothing_to_check_the_album_by_a_refusal_stays_the_albums(self):
+    def test_a_dead_key_refused_before_any_add_still_counts_once_one_goes_in(self):
         client = FakeClient(dead_keys={"gone"})
-        album = {"id": "album-1", "split_missing": True}
-        code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["gone", "k1"], "album": album}, client)
+        keys = ["gone", "k1"]
+        code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": keys, "album": SPLIT_ALBUM}, client)
 
-        self.assertEqual(code, gpmc_bridge.EXIT_INTERNAL)
-        self.assertEqual(len(client.album_calls), 1)
-        self.assertEqual(of_type(events, "missing_media"), [])
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual(of_type(events, "missing_media")[0]["media_keys"], ["gone"])
+        self.assertEqual(of_type(events, "album")[0]["media_keys"], ["k1"])
+        self.assertEqual(keys_outside_request(client, keys), [])
+
+    def test_a_deleted_album_reads_its_keys_back_alive_and_fails_with_none_missing(self):
+        # Every add refused, and each refused key reads back alive: it is the
+        # album that refuses. Nothing is reported missing (nothing is uploaded
+        # again or re-added), and no photo the album holds is ever sent.
+        for keys in (["k0"], ["k0", "k1", "k2"], [f"k{i}" for i in range(500)]):
+            client = FakeClient(album_gone=True)
+            code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": keys, "album": SPLIT_ALBUM}, client)
+
+            self.assertEqual(code, gpmc_bridge.EXIT_INTERNAL, keys[:3])
+            self.assertEqual(of_type(events, "missing_media"), [], keys[:3])
+            self.assertEqual(of_type(events, "album"), [], keys[:3])
+            self.assertIn("404", events[-1]["message"])
+            self.assertEqual(keys_outside_request(client, keys), [], keys[:3])
+            self.assertLessEqual(len(client.album_calls), gpmc_bridge.ALBUM_REFUSAL_BUDGET + 1)
+            self.assertLessEqual(len(client.read_calls), gpmc_bridge.ALBUM_READ_BUDGET)
+            self.assertTrue(set(client.read_calls) <= set(keys))
+
+    def test_a_lone_dead_key_is_read_back_missing_with_no_add_outside_the_request(self):
+        # Review of feat/53-guards, MAJOR 3: with the probe gone, a request
+        # whose only key is dead failed the album every run and the photo was
+        # never uploaded again. A read-only lookup of the refused key settles
+        # it: never a re-add.
+        for keys, dead in ((["gone"], {"gone"}), (["k0", "k1", "k2"], {"k0", "k1", "k2"})):
+            client = FakeClient(dead_keys=dead)
+            code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": keys, "album": SPLIT_ALBUM}, client)
+
+            self.assertEqual(code, gpmc_bridge.EXIT_OK, keys)
+            self.assertEqual(of_type(events, "missing_media"), [{"type": "missing_media", "v": 1, "media_keys": keys}])
+            self.assertEqual(sorted(client.read_calls), sorted(keys))
+            self.assertEqual(keys_outside_request(client, keys), [])
+            self.assertEqual({key for call in client.album_calls for key in call[2]}, set(keys), "only the request's own keys were added")
+
+    def test_keys_that_cannot_be_read_back_are_never_reported_missing(self):
+        for error in (FakeHTTPError(403), RuntimeError("no answer")):
+            client = FakeClient(dead_keys={"gone"}, read_error=error)
+            code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["gone"], "album": SPLIT_ALBUM}, client)
+
+            self.assertEqual(code, gpmc_bridge.EXIT_INTERNAL)
+            self.assertEqual(of_type(events, "missing_media"), [])
+            self.assertIn("404", events[-1]["message"], "the album's own refusal is what the app hears")
+
+    def test_once_an_add_goes_in_nothing_is_read_back(self):
+        client = FakeClient(dead_keys={"gone"})
+        run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k0", "gone"], "album": SPLIT_ALBUM}, client)
+        self.assertEqual(client.read_calls, [])
+
+    def test_reads_are_bounded(self):
+        keys = [f"k{i}" for i in range(gpmc_bridge.ALBUM_READ_BUDGET + 10)]
+        client = FakeClient(dead_keys=set(keys))
+        code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": keys, "album": SPLIT_ALBUM}, client)
+
+        self.assertEqual(len(client.read_calls), gpmc_bridge.ALBUM_READ_BUDGET)
+        self.assertEqual(sorted(of_type(events, "missing_media")[0]["media_keys"]), sorted(client.read_calls))
+        self.assertEqual(code, gpmc_bridge.EXIT_INTERNAL, "keys left unread keep the refusal the album's")
+
+    def test_no_album_call_ever_sends_a_key_its_request_is_not_adding(self):
+        scenarios = [
+            ({"dead_keys": {"k3", "k8"}}, [f"k{i}" for i in range(10)], SPLIT_ALBUM),
+            ({"dead_keys": {"k0"}}, ["k0", "k1"], dict(SPLIT_ALBUM, probe_media_keys=["m1", "m2", "m3"])),
+            ({"album_gone": True}, ["k0", "k1", "k2"], dict(SPLIT_ALBUM, probe_media_keys=["m1", "m2", "m3"])),
+            ({"dead_keys": {"gone"}}, ["gone", "k1", "k2", "k3"], {"name": "Trip", "split_missing": True}),
+            ({}, ["k0", "k1"], {"id": "album-1"}),
+        ]
+        for options, keys, album in scenarios:
+            client = FakeClient(**options)
+            run({"command": "add-to-album", "auth_data": AUTH, "media_keys": keys, "album": album}, client)
+            self.assertTrue(client.album_calls, options)
+            self.assertEqual(keys_outside_request(client, keys), [], options)
+
+        client = FakeClient(dead_keys={"key-a.jpg"})
+        run({"command": "upload", "auth_data": AUTH, "items": items("a.jpg", "b.jpg"), "album": dict(SPLIT_ALBUM, name="Trip")}, client)
+        self.assertEqual(keys_outside_request(client, ["key-a.jpg", "key-b.jpg"]), [])
+
+    def test_probe_keys_from_an_older_app_are_accepted_and_ignored(self):
+        client = FakeClient()
+        album = {"id": "album-1", "split_missing": True, "probe_media_keys": ["1", "2", "3", "4"]}
+        code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k"], "album": album}, client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual(client.album_calls, [("id", "album-1", ["k"])])
 
     def test_a_new_album_is_created_from_the_first_live_keys(self):
         client = FakeClient(dead_keys={"gone"})
@@ -420,7 +517,7 @@ class UploadTests(unittest.TestCase):
             if len(calls) == 4:
                 stop.request()
 
-        # Calls: all ten (refused), the album check, k0-k4 (refused), k0-k1.
+        # Calls: all ten (refused), k0-k4 (refused), k0-k1, k2-k4 (refused).
         client = FakeClient(dead_keys={"k3", "k8"}, on_append=stop_on_fourth_call)
         keys = [f"k{i}" for i in range(10)]
         code, events, _ = run({"command": "add-to-album", "auth_data": AUTH, "media_keys": keys, "album": SPLIT_ALBUM}, client, stop=stop)
@@ -429,13 +526,6 @@ class UploadTests(unittest.TestCase):
         self.assertEqual(len(calls), 4)
         self.assertEqual(of_type(events, "album"), [{"type": "album", "v": 1, "album_id": "album-1", "added": 2, "media_keys": ["k0", "k1"]}])
         self.assertEqual(events[-1], {"type": "stopped", "v": 1})
-
-    def test_the_album_check_stops_at_the_first_photo_it_takes_back(self):
-        client = FakeClient(dead_keys={"gone"})
-        album = dict(SPLIT_ALBUM, probe_media_keys=["m1", "m2", "m3"])
-        run({"command": "add-to-album", "auth_data": AUTH, "media_keys": ["gone"], "album": album}, client)
-
-        self.assertEqual(client.album_calls, [("id", "album-1", ["gone"]), ("id", "album-1", ["m1"])])
 
     def test_a_passing_503_on_an_album_append_is_tried_again(self):
         waits = []
@@ -665,7 +755,6 @@ class OtherCommandTests(unittest.TestCase):
             {"command": "upload", "auth_data": AUTH, "items": items("a.jpg"), "quality": "best"},
             {"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k"], "album": {}},
             {"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k"], "album": {"id": "a", "split_missing": "yes"}},
-            {"command": "add-to-album", "auth_data": AUTH, "media_keys": ["k"], "album": {"id": "a", "probe_media_keys": ["1", "2", "3", "4"]}},
             {"command": "upload", "auth_data": AUTH, "items": [dict(items("a.jpg")[0], force="yes")]},
             {"command": "explode"},
         ]
