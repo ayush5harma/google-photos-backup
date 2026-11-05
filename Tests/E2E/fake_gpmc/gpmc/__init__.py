@@ -28,6 +28,7 @@ Scenario keys (all optional):
                                  answers 404, as Google does for a key it
                                  no longer has
   "delay": 0.2                   seconds each file takes (to test Stop)
+  "refuse_accounts": ["<email>"] sign-ins for these accounts answer 403
   "per_account": true            each account (the credential's Email) holds
                                  its own media and albums, as separate Google
                                  accounts do, under "accounts" in the ledger
@@ -195,7 +196,7 @@ class Api:
             attempt = _count(data, "auth")
         if attempt <= scenario.get("auth_rate_limit_first", 0) or auth == "rate_limit":
             raise _error("429", "https://android.googleapis.com/auth")
-        if auth == "refuse":
+        if auth == "refuse" or self.account in scenario.get("refuse_accounts", []):
             raise _error("403", "https://android.googleapis.com/auth")
         if auth == "network":
             raise ConnectionError("HTTPSConnectionPool(host='android.googleapis.com', port=443): Max retries exceeded")
