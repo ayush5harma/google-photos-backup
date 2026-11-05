@@ -423,9 +423,37 @@ def _connect(request: Event, factory: ClientFactory) -> Any:
     if not isinstance(timeout, int) or timeout <= 0:
         raise RequestError("`timeout` must be a positive integer")
     client = factory(auth_data, timeout)
+    _renew_one_at_a_time(client.api)
     _ = client.api.bearer_token
     return client
 
+
+# gpmc 0.9.0's bearer_token renews an expired token with no lock, from
+# whichever thread finds it expired. A serve session outlives the token (it
+# expires about an hour after sign-in), so every upload thread that reads it
+# during the renewal signed in again at once: up to MAX_THREADS sign-ins
+# (PR #52 review). Renewals now go one at a time, and a thread that waited
+# for one uses the token it brought. Without gpmc's _get_auth_token (a
+# fake, a later gpmc) this changes nothing.
+_RENEWAL_ATTRIBUTE = "_photos_backup_one_renewal"
+
+
+def _renew_one_at_a_time(api: Any) -> None:
+    renew = getattr(api, "_get_auth_token", None)
+    if renew is None or getattr(api, _RENEWAL_ATTRIBUTE, False):
+        return
+    lock = threading.Lock()
+
+    def renew_once() -> Any:
+        with lock:
+            cache = getattr(api, "auth_response_cache", None) or {}
+            # gpmc's own test for an expired token, the other way round.
+            if cache.get("Auth") and int(cache.get("Expiry", "0")) > int(time.time()):
+                return cache
+            return renew()
+
+    api._get_auth_token = renew_once
+    setattr(api, _RENEWAL_ATTRIBUTE, True)
 
 
 # gpmc 0.9.0 makes every call through `with self._new_session() as session:`,

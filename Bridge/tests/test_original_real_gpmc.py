@@ -14,6 +14,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -52,6 +53,9 @@ class OriginalQualityOnRealGpmcTests(unittest.TestCase):
         self.commits = []
         self.adapters_used = set()
         self.calls = 0
+        self.sign_ins = 0
+        # The first sign-in's token is expired when next read (see google()).
+        self.expires_at_once = False
         self.lock = threading.Lock()
         # gpmc keeps a cache under ~/.gpmc; nothing of the real home is touched.
         self.home = mock.patch.dict(os.environ, {"HOME": str(self.root)})
@@ -75,6 +79,13 @@ class OriginalQualityOnRealGpmcTests(unittest.TestCase):
             self.adapters_used.add(id(adapter))
         url = request.url
         if url == AUTH_URL:
+            with self.lock:
+                self.sign_ins += 1
+                first = self.sign_ins == 1
+            if self.expires_at_once and first:
+                return self.respond(request, text=f"Auth=bearer\nExpiry={int(time.time())}\n")
+            if self.expires_at_once:
+                time.sleep(0.2)  # Google takes a moment; the upload threads meet meanwhile
             return self.respond(request, text="Auth=bearer\nExpiry=9999999999\n")
         if url == HASH_URL:
             return self.respond(request, content=b"\x0a\x00")  # {"1": {}}: not in the library
@@ -129,6 +140,17 @@ class OriginalQualityOnRealGpmcTests(unittest.TestCase):
         # sign-in's own), where gpmc alone would open one per call.
         self.assertEqual(self.calls, 1 + 4 * 24)
         self.assertLessEqual(len(self.adapters_used), 8 + 1)
+
+    def test_a_token_that_expires_during_a_request_is_renewed_once(self):
+        # PR #52 review: gpmc 0.9.0 renews an expired token with no lock, so
+        # eight upload threads finding it expired signed in eight times.
+        self.expires_at_once = True
+        code, events = self.serve(self.upload(self.stage(8), threads=8))
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual([e for e in events if e["type"] == "item_failed"], [])
+        self.assertEqual(len(self.commits), 8)
+        self.assertEqual(self.sign_ins, 2, "the sign-in at connect, then one renewal for every thread")
 
     def test_the_same_reading_sees_the_paid_path(self):
         # The guard is not vacuous: quota is committed from a Pixel 8.
