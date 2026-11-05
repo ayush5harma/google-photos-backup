@@ -263,10 +263,21 @@ final class BackupEngine {
     /// Failed items that Retry would queue again.
     var failedCount: Int { failures.values.filter(isRetryable).count }
 
-    /// The account of a failure is still one a run can go to.
+    /// The account of a failure is still one a run can go to and, for a
+    /// library photo, one that takes the album selection on the pass Retry
+    /// starts: a photo is retried by planning the selection to its account
+    /// again. A one-off's failure for an account the choice leaves out once
+    /// had its failure cleared for a run that never planned it, and the row
+    /// ended "Stopped" (review of PR #68); now it stays failed, and another
+    /// one-off to that account tries it again. Retry never widens a run to
+    /// the whole selection for an account someone left out.
     private func isRetryable(_ failure: Failure) -> Bool {
-        guard let account = failure.account else { return false }
-        return model.runnableAccounts.contains { $0.id == account }
+        guard let account = failure.account, model.runnableAccounts.contains(where: { $0.id == account }) else { return false }
+        guard case .asset = failure.source else { return true }
+        // A run going on to it takes it on its next pass; otherwise the next
+        // run, whose plan for it follows the saved choice (defaultPlans).
+        if task != nil, let lane = lane(account), !lane.halted { return takesAlbums(lane) }
+        return model.isIncluded(account)
     }
 
     /// Whether the run in progress goes to `id`.
@@ -652,15 +663,23 @@ final class BackupEngine {
         meter = ThroughputMeter()
         rateLimits.runStarted()
         unstartedRecord = nil
-        // Assets are planned afresh, so their earlier failures are tried
-        // again anyway; a pick or a Messages item is only if Retry queues it.
-        if !messagesOnly { failures = failures.filter { if case .asset = $0.value.source { false } else { true } } }
         let messagesAlone = !messages.isEmpty && picked.isEmpty && deviceItems.isEmpty
         lanes = plans.map { plan in
             let lane = makeLane(plan)
             let messagesPart = messagesAlone && plan.account == model.primaryAccount?.id && !plan.photos
             lane.record = RunRecord(kind: messagesPart ? .messagesMedia : .photos, trigger: trigger, conditions: model.conditions.summary)
             return lane
+        }
+        // Assets are planned afresh for every account this run takes the
+        // selection to, so their earlier failures there are tried again
+        // anyway; another account's stay (isRetryable). A pick or a Messages
+        // item is only tried again if Retry queues it.
+        if !messagesOnly {
+            let planned = Set(lanes.filter(takesAlbums).map(\.account))
+            failures = failures.filter { _, failure in
+                guard case .asset = failure.source else { return true }
+                return failure.account.map { !planned.contains($0) } ?? false
+            }
         }
         retryAccounts.removeAll { account in plans.contains { $0.account == account } }
         #if DEBUG

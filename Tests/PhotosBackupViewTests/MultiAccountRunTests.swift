@@ -1045,6 +1045,58 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(model.engine.failedCount, 0)
     }
 
+    /// Review of PR #68, LOW-MEDIUM 5: Retry of a one-off's failure for an
+    /// account the choice leaves out cleared the failure and queued the
+    /// account, but the run that followed planned the selection only for
+    /// accounts the choice includes: the row ended "Stopped" and the failure
+    /// was gone. Now it stays failed and is not offered for Retry (which
+    /// would otherwise have to send the whole selection to an account that
+    /// was left out); another one-off to that account tries it again.
+    func testRetryKeepsAOneOffsFailureForAnAccountTheChoiceLeavesOut() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        model.setIncluded(secondID, false)
+        XCTAssertEqual(model.targetAccounts.map(\.id), [firstID])
+        let failing = try items(1, tag: "one-off-fails", prefix: "photo:")[0]
+        var batch = [failing]
+        model.runner.turn = { _, trigger in
+            model.engine.standInsForTesting = batch
+            model.engine.start(trigger: trigger)
+        }
+        let refused = "400 Client Error: Bad Request for url: https://photos.example.invalid/commit"
+        try scenario(["per_account": true, "fail": [failing.filename: refused]])
+        model.startBackupNow(to: .only(secondID))
+        try await settle(model)
+        let row = BackupEngine.row(secondID, failing.id)
+        XCTAssertTrue(model.engine.activity.contains { $0.id == row && $0.isFailed })
+
+        try scenario(["per_account": true])
+        XCTAssertFalse(model.canRetry(row), "no pass Retry starts would plan it")
+        XCTAssertEqual(model.engine.failedCount, 0)
+        model.retry(row)
+        model.retryFailed()
+        try await settle(model)
+        XCTAssertTrue(model.engine.activity.contains { $0.id == row && $0.isFailed }, "still failed, not stopped")
+        XCTAssertTrue(untouched([failing], in: model, secondID))
+
+        // A run to the accounts chosen leaves that failure alone too.
+        batch = try items(1, tag: "primary-run")
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertTrue(uploaded(batch, in: model, firstID))
+        XCTAssertTrue(model.engine.activity.contains { $0.id == row && $0.isFailed })
+
+        // Another one-off to it tries it again.
+        batch = [failing]
+        model.startBackupNow(to: .only(secondID))
+        try await settle(model)
+        XCTAssertTrue(uploaded([failing], in: model, secondID))
+        XCTAssertFalse(model.engine.activity.contains { $0.id == row && $0.isFailed })
+        XCTAssertFalse(model.isIncluded(secondID), "Retry and the one-offs leave the choice alone")
+    }
+
     /// Review of PR #68, MEDIUM 2: Check Connections refiled a sign-in that
     /// turned out to be another account's whenever it was not the active
     /// account's, though with the accounts side by side every lane writes
