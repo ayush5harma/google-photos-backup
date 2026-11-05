@@ -6,6 +6,7 @@ import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.AtomicFile
 import com.photosbackup.domain.Policy
+import com.photosbackup.domain.UploadParallelism
 import java.io.File
 import java.security.KeyStore
 import java.util.UUID
@@ -14,6 +15,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -75,6 +77,8 @@ data class BackupState(
     val connecting: Boolean = false,
     val notice: String = "",
     val quality: String = "original",
+    /** UploadParallelism.AUTOMATIC, or exactly this many uploads at once (issue #59). */
+    val parallelUploads: Int = UploadParallelism.AUTOMATIC,
     val generation: String = UUID.randomUUID().toString(),
 )
 
@@ -94,6 +98,8 @@ class Store private constructor(private val context: Context) {
                     running = false,
                     notice = "",
                     quality = j.optString("quality", "original"),
+                    parallelUploads = j.optInt("parallelUploads", UploadParallelism.AUTOMATIC)
+                        .coerceIn(UploadParallelism.AUTOMATIC, UploadParallelism.UNMETERED_CAP),
                     generation = j.optString("generation", UUID.randomUUID().toString()),
                 )
             }
@@ -107,6 +113,7 @@ class Store private constructor(private val context: Context) {
                 .put("generation", next.generation)
                 .put("email", next.email ?: "")
                 .put("quality", next.quality)
+                .put("parallelUploads", next.parallelUploads)
                 .put("items", JSONArray(next.items.map { it.json() }))
         var out: java.io.FileOutputStream? = null
         try {
@@ -296,6 +303,17 @@ class Store private constructor(private val context: Context) {
     @Synchronized
     fun updateFor(generation: String, change: (BackupState) -> BackupState) {
         if (state.value.generation == generation) update(change)
+    }
+
+    /** For what the screen shows but a restart need not keep (upload progress): update writes
+     * and reads back the whole queue, and with several uploads at once progress arrives many
+     * times a second. The next update persists whatever this left in the state.
+     *
+     * Lock-free, so it never waits behind update's disk write: a compare-and-set that retries
+     * on a state update set meanwhile, so it never undoes a persisted change. An update running
+     * across it may drop this change, which costs one progress refresh. */
+    fun showFor(generation: String, change: (BackupState) -> BackupState) {
+        state.update { if (it.generation == generation) change(it) else it }
     }
 
     companion object {

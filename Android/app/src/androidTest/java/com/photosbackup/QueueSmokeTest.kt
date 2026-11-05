@@ -61,6 +61,48 @@ class QueueSmokeTest {
     }
 
     @Test
+    fun aBatchConfirmsEveryItemAndSendsDuplicateBytesOnce() {
+        val store = Store.get(context)
+        store.disconnect()
+        store.connect("Email=synthetic%40example.test&Token=synthetic-test-only")
+        // Distinct sizes give distinct bytes; the last row is the first one's bytes again.
+        val fixtures = (1..3).map { side ->
+            File(context.cacheDir, "synthetic-$side.png").also { file ->
+                Bitmap.createBitmap(side + 1, side + 1, Bitmap.Config.ARGB_8888).also { bitmap ->
+                    file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+                    bitmap.recycle()
+                }
+            }
+        }
+        val copy = File(context.cacheDir, "synthetic-copy.png").also { fixtures[0].copyTo(it, overwrite = true) }
+        val items = (fixtures + copy).mapIndexed { index, file ->
+            MediaItem("synthetic-$index", Uri.fromFile(file).toString(), file.name)
+        }
+        store.update { it.copy(items = items) }
+        val executor = Executors.newSingleThreadExecutor()
+        try {
+            TestWorkerBuilder<DebugBackupWorker>(
+                    context,
+                    executor,
+                    workDataOf(
+                        "generation" to store.state.value.generation,
+                        "selection" to items.map { it.id }.toTypedArray(),
+                        "fixture" to "success",
+                    ),
+                )
+                .build()
+                .doWork()
+            val rows = store.state.value.items.associateBy { it.id }
+            items.forEach { assertEquals("synthetic-media-key", rows.getValue(it.id).key) }
+            assertEquals("Already backed up", rows.getValue("synthetic-3").status)
+            assertTrue(context.cacheDir.listFiles().orEmpty().none { it.name.startsWith("upload-") })
+        } finally {
+            executor.shutdownNow()
+            (fixtures + copy).forEach { it.delete() }
+        }
+    }
+
+    @Test
     fun failureNeverConfirms() {
         assertEquals("", runFixture("failure").key)
     }
