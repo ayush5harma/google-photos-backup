@@ -126,7 +126,7 @@ final class UplinkBenchmarkTests: XCTestCase {
         let batches = Array(library.chunked(into: 20))
         let session = BridgeSession()
         let ahead = ExportAhead<Batch>(bytes: \.bytes)
-        var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap)
+        var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap, automatic: true)
         var levels: [Int] = []
         var failed = 0
         defer { session.close() }

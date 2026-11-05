@@ -30,19 +30,38 @@ public struct UploadSample: Equatable, Sendable {
 
 /// How many uploads go at once, decided between bridge requests (issue #50).
 ///
-/// It starts at four and adds one while each step is measurably faster
-/// (10% more bytes a second); the first step that is not goes back to the
-/// best level and stays. A step that is not faster is the link's limit
-/// showing as longer per-file times, so that is also how rising latency
-/// reads here. Google pushing back ends the climb for the run: a 429 halves
-/// the level, two or more retryable failures in one request take one off,
-/// and the level only ever goes down after that. A chosen number in Settings
-/// is the most it uses.
+/// A number chosen in Settings is used from the run's first request. Through
+/// 0.6.0 it was only a ceiling for the climb below. Measured 2026-11-05 on
+/// 0.6.0 with 16 chosen and a run of small photos: about one photo a second
+/// (0.6-0.8 MB/s) on a 177 Mbit/s uplink, and a 5 s sample of the bridge had
+/// 4 uploads sending and 4 waiting on Google. Each photo is about four round
+/// trips (hash check, upload token, bytes, commit), so the photos in flight,
+/// not the bandwidth, set the pace.
+///
+/// Automatically, it starts at four and climbs the `ladder` while each step
+/// is measurably faster (10% more bytes a second than the best level so far).
+/// A step that is not faster is the link's limit showing as longer per-file
+/// times, so that is also how rising latency reads here; but one such step
+/// can as well be noise (a few slow commits, a batch of tiny files), so it
+/// climbs on, and only a second in a row goes back to the best level. A
+/// settled level is tried one step higher after `reprobeAfter` decisions,
+/// judged against its own latest rate, since the link a run starts on is not
+/// the one it has hours later. In either mode Google pushing back ends the
+/// climb for the run: a 429 halves the level, two or more retryable failures
+/// in one request take one off, and the level only ever goes down after that.
 public struct UploadParallelism: Equatable, Sendable {
-    /// The bridge's MAX_THREADS. A ceiling: the climb reaches it only while
-    /// each step keeps improving throughput.
-    public static let automaticCap = 16
+    /// The bridge's MAX_THREADS, and the most a chosen number may be. A
+    /// ceiling for the climb, which reaches it only while each step keeps
+    /// improving throughput. 32 since 2026-11-05: with each photo about four
+    /// round trips, the photos in flight bound a run of small photos long
+    /// before a 177 Mbit/s uplink does.
+    public static let automaticCap = 32
     public static let initial = 4
+    /// The levels the climb steps through, each at least a fifth more uploads
+    /// than the one before. With steps of one, a step at level L adds only
+    /// 1/L more in flight, so from about ten on no step could be 10% faster
+    /// even on a link that scales perfectly; such a link settled at 21 of 32.
+    public static let ladder = [4, 5, 6, 8, 10, 13, 16, 20, 25, 32]
     public static let improvement = 0.10
     /// A level is judged on at least this much: one batch of photos is
     /// usually enough, a batch of items Google already has is not.
@@ -50,21 +69,45 @@ public struct UploadParallelism: Equatable, Sendable {
     public static let decisionSeconds: TimeInterval = 4
     /// One passing 5xx is Google's noise, not pressure.
     public static let serverFailuresThatCount = 2
+    /// Steps in a row not faster than the best before the climb settles.
+    public static let missesToSettle = 2
+    /// Decisions at a settled level before it is tried one step higher: about
+    /// ten batches of photos, so a probe that is not faster costs a small
+    /// share of the run.
+    public static let reprobeAfter = 10
 
     private enum Reason: Equatable, Sendable {
-        case finding, noFaster(Int), most, rateLimited, serverTrouble
+        case finding, noFaster(Int), most, chosen, rateLimited, serverTrouble
+    }
+
+    private struct Rate: Equatable, Sendable {
+        let level: Int
+        let bytesPerSecond: Double
     }
 
     public let cap: Int
+    /// False: `cap` is the number chosen in Settings, used as it is.
+    public let automatic: Bool
     public private(set) var current: Int
     public private(set) var isClimbing: Bool
     private var reason = Reason.finding
-    private var best: (level: Int, rate: Double)?
+    private var best: Rate?
+    /// Steps in a row, since the best, that were not faster than it.
+    private var misses = 0
+    /// Decisions measured since the level settled.
+    private var settledDecisions = 0
     private var pendingBytes: Int64 = 0
     private var pendingSeconds: TimeInterval = 0
 
-    public init(cap: Int) {
+    public init(cap: Int, automatic: Bool) {
         self.cap = min(max(1, cap), Self.automaticCap)
+        self.automatic = automatic
+        guard automatic else {
+            current = self.cap
+            isClimbing = false
+            reason = .chosen
+            return
+        }
         current = min(Self.initial, self.cap)
         isClimbing = current < self.cap
         if !isClimbing { reason = .most }
@@ -79,26 +122,67 @@ public struct UploadParallelism: Equatable, Sendable {
             backOff(to: current - 1, because: .serverTrouble)
             return
         }
-        guard isClimbing, sample.items > 0, !sample.includesStartUp else { return }
+        // Only a climbing or a settled level measures; a chosen number, the
+        // cap reached and a level Google pushed back stay where they are.
+        guard isClimbing || isSettled, sample.items > 0, !sample.includesStartUp else { return }
         pendingBytes += sample.bytes
         pendingSeconds += sample.seconds
         guard pendingBytes >= Self.decisionBytes, pendingSeconds >= Self.decisionSeconds else { return }
-        let rate = Double(pendingBytes) / pendingSeconds
+        let rate = Rate(level: current, bytesPerSecond: Double(pendingBytes) / pendingSeconds)
         pendingBytes = 0
         pendingSeconds = 0
-        if let best, rate < best.rate * (1 + Self.improvement) {
-            reason = .noFaster(current)
-            current = best.level
-            isClimbing = false
+        if isClimbing {
+            climb(rate)
+        } else {
+            reprobe(rate)
+        }
+    }
+
+    private var isSettled: Bool {
+        if case .noFaster = reason { return true }
+        return false
+    }
+
+    private mutating func climb(_ rate: Rate) {
+        if let best, rate.bytesPerSecond < best.bytesPerSecond * (1 + Self.improvement) {
+            misses += 1
+            if misses >= Self.missesToSettle {
+                reason = .noFaster(current)
+                current = best.level
+                isClimbing = false
+                settledDecisions = 0
+            } else {
+                // At the cap this measures the same level once more.
+                current = step(above: current)
+            }
             return
         }
-        best = (current, rate)
+        best = rate
+        misses = 0
         if current < cap {
-            current += 1
+            current = step(above: current)
         } else {
             reason = .most
             isClimbing = false
         }
+    }
+
+    /// A decision at the settled level: its latest rate is the baseline the
+    /// next probe has to beat.
+    private mutating func reprobe(_ rate: Rate) {
+        best = rate
+        settledDecisions += 1
+        guard settledDecisions >= Self.reprobeAfter else { return }
+        reason = .finding
+        misses = 0
+        isClimbing = true
+        current = step(above: current)
+    }
+
+    /// The next rung of the ladder above `level`, never past the cap; the cap
+    /// itself when there is none.
+    private func step(above level: Int) -> Int {
+        min(cap, Self.ladder.first { $0 > level } ?? cap)
     }
 
     private mutating func backOff(to level: Int, because cause: Reason) {
@@ -116,15 +200,10 @@ public struct UploadParallelism: Equatable, Sendable {
         case .finding: return "\(level), finding the fastest"
         case let .noFaster(tried): return "\(level) (no faster at \(tried))"
         case .most: return "\(level) (the most it uses)"
+        case .chosen: return "\(level) (as chosen in Settings)"
         case .rateLimited: return "\(level) (Google asked to slow down)"
         case .serverTrouble: return "\(level) (Google had trouble keeping up)"
         }
-    }
-
-    public static func == (lhs: UploadParallelism, rhs: UploadParallelism) -> Bool {
-        lhs.cap == rhs.cap && lhs.current == rhs.current && lhs.isClimbing == rhs.isClimbing && lhs.reason == rhs.reason
-            && lhs.best?.level == rhs.best?.level && lhs.best?.rate == rhs.best?.rate
-            && lhs.pendingBytes == rhs.pendingBytes && lhs.pendingSeconds == rhs.pendingSeconds
     }
 }
 

@@ -136,18 +136,18 @@ class QualityGuardTests(unittest.TestCase):
             self.assertLessEqual(set(call), UPLOAD_KWARGS, context)
             self.assertEqual(call["threads"], 1, context)
 
-    def test_the_thread_ceiling_is_sixteen(self):
+    def test_the_thread_ceiling_is_thirty_two(self):
         # A literal, so the ceiling cannot move without this guard being read:
         # every count up to it is exercised below, and one past it is refused.
-        self.assertEqual(gpmc_bridge.MAX_THREADS, 16)
-        for threads in (0, 17):
+        self.assertEqual(gpmc_bridge.MAX_THREADS, 32)
+        for threads in (0, 33):
             client = FakeClient()
             _, events, _ = serve([upload(["a.jpg"], threads=threads)], client)
             self.assertEqual(client.upload_calls, [], threads)
             self.assertEqual(answers(events)[0][0], gpmc_bridge.EXIT_REQUEST, threads)
 
     def test_no_upload_path_sends_other_flags_for_original(self):
-        for threads in range(1, 17):
+        for threads in range(1, 33):
             for quality in ({}, {"quality": "original"}):
                 for force in ({}, {"force": True}):
                     request = upload(["a.jpg", "b.jpg", "c.jpg"], threads=threads, **quality, **force)
@@ -276,7 +276,7 @@ class KeptSessionTests(unittest.TestCase):
         self.assertNotIn("_new_session", vars(client.api))
         self.assertIsInstance(client.api._new_session(), FakeSession)
 
-    def test_sixteen_threads_keep_sixteen_sessions_without_reopening_any(self):
+    def test_every_thread_keeps_its_session_without_reopening_any(self):
         # Every thread holds its own session while it works; all of them must
         # fit in the idle list when the round ends, or the surplus is closed
         # and a new connection opened for the next round.
@@ -284,19 +284,19 @@ class KeptSessionTests(unittest.TestCase):
         held = [pool.checkout() for _ in range(gpmc_bridge.MAX_THREADS)]
         for session in held:
             session.close()
-        self.assertEqual(FakeSession.made, 16)
+        self.assertEqual(FakeSession.made, 32)
         self.assertFalse(any(session.closed for session in held))
         again = [pool.checkout() for _ in range(gpmc_bridge.MAX_THREADS)]
-        self.assertEqual(FakeSession.made, 16)
+        self.assertEqual(FakeSession.made, 32)
         self.assertEqual({id(s) for s in again}, {id(s) for s in held})
 
-    def test_sixteen_upload_threads_make_at_most_sixteen_sessions(self):
+    def test_thirty_two_upload_threads_make_at_most_thirty_two_sessions(self):
         client = SessionClient()
-        names = [f"{n}.jpg" for n in range(48)]
-        code, _, _ = serve([upload(names, threads=16)], client)
+        names = [f"{n}.jpg" for n in range(96)]
+        code, _, _ = serve([upload(names, threads=32)], client)
         self.assertEqual(code, gpmc_bridge.EXIT_OK)
-        self.assertEqual(len(client.api.sessions_seen), 48 * 4)
-        self.assertLessEqual(FakeSession.made, 16)
+        self.assertEqual(len(client.api.sessions_seen), 96 * 4)
+        self.assertLessEqual(FakeSession.made, 32)
 
     def test_a_one_shot_request_keeps_gpmcs_fresh_sessions(self):
         # PR #52 review: the Windows app and the Android app's run() are one
@@ -332,6 +332,46 @@ class KeptSessionTests(unittest.TestCase):
         code, _, _ = run(upload(["a.jpg"]), client)
         self.assertEqual(code, gpmc_bridge.EXIT_OK)
         self.assertEqual(len(client.upload_calls), 1)
+
+
+class AllAtOnceTests(unittest.TestCase):
+    """A request's `threads` is how many uploads are in flight: nothing between
+    the app's level and gpmc's calls (the executor, the kept sessions, the
+    token lock) holds a full batch to fewer."""
+
+    def test_a_hundred_item_request_has_all_thirty_two_in_flight_at_once(self):
+        threads = gpmc_bridge.MAX_THREADS
+        # The first 32 calls wait for each other: with fewer workers running
+        # at once the barrier times out and those items fail.
+        barrier = threading.Barrier(threads, timeout=10)
+        lock = threading.Lock()
+        seen = {"arrived": 0, "in_flight": 0, "most": 0}
+
+        class Meeting(SessionClient):
+            def upload(self, target, progress_callback=None, **kwargs):
+                with lock:
+                    seen["arrived"] += 1
+                    seen["in_flight"] += 1
+                    seen["most"] = max(seen["most"], seen["in_flight"])
+                    first_round = seen["arrived"] <= threads
+                try:
+                    if first_round:
+                        barrier.wait()
+                    return super().upload(target, progress_callback=progress_callback, **kwargs)
+                finally:
+                    with lock:
+                        seen["in_flight"] -= 1
+
+        FakeSession.made = 0
+        client = Meeting()
+        names = [f"{n}.jpg" for n in range(100)]
+        code, events, _ = serve([upload(names, threads=threads)], client)
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual(of_type(events, "item_failed"), [])
+        self.assertEqual(len(of_type(events, "item")), 100)
+        self.assertEqual(seen["most"], threads)
+        self.assertLessEqual(FakeSession.made, threads)
 
 
 class ExpiringApi:

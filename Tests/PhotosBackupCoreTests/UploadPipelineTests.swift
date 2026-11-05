@@ -10,33 +10,54 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
 }
 
 @Suite struct UploadParallelismTests {
-    @Test func theCeilingIsSixteenAndTheStartStaysAtFour() {
-        #expect(UploadParallelism.automaticCap == 16)
+    @Test func theCeilingIsThirtyTwoAndTheStartStaysAtFour() {
+        #expect(UploadParallelism.automaticCap == 32)
         #expect(UploadParallelism.initial == 4)
-        #expect(UploadParallelism(cap: UploadParallelism.automaticCap).current == 4)
-        #expect(UploadParallelism(cap: 17).cap == 16)
+        #expect(UploadParallelism(cap: UploadParallelism.automaticCap, automatic: true).current == 4)
+        #expect(UploadParallelism(cap: 32, automatic: false).current == 32)
+        #expect(UploadParallelism(cap: 33, automatic: true).cap == 32)
+        #expect(UploadParallelism(cap: 33, automatic: false).current == 32)
     }
 
-    @Test func automaticClimbsToSixteenOnlyWhileEveryStepIsFaster() {
-        var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap)
-        // Twelve steps, 4 to 16, each 20% faster than the last.
+    @Test func automaticClimbsToThirtyTwoOnlyWhileEveryStepIsFaster() {
+        var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap, automatic: true)
+        // Nine steps, 4 to 32, each 20% faster than the last.
         var megabytes = 40.0
-        for level in 4...15 {
+        for level in UploadParallelism.ladder.dropLast() {
             #expect(parallelism.current == level)
             parallelism.measured(sample(Int64(megabytes)))
             megabytes *= 1.2
         }
-        #expect(parallelism.current == 16)
+        #expect(parallelism.current == 32)
         #expect(parallelism.isClimbing)
         parallelism.measured(sample(Int64(megabytes)))
-        #expect(parallelism.current == 16)
+        #expect(parallelism.current == 32)
         #expect(parallelism.isClimbing == false)
     }
 
+    /// One upload more at level L is only 1/L more in flight, so with steps
+    /// of one a link that scales perfectly settled at 21 of 32: from about 20
+    /// on no step of one or two can be 10% faster.
+    @Test func everyStepAddsAtLeastAFifthSoALinkThatScalesReachesTheCap() {
+        let ladder = UploadParallelism.ladder
+        #expect(ladder.first == UploadParallelism.initial)
+        #expect(ladder.last == UploadParallelism.automaticCap)
+        for (lower, higher) in zip(ladder, ladder.dropFirst()) {
+            #expect(Double(higher) >= 1.2 * Double(lower), "\(lower) to \(higher)")
+        }
+        var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap, automatic: true)
+        for _ in 0..<40 {
+            // 1 MB/s for every upload in flight.
+            parallelism.measured(sample(Int64(parallelism.current) * 10))
+        }
+        #expect(parallelism.current == 32)
+        #expect(parallelism.summary == "32 at a time (the most it uses)")
+    }
+
     @Test func automaticStartsAtFourAndClimbsWhileEachStepIsFaster() {
-        var parallelism = UploadParallelism(cap: 8)
+        var parallelism = UploadParallelism(cap: 8, automatic: true)
         #expect(parallelism.current == 4)
-        for (level, megabytes) in zip(4...7, [40, 50, 60, 70] as [Int64]) {
+        for (level, megabytes) in zip([4, 5, 6], [40, 50, 60] as [Int64]) {
             #expect(parallelism.current == level)
             parallelism.measured(sample(megabytes))
         }
@@ -46,19 +67,91 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         #expect(parallelism.isClimbing == false)
     }
 
-    @Test func aStepThatIsNotFasterGoesBackToTheBestLevelAndStays() {
-        var parallelism = UploadParallelism(cap: 8)
+    /// Through 0.6.0 the first step under 10% faster settled the level for
+    /// the rest of the run, so one noisy batch (a few slow commits, a burst
+    /// of tiny files) could hold a run at four or five uploads for hours.
+    @Test func oneStepThatIsNotFasterDoesNotSettleTheLevel() {
+        var parallelism = UploadParallelism(cap: 16, automatic: true)
         parallelism.measured(sample(40))  // 4 MB/s at 4
         parallelism.measured(sample(60))  // 6 MB/s at 5
-        parallelism.measured(sample(62))  // 6.2 at 6: under 10% better
+        parallelism.measured(sample(62))  // 6.2 at 6: under 10% better than 5
+        #expect(parallelism.current == 8)
+        #expect(parallelism.isClimbing)
+        parallelism.measured(sample(80))  // 8 at 8: better than the best, 6 at 5
+        #expect(parallelism.current == 10)
+        #expect(parallelism.isClimbing)
+    }
+
+    @Test func twoStepsInARowThatAreNotFasterGoBackToTheBestLevel() {
+        var parallelism = UploadParallelism(cap: 16, automatic: true)
+        parallelism.measured(sample(40))  // 4 MB/s at 4
+        parallelism.measured(sample(60))  // 6 MB/s at 5
+        parallelism.measured(sample(62))  // 6.2 at 6
+        parallelism.measured(sample(64))  // 6.4 at 8: still under 6.6
         #expect(parallelism.current == 5)
         #expect(parallelism.isClimbing == false)
+        #expect(parallelism.summary == "5 at a time (no faster at 8)")
         parallelism.measured(sample(200))
         #expect(parallelism.current == 5)
     }
 
+    @Test func atTheTopASlowWindowIsMeasuredAgainBeforeItCounts() {
+        var top = UploadParallelism(cap: 6, automatic: true)
+        top.measured(sample(40))
+        top.measured(sample(60))
+        top.measured(sample(62))  // at 6, the cap: nowhere higher to look
+        #expect(top.current == 6)
+        #expect(top.isClimbing)
+        top.measured(sample(70))
+        #expect(top.current == 6)
+        #expect(top.summary == "6 at a time (the most it uses)")
+        var back = UploadParallelism(cap: 6, automatic: true)
+        for megabytes in [40, 60, 62, 63] as [Int64] { back.measured(sample(megabytes)) }
+        #expect(back.current == 5)
+        #expect(back.summary == "5 at a time (no faster at 6)")
+    }
+
+    /// The link a run starts on is not the one it has hours later.
+    @Test func aSettledLevelIsTriedOneStepHigherAgainLater() {
+        var parallelism = UploadParallelism(cap: 16, automatic: true)
+        for megabytes in [40, 60, 62, 64] as [Int64] { parallelism.measured(sample(megabytes)) }
+        #expect(parallelism.current == 5)
+        for _ in 1..<UploadParallelism.reprobeAfter {
+            parallelism.measured(sample(60))
+            #expect(parallelism.current == 5)
+            #expect(parallelism.isClimbing == false)
+        }
+        parallelism.measured(sample(60))
+        #expect(parallelism.current == 6)
+        #expect(parallelism.isClimbing)
+        #expect(parallelism.summary == "6 at a time, finding the fastest")
+        parallelism.measured(sample(70))  // 7 at 6: over 6.6
+        #expect(parallelism.current == 8)
+    }
+
+    @Test func aReprobeIsJudgedAgainstTheSettledLevelsLatestRate() {
+        var parallelism = UploadParallelism(cap: 16, automatic: true)
+        for megabytes in [40, 60, 62, 64] as [Int64] { parallelism.measured(sample(megabytes)) }
+        // The link halves meanwhile: 3 MB/s at 5 is the baseline now, not 6.
+        for _ in 0..<UploadParallelism.reprobeAfter { parallelism.measured(sample(30)) }
+        #expect(parallelism.current == 6)
+        parallelism.measured(sample(34))
+        #expect(parallelism.current == 8)
+        #expect(parallelism.isClimbing)
+    }
+
+    @Test func googlePushingBackEndsTheReprobesForTheRun() {
+        var parallelism = UploadParallelism(cap: 16, automatic: true)
+        for megabytes in [40, 60, 62, 64] as [Int64] { parallelism.measured(sample(megabytes)) }
+        parallelism.measured(sample(60, rateLimited: true))
+        #expect(parallelism.current == 2)
+        for _ in 0..<(3 * UploadParallelism.reprobeAfter) { parallelism.measured(sample(400)) }
+        #expect(parallelism.current == 2)
+        #expect(parallelism.isClimbing == false)
+    }
+
     @Test func aRateLimitHalvesAndStopsTheClimb() {
-        var parallelism = UploadParallelism(cap: 8)
+        var parallelism = UploadParallelism(cap: 8, automatic: true)
         parallelism.measured(sample(40))
         parallelism.measured(sample(60))
         #expect(parallelism.current == 6)
@@ -73,7 +166,7 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
     }
 
     @Test func repeatedServerFailuresStepDownOneAndStopTheClimb() {
-        var parallelism = UploadParallelism(cap: 8)
+        var parallelism = UploadParallelism(cap: 8, automatic: true)
         parallelism.measured(sample(40, serverFailures: 1))  // one passing 5xx is not pressure
         #expect(parallelism.current == 5)
         parallelism.measured(sample(60, serverFailures: 2))
@@ -82,7 +175,7 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
     }
 
     @Test func aSmallSampleWaitsForMore() {
-        var parallelism = UploadParallelism(cap: 8)
+        var parallelism = UploadParallelism(cap: 8, automatic: true)
         // Everything already in Google Photos: nothing went up, nothing to judge.
         parallelism.measured(UploadSample(bytes: 0, seconds: 3, items: 0, rateLimited: false, serverFailures: 0))
         #expect(parallelism.current == 4)
@@ -94,39 +187,70 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
     }
 
     @Test func theRequestThatStartedTheBridgeCountsOnlyForPushback() {
-        var parallelism = UploadParallelism(cap: 8)
+        var parallelism = UploadParallelism(cap: 8, automatic: true)
         var first = sample(40, seconds: 20)
         first.includesStartUp = true
         parallelism.measured(first)
         #expect(parallelism.current == 4)
         parallelism.measured(sample(40))
         #expect(parallelism.current == 5)
-        var limited = UploadParallelism(cap: 8)
+        var limited = UploadParallelism(cap: 8, automatic: true)
         first.rateLimited = true
         limited.measured(first)
         #expect(limited.current == 2)
     }
 
-    @Test func aChosenNumberIsTheMostItEverUses() {
-        var two = UploadParallelism(cap: 2)
+    @Test func aCapUnderTheStartIsTheMostAutomaticUses() {
+        var two = UploadParallelism(cap: 2, automatic: true)
         #expect(two.current == 2)
         two.measured(sample(400))
         #expect(two.current == 2)
-        var six = UploadParallelism(cap: 6)
-        six.measured(sample(40))
-        six.measured(sample(60))
-        six.measured(sample(90))
-        #expect(six.current == 6)
-        #expect(UploadParallelism(cap: 40).cap == UploadParallelism.automaticCap)
-        #expect(UploadParallelism(cap: 0).current == 1)
+        #expect(UploadParallelism(cap: 40, automatic: true).cap == UploadParallelism.automaticCap)
+        #expect(UploadParallelism(cap: 0, automatic: true).current == 1)
+    }
+
+    /// 2026-11-05, v0.6.0: a chosen 16 still started at four and climbed one
+    /// level per ~24 MB measured; that run of small photos went at about one
+    /// photo a second on a 177 Mbit/s uplink. A chosen number is now the
+    /// number from the first request.
+    @Test func aChosenNumberIsUsedFromTheFirstRequest() {
+        for chosen in 1...UploadParallelism.automaticCap {
+            let parallelism = UploadParallelism(cap: chosen, automatic: false)
+            #expect(parallelism.current == chosen, "\(chosen)")
+            #expect(parallelism.isClimbing == false, "\(chosen)")
+        }
+        var sixteen = UploadParallelism(cap: 16, automatic: false)
+        #expect(sixteen.summary == "16 at a time (as chosen in Settings)")
+        // Nothing it measures moves it, faster or slower.
+        for megabytes in [400, 40, 4000, 41] as [Int64] {
+            sixteen.measured(sample(megabytes))
+            #expect(sixteen.current == 16)
+        }
+        #expect(UploadParallelism(cap: 0, automatic: false).current == 1)
+    }
+
+    @Test func aChosenNumberStillBacksOffWhenGooglePushesBack() {
+        var parallelism = UploadParallelism(cap: 16, automatic: false)
+        parallelism.measured(sample(40, serverFailures: 1))  // one passing 5xx is not pressure
+        #expect(parallelism.current == 16)
+        parallelism.measured(sample(40, rateLimited: true))
+        #expect(parallelism.current == 8)
+        #expect(parallelism.summary == "8 at a time (Google asked to slow down)")
+        parallelism.measured(sample(40, serverFailures: 2))
+        #expect(parallelism.current == 7)
+        // It never goes back up within the run.
+        for _ in 0..<20 { parallelism.measured(sample(400)) }
+        #expect(parallelism.current == 7)
+        #expect(parallelism.isClimbing == false)
     }
 
     @Test func itSaysWhyItIsWhereItIs() {
-        var parallelism = UploadParallelism(cap: 8)
+        var parallelism = UploadParallelism(cap: 8, automatic: true)
         #expect(parallelism.summary == "4 at a time, finding the fastest")
         parallelism.measured(sample(40))
         parallelism.measured(sample(41))
-        #expect(parallelism.summary == "4 at a time (no faster at 5)")
+        parallelism.measured(sample(41))
+        #expect(parallelism.summary == "4 at a time (no faster at 6)")
         parallelism.measured(sample(10, rateLimited: true))
         #expect(parallelism.summary == "2 at a time (Google asked to slow down)")
     }

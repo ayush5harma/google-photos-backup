@@ -141,20 +141,33 @@ class OriginalQualityOnRealGpmcTests(unittest.TestCase):
         self.assertEqual(self.calls, 1 + 4 * 24)
         self.assertLessEqual(len(self.adapters_used), 8 + 1)
 
-    def test_sixteen_threads_commit_original_over_gpmcs_real_sessions(self):
-        # The 16-stream ceiling: real requests Sessions and HTTPAdapters (only
+    def test_thirty_two_threads_commit_original_over_gpmcs_real_sessions(self):
+        # The 32-stream ceiling: real requests Sessions and HTTPAdapters (only
         # send is replaced), one session a thread, kept for the next request.
-        code, events = self.serve(self.upload(self.stage(48), threads=16),
-                                  self.upload(self.stage(16, offset=48), threads=16))
+        code, events = self.serve(self.upload(self.stage(100), threads=32),
+                                  self.upload(self.stage(32, offset=100), threads=32))
 
         self.assertEqual(code, gpmc_bridge.EXIT_OK)
         self.assertEqual([e for e in events if e["type"] == "item_failed"], [])
-        self.assertEqual(len(self.commits), 64)
+        self.assertEqual(len(self.commits), 132)
         for commit in self.commits:
             self.assertEqual(commit["2"]["3"], "Pixel XL")
             self.assertEqual(commit["1"]["7"], QUALITY_FIELD["original"])
-        self.assertEqual(self.calls, 1 + 4 * 64)
-        self.assertLessEqual(len(self.adapters_used), 16 + 1)
+        self.assertEqual(self.calls, 1 + 4 * 132)
+        self.assertLessEqual(len(self.adapters_used), 32 + 1)
+
+    def test_every_thread_count_commits_original_from_a_pixel_xl(self):
+        # Each count the app may send, 1 to the ceiling, through real gpmc:
+        # more threads must never reach Google as another device or quality.
+        for threads in range(1, gpmc_bridge.MAX_THREADS + 1):
+            self.commits = []
+            code, events = self.serve(self.upload(self.stage(threads + 1, offset=1000 * threads), threads=threads))
+            self.assertEqual(code, gpmc_bridge.EXIT_OK, threads)
+            self.assertEqual([e for e in events if e["type"] == "item_failed"], [], threads)
+            self.assertEqual(len(self.commits), threads + 1, threads)
+            for commit in self.commits:
+                self.assertEqual(commit["2"]["3"], "Pixel XL", threads)
+                self.assertEqual(commit["1"]["7"], QUALITY_FIELD["original"], threads)
 
     def test_a_token_that_expires_during_a_request_is_renewed_once(self):
         # PR #52 review: gpmc 0.9.0 renews an expired token with no lock, so

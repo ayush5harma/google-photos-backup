@@ -144,7 +144,7 @@ final class BackupEngine {
     /// Upload speed and time left in this run.
     private(set) var meter = ThroughputMeter()
     /// How many uploads go at once, for the rest of this run.
-    private(set) var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap)
+    private(set) var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap, automatic: true)
 
     @ObservationIgnored private unowned let model: AppModel
     /// One bridge for the whole run (issue #50), started by its first request
@@ -488,7 +488,7 @@ final class BackupEngine {
         retries = RetryTracker()
         tally = RunTally()
         meter = ThroughputMeter()
-        parallelism = UploadParallelism(cap: model.settings.parallelUploadCap)
+        parallelism = UploadParallelism(cap: model.settings.parallelUploadCap, automatic: model.settings.threadsAutomatic)
         rateLimiter.runStarted()
         // Assets are planned afresh, so their earlier failures are tried
         // again anyway; a pick or a Messages item is only if Retry queues it.

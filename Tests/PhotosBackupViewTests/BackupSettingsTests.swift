@@ -5,7 +5,7 @@ import XCTest
 
 /// Settings saved before "Choose parallel uploads automatically" existed:
 /// the old default of 2 (stored for everyone who never touched it) becomes
-/// Automatic, a number someone chose stays the most a run uses.
+/// Automatic, a number someone chose stays theirs.
 final class BackupSettingsTests: XCTestCase {
     private func decode(_ json: String) throws -> BackupSettings {
         try JSONDecoder().decode(BackupSettings.self, from: Data(json.utf8))
@@ -18,17 +18,19 @@ final class BackupSettingsTests: XCTestCase {
         XCTAssertTrue(try decode("{}").threadsAutomatic)
     }
 
-    func testAChosenNumberStaysTheMost() throws {
-        for threads in [1, 3, 8, 16] {
+    func testAChosenNumberStaysChosen() throws {
+        for threads in [1, 3, 8, 16, 32] {
             let settings = try decode(#"{"threads": \#(threads)}"#)
             XCTAssertFalse(settings.threadsAutomatic, "\(threads)")
             XCTAssertEqual(settings.parallelUploadCap, threads)
         }
     }
 
-    func testTheChosenNumberIsClampedToTheBridgesSixteen() throws {
-        XCTAssertEqual(BackupSettings.threadRange, 1...16)
-        XCTAssertEqual(try decode(#"{"threads": 40}"#).threads, 16)
+    func testTheChosenNumberIsClampedToTheBridgesThirtyTwo() throws {
+        XCTAssertEqual(BackupSettings.threadRange, 1...32)
+        XCTAssertEqual(try decode(#"{"threads": 32}"#).threads, 32)
+        XCTAssertEqual(try decode(#"{"threads": 33}"#).threads, 32)
+        XCTAssertEqual(try decode(#"{"threads": 40}"#).threads, 32)
         XCTAssertEqual(try decode(#"{"threads": 0}"#).threads, 1)
     }
 

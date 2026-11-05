@@ -6,10 +6,11 @@ import PhotosBackupCore
 
 struct BackupSettings: Codable, Equatable {
     var quality: UploadQuality = .original
-    /// The most gpmc uploads at once when `threadsAutomatic` is off.
+    /// How many uploads gpmc runs at once when `threadsAutomatic` is off:
+    /// used from the first request, fewer only when Google pushes back.
     var threads = 2
     /// The engine finds how many uploads at once the link takes, up to the
-    /// bridge's 16, and uses fewer when Google pushes back (UploadParallelism).
+    /// bridge's 32, and uses fewer when Google pushes back (UploadParallelism).
     var threadsAutomatic = true
     /// Assets exported and handed to gpmc per bridge run; also how much
     /// staging space a run needs at once.
@@ -73,7 +74,7 @@ struct BackupSettings: Codable, Equatable {
         threads = Self.threadRange.clamp(try value(.threads, threads))
         // Settings saved before this key existed: 2 was the default (stored
         // for everyone who never touched it) and becomes Automatic; a number
-        // someone chose stays the most a run uses.
+        // someone chose stays theirs.
         threadsAutomatic = try value(.threadsAutomatic, threads == 2)
         batchSize = Self.batchRange.clamp(try value(.batchSize, batchSize))
         mirrorAlbums = try value(.mirrorAlbums, mirrorAlbums)
@@ -98,10 +99,12 @@ struct BackupSettings: Codable, Equatable {
         archiveSnapshotsToKeep = Self.snapshotRange.clamp(try value(.archiveSnapshotsToKeep, archiveSnapshotsToKeep))
     }
 
-    /// The most uploads a run may have going at once.
+    /// The most uploads a run may have going at once; with Automatic off, also
+    /// the number it starts with.
     var parallelUploadCap: Int { threadsAutomatic ? UploadParallelism.automaticCap : threads }
 
-    /// The bridge accepts 1-8 threads. One bridge serves a whole run, so a
+    /// The bridge accepts 1-32 threads; a batch smaller than the number
+    /// uploads at most its own size at once. One bridge serves a whole run, so a
     /// small batch no longer pays its start-up, but under 5 the parallel
     /// uploads still sit idle at each batch's end; over 100 stages too much
     /// at once.
