@@ -99,7 +99,7 @@ private constructor(
             pendingSeconds = 0.0,
         )
 
-    /** For the notice and logs: where it is and why. */
+    /** Where it is and why, in the Mac's Diagnostics wording; the notice during a 429 hold shows it. */
     val summary: String
         get() {
             val level = "$current at a time"

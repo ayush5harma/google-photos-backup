@@ -15,6 +15,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -306,10 +307,13 @@ class Store private constructor(private val context: Context) {
 
     /** For what the screen shows but a restart need not keep (upload progress): update writes
      * and reads back the whole queue, and with several uploads at once progress arrives many
-     * times a second. The next update persists whatever this left in the state. */
-    @Synchronized
+     * times a second. The next update persists whatever this left in the state.
+     *
+     * Lock-free, so it never waits behind update's disk write: a compare-and-set that retries
+     * on a state update set meanwhile, so it never undoes a persisted change. An update running
+     * across it may drop this change, which costs one progress refresh. */
     fun showFor(generation: String, change: (BackupState) -> BackupState) {
-        if (state.value.generation == generation) state.value = change(state.value)
+        state.update { if (it.generation == generation) change(it) else it }
     }
 
     companion object {

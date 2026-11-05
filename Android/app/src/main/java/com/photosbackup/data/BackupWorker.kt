@@ -22,6 +22,7 @@ import com.photosbackup.domain.UploadSample
 import java.io.File
 import java.security.MessageDigest
 import java.util.concurrent.Callable
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
@@ -40,6 +41,8 @@ open class BackupWorker(context: Context, params: WorkerParameters) : Worker(con
     private val store = Store.get(applicationContext)
     private val generation = inputData.getString("generation") ?: ""
     private val meter = ThroughputMeter()
+    /** Each uploading item's latest fraction sent, not yet on the screen. */
+    private val progress = ConcurrentHashMap<String, Float>()
     private val staging = StagingBudget()
     private val notifyLock = Any()
     private var notifiedAt = 0L
@@ -81,12 +84,28 @@ open class BackupWorker(context: Context, params: WorkerParameters) : Worker(con
         else ForegroundInfo(14, notification)
     }
 
-    /** From the bridge's upload threads: "12 of 340 backed up · 3.4 MB/s", once a second at most. */
+    /**
+     * From the bridge's upload threads, once a second at most: the items' progress onto the
+     * screen and "12 of 340 backed up · 3.4 MB/s" into the notification. Progress waits here
+     * rather than going to the screen per event: a list copy per gpmc report from 8 threads.
+     */
     private fun progressed() {
         val now = monotonicMillis()
         synchronized(notifyLock) {
             if (now - notifiedAt < NOTIFY_EVERY_MILLIS) return
             notifiedAt = now
+        }
+        val shown = HashMap(progress)
+        if (shown.isNotEmpty()) {
+            store.showFor(generation) { s ->
+                s.copy(items = s.items.map { row ->
+                    val fraction = shown[row.id]
+                    // Only a row still on its way: an answer may have landed since the snapshot.
+                    if (fraction == null || row.key.isNotBlank() || row.status !in listOf("Preparing", "Uploading")) row
+                    else row.copy(status = "Uploading", progress = fraction)
+                })
+            }
+            shown.forEach { (id, fraction) -> progress.remove(id, fraction) }
         }
         val rows = store.state.value.items.filter { it.id in selected }
         val done = rows.count { it.key.isNotBlank() }
@@ -175,21 +194,37 @@ open class BackupWorker(context: Context, params: WorkerParameters) : Worker(con
                 next = null
                 if (queue.isNotEmpty() && !stopping())
                     next = stager.submit(Callable { stageBatch(queue, halt) })
+                var rateLimited = false
                 try {
                     if (stopping()) continue
                     parallelism = parallelism.recapped(UploadParallelism.networkCap(metered()))
                     val sample = send(batch, auth, parallelism.current, first) ?: continue
                     first = false
                     parallelism = parallelism.measured(sample)
+                    rateLimited = sample.rateLimited
                 } finally {
                     batch.forEach(::discard)
                 }
+                if (rateLimited) holdAfterRateLimit(parallelism)
             }
         } finally {
             halt.set(true)
             next?.let { pending -> runCatching { pending.get() }.getOrNull()?.forEach(::discard) }
             stager.shutdownNow()
         }
+    }
+
+    /**
+     * Google answered 429: halving the uploads at once is not enough on its own, since the next
+     * batch would go at once and its items fail the same way. The Mac holds every upload (its
+     * RateLimiter); this is the simple form of that, a fixed pause that a cancel ends. 30 s is a
+     * chosen margin, not a measured window.
+     */
+    private fun holdAfterRateLimit(parallelism: UploadParallelism) {
+        store.updateFor(generation) { it.copy(notice = "Uploads go ${parallelism.summary}; they continue shortly…") }
+        val until = monotonicMillis() + RATE_LIMIT_HOLD_MILLIS
+        while (monotonicMillis() < until && !stopping()) Thread.sleep(250)
+        store.updateFor(generation) { it.copy(notice = "Preparing selected media…") }
     }
 
     /** One batch, closed by its count or bytes, or early when the staging window is full. */
@@ -248,12 +283,13 @@ open class BackupWorker(context: Context, params: WorkerParameters) : Worker(con
                 }
             }
             val sha256 = digest.digest().joinToString("") { "%02x".format(it) }
-            staging.add(bytes)
             store.updateFor(generation) { state ->
                 state.copy(items = state.items.map { row ->
                     if (row.id == item.id) row.copy(sha256 = sha256) else row
                 })
             }
+            // Counted once nothing can fail: the catch deletes the file without a release.
+            staging.add(bytes)
             return StagedItem(item, temp, bytes, sha256)
         } catch (e: Exception) {
             temp.delete()
@@ -309,7 +345,7 @@ open class BackupWorker(context: Context, params: WorkerParameters) : Worker(con
                     }),
                 )
         val listener =
-            EventListener(store, ordered.associate { it.item.id to it.bytes }, generation, meter, ::progressed)
+            EventListener(store, ordered.associate { it.item.id to it.bytes }, generation, meter, progress, ::progressed)
         val sentAt = System.nanoTime()
         try {
             upload(request.toString(), listener, cancellation)
@@ -325,7 +361,11 @@ open class BackupWorker(context: Context, params: WorkerParameters) : Worker(con
         for ((follower, lead) in followers) {
             val key = keyOf(lead.item.id)
             if (key.isNotBlank()) markKnown(follower.item.id, key)
-            else setStatus(follower.item.id, "Upload failed. Check connection or reconnect.")
+            else setStatus(
+                follower.item.id,
+                if (isStopped || cancellation.get()) "Cancelled"
+                else "Upload failed. Check connection or reconnect.",
+            )
         }
         if (batch.any { keyOf(it.item.id).isBlank() }) failed.set(true)
         return listener.sample(sentAt, includesStartUp = first)
@@ -450,6 +490,7 @@ open class BackupWorker(context: Context, params: WorkerParameters) : Worker(con
 
     companion object {
         private const val NOTIFY_EVERY_MILLIS = 1_000L
+        private const val RATE_LIMIT_HOLD_MILLIS = 30_000L
 
         internal fun monotonicMillis() = System.nanoTime() / 1_000_000
 
@@ -526,9 +567,11 @@ private class StagingBudget {
 }
 
 /**
- * The bridge's events for one request: confirmations and failures persist per item, progress
- * only shows (Store.showFor), and the request's outcome feeds the parallelism controller. Called
- * from the bridge's upload threads at once, hence the lock.
+ * The bridge's events for one request: confirmations and failures persist per item, and the
+ * request's outcome feeds the parallelism controller. Progress comes from all of the bridge's
+ * upload threads, inside gpmc's upload stream, so it takes no lock that a confirmation's disk
+ * write holds: it goes to the meter and to [shown], which the worker puts on the screen once a
+ * second. Confirmations and failures come from the bridge's request thread, one at a time.
  */
 class EventListener(
     private val store: Store,
@@ -536,26 +579,27 @@ class EventListener(
     private val sizes: Map<String, Long>,
     private val generation: String,
     private val meter: ThroughputMeter? = null,
+    /** Latest fraction sent per item; null shows progress at once (single-item use). */
+    private val shown: ConcurrentHashMap<String, Float>? = null,
     private val onProgress: () -> Unit = {},
 ) {
     /** One item of unknown size: the shape a single-item request and its tests use. */
     constructor(store: Store, id: String, generation: String) : this(store, mapOf(id to 0L), generation)
 
-    private var closed = false
-    private val answered = HashSet<String>()
+    @Volatile private var closed = false
+    private val answered: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val lock = Any()
     private var uploadedItems = 0
     private var uploadedBytes = 0L
     private var serverFailures = 0
     private var rateLimited = false
     private var lastAnswerAt = 0L
 
-    @Synchronized
     fun close() {
-        closed = true
+        synchronized(lock) { closed = true }
     }
 
     @Suppress("unused")
-    @Synchronized
     fun event(raw: String) {
         if (closed) return
         val e = JSONObject(raw)
@@ -563,16 +607,22 @@ class EventListener(
         // An id names one of this request's items; an event without one belongs to the request,
         // or to its only item.
         val id = if (e.isNull("id")) sizes.keys.singleOrNull() else e.optString("id").takeIf { it in sizes }
-        when {
-            type == "fatal" -> {
-                if (e.optString("kind") == "rate_limit") rateLimited = true
-                (sizes.keys - answered).forEach { setStatus(it, "Upload failed. Check connection or reconnect.") }
+        if (type == "progress") {
+            if (id == null || id in answered) return
+            progress(id, e)
+        } else synchronized(lock) {
+            // Rechecked under the lock: close() after the request returns ends every answer.
+            if (closed) return
+            when {
+                type == "fatal" -> {
+                    if (e.optString("kind") == "rate_limit") rateLimited = true
+                    (sizes.keys - answered).forEach { setStatus(it, "Upload failed. Check connection or reconnect.") }
+                }
+                id == null || id in answered -> return
+                Policy.confirmed(type, e.optString("media_key")) -> confirm(id, e)
+                type == "item_failed" -> fail(id, e)
+                else -> return
             }
-            id == null || id in answered -> return
-            Policy.confirmed(type, e.optString("media_key")) -> confirm(id, e)
-            type == "progress" -> progress(id, e)
-            type == "item_failed" -> fail(id, e)
-            else -> return
         }
         onProgress()
     }
@@ -600,13 +650,14 @@ class EventListener(
         val completed = e.optLong("bytes_completed")
         val total = e.optLong("bytes_total")
         if (e.optString("phase") == "uploading") meter?.sent(id, completed, BackupWorker.monotonicMillis())
+        val fraction = if (total > 0) (completed.toFloat() / total).coerceIn(0f, 1f) else 0f
+        if (shown != null) {
+            shown[id] = fraction
+            return
+        }
         store.showFor(generation) { s ->
             s.copy(items = s.items.map { item ->
-                if (item.id != id) item
-                else item.copy(
-                    status = "Uploading",
-                    progress = if (total > 0) (completed.toFloat() / total).coerceIn(0f, 1f) else 0f,
-                )
+                if (item.id != id) item else item.copy(status = "Uploading", progress = fraction)
             })
         }
     }
@@ -624,6 +675,7 @@ class EventListener(
 
     private fun answer(id: String) {
         answered += id
+        shown?.remove(id)
         meter?.finished(id)
         lastAnswerAt = System.nanoTime()
     }
@@ -634,10 +686,9 @@ class EventListener(
         }
 
     /** The request as the controller reads it, timed to its last item's answer. */
-    @Synchronized
-    fun sample(sentAtNanos: Long, includesStartUp: Boolean): UploadSample {
+    fun sample(sentAtNanos: Long, includesStartUp: Boolean): UploadSample = synchronized(lock) {
         val end = if (lastAnswerAt != 0L) lastAnswerAt else System.nanoTime()
-        return UploadSample(
+        UploadSample(
             bytes = uploadedBytes,
             seconds = (end - sentAtNanos) / 1e9,
             items = uploadedItems,
