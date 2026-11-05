@@ -79,10 +79,13 @@ public struct RunRecord: Codable, Equatable, Identifiable, Sendable {
     public var outcome: RunOutcome?
     /// The network and power conditions when it started, in words.
     public var conditions: String?
+    /// The Google account it went to; nil for runs from before there were
+    /// several, and for the Messages archive, which goes to no account.
+    public var account: String?
 
     public init(id: UUID = UUID(), kind: RunKind, trigger: RunTrigger, startedAt: Date = Date(), finishedAt: Date? = nil,
                 uploaded: Int = 0, existing: Int = 0, failed: Int = 0, bytes: Int64 = 0,
-                outcome: RunOutcome? = nil, conditions: String? = nil) {
+                outcome: RunOutcome? = nil, conditions: String? = nil, account: String? = nil) {
         self.id = id
         self.kind = kind
         self.trigger = trigger
@@ -94,6 +97,7 @@ public struct RunRecord: Codable, Equatable, Identifiable, Sendable {
         self.bytes = bytes
         self.outcome = outcome
         self.conditions = conditions
+        self.account = account
     }
 
     public var duration: TimeInterval? { finishedAt.map { $0.timeIntervalSince(startedAt) } }

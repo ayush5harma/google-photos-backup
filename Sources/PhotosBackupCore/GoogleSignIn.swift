@@ -77,10 +77,12 @@ public enum GoogleSignIn {
     /// and for Gmail neither do dots nor googlemail.com. Mistaking one
     /// account for two would drop its history and duplicate its albums.
     public static func sameAccount(_ first: String, _ second: String) -> Bool {
-        canonical(first) == canonical(second)
+        normalizedEmail(first) == normalizedEmail(second)
     }
 
-    static func canonical(_ email: String) -> String {
+    /// The one spelling of an address that every alias of the account
+    /// shares: the key of its keychain item and of its backup record.
+    public static func normalizedEmail(_ email: String) -> String {
         let lowered = email.lowercased()
         guard let at = lowered.lastIndex(of: "@") else { return lowered }
         let local = lowered[..<at]
