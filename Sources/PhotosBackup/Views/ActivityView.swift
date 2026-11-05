@@ -85,6 +85,25 @@ private struct UploadsPane: View {
 }
 
 /// The current run: what it is doing, how far it got, and its controls.
+/// Upload speed and time left while a run uploads, refreshed every two
+/// seconds so a stall shows as the speed falling, not a frozen figure.
+struct SpeedLine: View {
+    let engine: BackupEngine
+
+    var body: some View {
+        if engine.isActive {
+            TimelineView(.periodic(from: .now, by: 2)) { context in
+                if let line = engine.speedLine(at: context.date) {
+                    Text(line)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .accessibilityLabel("Upload speed: \(line)")
+                }
+            }
+        }
+    }
+}
+
 private struct RunPanel: View {
     @Environment(AppModel.self) private var model
 
@@ -109,6 +128,7 @@ private struct RunPanel: View {
                     ProgressView(value: engine.runFraction)
                         .accessibilityLabel("Overall progress")
                 }
+                SpeedLine(engine: engine).font(.callout)
                 if let reason = engine.waitReason { WaitLine(reason: reason) }
                 if let error = engine.lastError {
                     Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -264,6 +284,8 @@ struct ActivityRow: View {
             Image(systemName: "stop.circle").foregroundStyle(.secondary).font(.title3)
         case .waiting:
             Image(systemName: "clock").foregroundStyle(.orange).font(.title3)
+        case .ready:
+            Image(systemName: "arrow.up.circle").foregroundStyle(.secondary).font(.title3)
         case let .uploading(fraction):
             ProgressView(value: fraction).progressViewStyle(.circular).controlSize(.small)
         default:

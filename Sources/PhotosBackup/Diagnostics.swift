@@ -154,7 +154,7 @@ final class Diagnostics {
         snapshot.uploader = model.runtimeDescription
         snapshot.settings = [
             .init("Quality", settings.quality.title),
-            .init("Parallel uploads", "\(settings.threads)"),
+            .init("Parallel uploads", settings.threadsAutomatic ? "Automatic (up to \(settings.parallelUploadCap))" : "At most \(settings.threads)"),
             .init("Items per batch", "\(settings.batchSize)"),
             .init("Recreate albums", onOff(settings.mirrorAlbums)),
             .init("Back up automatically", onOff(settings.automatic)),
@@ -198,6 +198,10 @@ final class Diagnostics {
         snapshot.holdingSince = engine.waitingSince
         snapshot.failureMessages = engine.failureMessages
         snapshot.lastError = engine.lastError ?? model.stateError ?? saveError
+        let now = Date()
+        snapshot.uploadSpeed = engine.speedLine(at: now)
+        snapshot.averageBytesPerSecond = engine.meter.averageBytesPerSecond(at: now)
+        snapshot.parallelUploads = engine.parallelism.summary
         return snapshot
     }
 
