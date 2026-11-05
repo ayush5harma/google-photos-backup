@@ -87,7 +87,12 @@ public struct AlbumMirror: Codable, Equatable, Sendable {
     }
 
     /// Every member this mirror has a record of, sent or only known.
-    public var recordedAssetIDs: Set<String> { addedAssetIDs.union(knownAssetIDs ?? []) }
+    /// Read every pass for every linked album: without known members it is
+    /// addedAssetIDs itself, not a copy.
+    public var recordedAssetIDs: Set<String> {
+        guard let known = knownAssetIDs, !known.isEmpty else { return addedAssetIDs }
+        return addedAssetIDs.union(known)
+    }
 }
 
 /// A linked album found with no record of its members, taken as holding
