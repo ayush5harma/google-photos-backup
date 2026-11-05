@@ -18,10 +18,12 @@ public struct AlbumSnapshot: Equatable, Sendable, Identifiable {
     /// Each asset's PHAsset.modificationDate, read during the same
     /// enumeration; an asset without one is never taken for edited.
     public let modified: [String: Date]
-    /// Members Photos marks hidden (PHAsset.isHidden), read in the same
-    /// enumeration. The listing leaves hidden photos out already; the
-    /// planner checks this as well, so a change of fetch options can never
-    /// put a hidden photo in a Google album or in another account.
+    /// Members Photos marks hidden (PHAsset.isHidden). The listing leaves
+    /// hidden photos out of assetIDs; for user albums PhotoLibrary also looks
+    /// them up on their own, so a re-baseline records them and one unhidden
+    /// later never looks newly added. The planner checks this set as well,
+    /// so a change of fetch options can never put a hidden photo in a Google
+    /// album or in another account. Members here need not be in assetIDs.
     public let hiddenAssetIDs: Set<String>
 
     public init(id: String, title: String, kind: AlbumKind, assetIDs: [String], modified: [String: Date] = [:],

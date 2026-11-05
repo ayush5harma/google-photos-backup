@@ -234,10 +234,13 @@ public struct BackupState: Codable, Equatable, Sendable {
         var rebaselined: [RebaselinedAlbum] = []
         for album in albums where album.kind == .user && selectedAlbumIDs.contains(album.id) {
             guard var mirror = mirrors[album.id], mirror.googleAlbumID != nil, !mirror.hasRecord else { continue }
-            mirror.knownAssetIDs = Set(album.assetIDs)
+            // Hidden members too: the listing leaves them out of assetIDs,
+            // and one unhidden later must not look newly added.
+            let members = Set(album.assetIDs).union(album.hiddenAssetIDs)
+            mirror.knownAssetIDs = members
             mirror.approvedAssetIDs = nil
             mirrors[album.id] = mirror
-            rebaselined.append(RebaselinedAlbum(albumID: album.id, title: album.title, count: album.assetIDs.count))
+            rebaselined.append(RebaselinedAlbum(albumID: album.id, title: album.title, count: members.count))
         }
         return rebaselined
     }

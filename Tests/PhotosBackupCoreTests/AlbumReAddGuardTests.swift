@@ -99,6 +99,22 @@ private let shared = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, a
             == [.addToAlbum(albumID: "shared", albumTitle: "Shared", assetIDs: ["new"], mediaKeys: ["key-new"])])
     }
 
+    /// Review of feat/53-guards, minor 5: the listing leaves hidden photos
+    /// out, so the snapshot carries hidden members separately, and the
+    /// re-baseline records them too: a member hidden then and unhidden later
+    /// never goes in by itself.
+    @Test func aMemberHiddenAtReBaselineNeverGoesInOnceUnhidden() {
+        var cleared = state(selected: ["shared"], uploaded: ["a", "h"],
+                            mirrors: ["shared": AlbumMirror(googleAlbumID: "g-shared", addedAssetIDs: [])])
+        let listed = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: ["a"], hiddenAssetIDs: ["h"])
+        #expect(cleared.rebaselineUnknownMirrors(in: [listed]).map(\.count) == [2])
+        #expect(cleared.mirrors["shared"]?.knownAssetIDs == ["a", "h"])
+
+        let unhidden = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: ["a", "h"])
+        #expect(BackupPlanner.plan(albums: [unhidden], state: cleared, mirrorAlbums: true, batchSize: 10, uploadsHidden: true).isEmpty)
+        #expect(BackupPlanner.heldAlbumAdds(albums: [unhidden], state: cleared).isEmpty)
+    }
+
     @Test func aBrandNewAlbumIsStillCreatedWithAllItsMembers() {
         let steps = BackupPlanner.plan(albums: [shared], state: state(selected: ["shared"], uploaded: ["a"]), mirrorAlbums: true,
                                        batchSize: 10, uploadsHidden: true)

@@ -121,12 +121,28 @@ final class PhotoLibrary: NSObject, PHPhotoLibraryChangeObserver {
             albums.append(LibraryAlbum(snapshot: album, symbol: symbol))
         }
 
+        // A user album's hidden members, looked up on their own (read-only,
+        // ids only) so the re-baseline can record them; never uploaded. With
+        // the Hidden album locked PhotoKit hands out none (measured
+        // 2026-10-28, PickedFile), so this then finds nothing.
+        let hiddenOnly = PHFetchOptions()
+        hiddenOnly.includeHiddenAssets = true
+        hiddenOnly.includeAssetSourceTypes = [.typeUserLibrary]
+        hiddenOnly.predicate = NSPredicate(format: "isHidden == YES")
+        func withHidden(_ album: AlbumSnapshot, in collection: PHAssetCollection) -> AlbumSnapshot {
+            var hidden = album.hiddenAssetIDs
+            PHAsset.fetchAssets(in: collection, options: hiddenOnly).enumerateObjects { asset, _, _ in hidden.insert(asset.localIdentifier) }
+            guard hidden != album.hiddenAssetIDs else { return album }
+            return AlbumSnapshot(id: album.id, title: album.title, kind: album.kind, assetIDs: album.assetIDs, modified: album.modified,
+                                 hiddenAssetIDs: hidden)
+        }
+
         var user: [LibraryAlbum] = []
         var unlisted: [AlbumSnapshot] = []
         PHAssetCollection.fetchAssetCollections(with: .album, subtype: .albumRegular, options: nil)
             .enumerateObjects { collection, _, _ in
-                let album = snapshot(id: collection.localIdentifier, title: collection.localizedTitle ?? "Untitled", kind: .user,
-                                     PHAsset.fetchAssets(in: collection, options: options))
+                let album = withHidden(snapshot(id: collection.localIdentifier, title: collection.localizedTitle ?? "Untitled", kind: .user,
+                                                PHAsset.fetchAssets(in: collection, options: options)), in: collection)
                 guard !album.assetIDs.isEmpty else { return unlisted.append(album) }
                 user.append(LibraryAlbum(snapshot: album, symbol: "rectangle.stack"))
             }
