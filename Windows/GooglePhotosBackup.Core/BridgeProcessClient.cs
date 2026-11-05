@@ -4,12 +4,12 @@ using System.Text.Json.Nodes;
 
 namespace GooglePhotosBackup.Core;
 
+/// <summary>One bridge process per request: the one-shot path, kept for single requests (a credential check,
+/// iCloud) and as the fallback beside <see cref="BridgeSessionClient"/>.</summary>
 public sealed class BridgeProcessClient(string pythonPath, string bridgePath) : IBridgeClient
 {
-    public async Task<int> ExecuteAsync(JsonObject request, Action<JsonObject> onEvent, CancellationToken cancellationToken)
+    internal static ProcessStartInfo StartInfo(string pythonPath, string bridgePath)
     {
-        ArgumentNullException.ThrowIfNull(request);
-        ArgumentNullException.ThrowIfNull(onEvent);
         var start = new ProcessStartInfo(pythonPath)
         {
             UseShellExecute = false,
@@ -17,6 +17,7 @@ public sealed class BridgeProcessClient(string pythonPath, string bridgePath) : 
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            // No BOM: the bridge parses its first stdin line as JSON.
             StandardInputEncoding = new UTF8Encoding(false),
             StandardOutputEncoding = new UTF8Encoding(false),
             StandardErrorEncoding = new UTF8Encoding(false)
@@ -24,8 +25,14 @@ public sealed class BridgeProcessClient(string pythonPath, string bridgePath) : 
         start.ArgumentList.Add("-I");
         start.ArgumentList.Add("-B");
         start.ArgumentList.Add(bridgePath);
+        return start;
+    }
 
-        using var process = new Process { StartInfo = start };
+    public async Task<int> ExecuteAsync(JsonObject request, Action<JsonObject> onEvent, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(onEvent);
+        using var process = new Process { StartInfo = StartInfo(pythonPath, bridgePath) };
         Task? stderr = null;
         var started = false;
         try
@@ -75,7 +82,7 @@ public sealed class BridgeProcessClient(string pythonPath, string bridgePath) : 
         }
     }
 
-    private static void Kill(Process process)
+    internal static void Kill(Process process)
     {
         try { if (!process.HasExited) process.Kill(entireProcessTree: true); }
         catch (InvalidOperationException) { }

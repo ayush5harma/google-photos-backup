@@ -11,4 +11,8 @@ public sealed record BackupSummary(int Uploaded, int Existing, int Failed, bool 
 public interface IBridgeClient
 {
     Task<int> ExecuteAsync(JsonObject request, Action<JsonObject> onEvent, CancellationToken cancellationToken);
+
+    /// <summary>The last request started a bridge process, so its time includes Python's start-up and the
+    /// sign-in. Always so for a one-shot client; a serve session says so only when it started or replaced one.</summary>
+    bool LastRequestStartedBridge => true;
 }
