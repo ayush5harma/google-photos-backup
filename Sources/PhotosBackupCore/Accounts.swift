@@ -19,32 +19,86 @@ public struct BackupAccount: Codable, Equatable, Sendable, Identifiable {
     /// Signed out with Remove. Kept rather than deleted, so signing in again
     /// finds its records and album links instead of creating every album anew.
     public var removed: Bool
+    /// "Include in backups" is ticked. Read only while backups go to
+    /// `AccountsChoice.chosen` accounts; with `.all` every account is in.
+    public var chosen: Bool
 
-    public init(id: String, email: String?, stateFile: String, addedAt: Date, storageChecked: Bool, removed: Bool = false) {
+    public init(id: String, email: String?, stateFile: String, addedAt: Date, storageChecked: Bool, removed: Bool = false,
+                chosen: Bool = false) {
         self.id = id
         self.email = email
         self.stateFile = stateFile
         self.addedAt = addedAt
         self.storageChecked = storageChecked
         self.removed = removed
+        self.chosen = chosen
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, email, stateFile, addedAt, storageChecked, removed, chosen
+    }
+
+    /// An accounts.json from before the choice has no `chosen`; nothing
+    /// was chosen then, and every account was backed up.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        email = try container.decodeIfPresent(String.self, forKey: .email)
+        stateFile = try container.decode(String.self, forKey: .stateFile)
+        addedAt = try container.decode(Date.self, forKey: .addedAt)
+        storageChecked = try container.decode(Bool.self, forKey: .storageChecked)
+        removed = try container.decode(Bool.self, forKey: .removed)
+        chosen = try container.decodeIfPresent(Bool.self, forKey: .chosen) ?? false
     }
 
     /// The address for people to read.
     public var title: String { email ?? "Google account" }
 }
 
+/// Which accounts a backup goes to when nobody names one: Back Up Now,
+/// automatic runs and photosbackup://backup.
+public enum AccountsChoice: String, Codable, Equatable, Sendable, CaseIterable {
+    /// Every signed-in account, an account added later included.
+    case all
+    /// Only the accounts whose "Include in backups" is ticked.
+    case chosen
+}
+
 /// What `accounts.json` holds: the accounts in the order runs visit them,
-/// and the album selection they share.
+/// the album selection they share, and which of them backups go to.
 public struct AccountsIndex: Codable, Equatable, Sendable {
     public static let currentVersion = 1
 
     public var version = AccountsIndex.currentVersion
     public var accounts: [BackupAccount] = []
     public var selectedAlbumIDs: Set<String> = []
+    public var backUpTo: AccountsChoice = .all
 
-    public init(accounts: [BackupAccount] = [], selectedAlbumIDs: Set<String> = []) {
+    public init(accounts: [BackupAccount] = [], selectedAlbumIDs: Set<String> = [], backUpTo: AccountsChoice = .all) {
         self.accounts = accounts
         self.selectedAlbumIDs = selectedAlbumIDs
+        self.backUpTo = backUpTo
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version, accounts, selectedAlbumIDs, backUpTo
+    }
+
+    /// The choice is an addition older files lack: they back up to every
+    /// account, as they always did. An older build reading a newer file
+    /// ignores the key, so the version stays 1.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        version = try container.decode(Int.self, forKey: .version)
+        accounts = try container.decode([BackupAccount].self, forKey: .accounts)
+        selectedAlbumIDs = try container.decode(Set<String>.self, forKey: .selectedAlbumIDs)
+        if let raw = try container.decodeIfPresent(String.self, forKey: .backUpTo) {
+            // A choice only a newer version knows: the ticked accounts, never
+            // more, rather than setting the whole list aside as unreadable.
+            backUpTo = AccountsChoice(rawValue: raw) ?? .chosen
+        } else {
+            backUpTo = .all
+        }
     }
 }
 
@@ -81,6 +135,48 @@ public struct AccountLibrary: Equatable, Sendable {
     /// (Messages media, picked photos, device imports, iCloud).
     public var primary: BackupAccount? { accounts.first }
     public var selection: Set<String> { index.selectedAlbumIDs }
+
+    // MARK: - Which accounts backups go to
+
+    /// Which accounts a backup that names none goes to.
+    public var choice: AccountsChoice { index.backUpTo }
+
+    /// Whether a backup that names no account goes to this one: any
+    /// signed-in account with "All accounts", a ticked one otherwise.
+    public func isIncluded(_ id: String) -> Bool {
+        guard let account = account(id), !account.removed else { return false }
+        return Self.includes(index.backUpTo, account)
+    }
+
+    /// The signed-in accounts a backup that names none goes to, in run order.
+    public var included: [BackupAccount] { accounts.filter { Self.includes(index.backUpTo, $0) } }
+
+    /// "Back up to". Choosing accounts starts with every signed-in account
+    /// ticked, so switching alone changes nothing until one is unticked.
+    public mutating func choose(_ choice: AccountsChoice) {
+        guard choice != index.backUpTo else { return }
+        if choice == .chosen {
+            for account in accounts { setChosen(account.id, true) }
+        }
+        index.backUpTo = choice
+    }
+
+    /// One account's "Include in backups". Unticking an account while
+    /// backups go to all of them switches to choosing, with every other
+    /// account kept: "All accounts" then no longer holds, and an account
+    /// added later waits to be ticked.
+    public mutating func include(_ id: String, _ included: Bool) {
+        guard let account = account(id), !account.removed else { return }
+        if index.backUpTo == .all {
+            guard !included else { return }
+            choose(.chosen)
+        }
+        setChosen(account.id, included)
+    }
+
+    private static func includes(_ choice: AccountsChoice, _ account: BackupAccount) -> Bool {
+        choice == .all || account.chosen
+    }
 
     public func account(_ id: String) -> BackupAccount? {
         index.accounts.first { $0.id == id }
@@ -161,7 +257,8 @@ public struct AccountLibrary: Equatable, Sendable {
             let takesUnclaimed = unclaimed != nil && unclaimed?.accountEmail == nil
             let file = takesUnclaimed || (unclaimed == nil && !isFileTaken(Self.legacyStateFile))
                 ? Self.legacyStateFile : Self.stateFile(for: id)
-            index.accounts.append(BackupAccount(id: id, email: nil, stateFile: file, addedAt: now, storageChecked: true))
+            index.accounts.append(BackupAccount(id: id, email: nil, stateFile: file, addedAt: now, storageChecked: true,
+                                                chosen: accounts.isEmpty))
             states[id] = takesUnclaimed ? unclaimed : BackupState()
             if takesUnclaimed { unclaimed = nil }
         }
@@ -197,6 +294,9 @@ public struct AccountLibrary: Equatable, Sendable {
             // for a capital letter would gain nothing.
             known.email = known.email ?? email
             known.removed = false
+            // The only signed-in account takes the backups whatever was
+            // ticked before: there is no other account to choose.
+            if accounts.allSatisfy({ $0.id == known.id }) { known.chosen = true }
             replace(known)
             var state = states[known.id] ?? BackupState()
             if state.accountEmail == nil { state.accountEmail = email }
@@ -224,7 +324,10 @@ public struct AccountLibrary: Equatable, Sendable {
             if let kept = stored(file), kept.accountEmail.map({ GoogleSignIn.sameAccount($0, email) }) ?? true { state = kept }
         }
         state.accountEmail = email
-        let account = BackupAccount(id: id, email: email, stateFile: file, addedAt: now, storageChecked: checked)
+        // Ticked only as the sole account: with accounts chosen, one added
+        // next to others waits to be ticked (or its storage check confirmed).
+        let account = BackupAccount(id: id, email: email, stateFile: file, addedAt: now, storageChecked: checked,
+                                    chosen: accounts.isEmpty)
         index.accounts.append(account)
         states[id] = state
         return Adoption(account: account, state: self.state(for: id) ?? state, isNew: true)
@@ -265,6 +368,7 @@ public struct AccountLibrary: Equatable, Sendable {
             states[added.id] = state
             added.stateFile = placeholder.stateFile
             added.storageChecked = added.storageChecked || placeholder.storageChecked
+            added.chosen = added.chosen || placeholder.chosen
             added.removed = false
             index.accounts.removeAll { $0.id == added.id }
             if let position = index.accounts.firstIndex(where: { $0.id == id }) { index.accounts[position] = added }
@@ -272,7 +376,11 @@ public struct AccountLibrary: Equatable, Sendable {
         }
         // Otherwise both records are kept: the account the credential names
         // signs in with its own, the other is signed out with its own.
-        let adopted = adopting(account: email, now: now, storageChecked: account(id)?.storageChecked)
+        let previous = account(id)
+        let adopted = adopting(account: email, now: now, storageChecked: previous?.storageChecked)
+        // The tick was given to this credential's slot: a new account it
+        // turns out to be keeps it.
+        if adopted.isNew, previous?.chosen == true { setChosen(adopted.account.id, true) }
         remove(id)
         return adopted.account.id
     }
@@ -286,9 +394,12 @@ public struct AccountLibrary: Equatable, Sendable {
         index.selectedAlbumIDs = albumIDs
     }
 
+    /// "Start Backing Up" on the storage check: the account joins the runs,
+    /// ticked too when accounts are chosen, since that click asks for it.
     public mutating func confirmStorage(_ id: String) {
         guard var account = account(id) else { return }
         account.storageChecked = true
+        account.chosen = true
         replace(account)
     }
 
@@ -320,6 +431,12 @@ public struct AccountLibrary: Equatable, Sendable {
 
     private func isFileTaken(_ file: String) -> Bool {
         index.accounts.contains { $0.stateFile == file }
+    }
+
+    private mutating func setChosen(_ id: String, _ chosen: Bool) {
+        guard var account = account(id) else { return }
+        account.chosen = chosen
+        replace(account)
     }
 
     private mutating func setRemoved(_ id: String, _ removed: Bool) {
