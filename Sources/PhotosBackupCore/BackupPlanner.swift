@@ -54,6 +54,12 @@ public struct BackupSummary: Equatable, Sendable {
     public let pending: Int
     public let selectedAlbums: Int
 
+    public init(backedUp: Int, pending: Int, selectedAlbums: Int) {
+        self.backedUp = backedUp
+        self.pending = pending
+        self.selectedAlbums = selectedAlbums
+    }
+
     public var total: Int { backedUp + pending }
 }
 
