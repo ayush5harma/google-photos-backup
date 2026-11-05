@@ -1128,7 +1128,7 @@ final class BackupEngine {
             var fatal: (FatalKind, String)?
             var albumLimited = false
             var missingKeys: [String] = []
-            var sample = UploadSample(bytes: 0, seconds: 0, items: 0, rateLimited: false, serverFailures: 0)
+            var sample = UploadSample(bytes: 0, seconds: 0, items: 0, rateLimited: false, serverFailures: 0, requested: pending.count)
             let request = BridgeRequest.upload(auth, items: pending.compactMap { byID[$0]?.bridgeItem }, quality: settings.quality,
                                                threads: parallelism.current, album: target)
             let sentAt = Date()
@@ -1275,12 +1275,14 @@ final class BackupEngine {
         + "so this run stopped; the next run tries again."
 
     /// One request measured; a step down is worth a line in the timeline,
-    /// since it holds for the rest of the run.
+    /// since it holds for the rest of the run or (automatically, after
+    /// Google's trouble) until a level higher is tried again.
     private func adjustParallelism(after sample: UploadSample, category: EventCategory) {
         let before = parallelism.current
         parallelism.measured(sample)
         if parallelism.current < before, sample.rateLimited || sample.serverFailures > 0 {
-            model.log(category, "Uploads go \(parallelism.summary) for the rest of this backup.")
+            let until = parallelism.mayRise ? "until a higher level is tried again" : "for the rest of this backup"
+            model.log(category, "Uploads go \(parallelism.summary) \(until).")
         }
     }
 

@@ -13,22 +13,34 @@ public struct UploadSample: Equatable, Sendable {
     /// Items that failed in a way sending again may fix: a 5xx, a 408, a
     /// dropped connection or a timeout.
     public var serverFailures: Int
+    /// Items the request sent, whatever became of them: the share of
+    /// failures is judged against this. 0 when not known, which counts as
+    /// the items that went up plus those that failed.
+    public var requested: Int
     /// The run's first request, whose time includes the bridge's start-up
     /// and sign-in: it counts for pushback, not for speed.
     public var includesStartUp: Bool
 
     public init(bytes: Int64, seconds: TimeInterval, items: Int, rateLimited: Bool, serverFailures: Int,
-                includesStartUp: Bool = false) {
+                includesStartUp: Bool = false, requested: Int = 0) {
         self.bytes = bytes
         self.seconds = seconds
         self.items = items
         self.rateLimited = rateLimited
         self.serverFailures = serverFailures
         self.includesStartUp = includesStartUp
+        self.requested = requested
+    }
+
+    /// The share of the request's items that failed retryably, 0 to 1.
+    var failureShare: Double {
+        let sent = max(requested, items + serverFailures)
+        return sent == 0 ? 0 : Double(serverFailures) / Double(sent)
     }
 }
 
-/// How many uploads go at once, decided between bridge requests (issue #50).
+/// How many uploads go at once, decided between bridge requests (issue #50),
+/// for one account: with several accounts each has its own (issue #66).
 ///
 /// A number chosen in Settings is used from the run's first request. Through
 /// 0.6.0 it was only a ceiling for the climb below. Measured 2026-11-05 on
@@ -46,9 +58,23 @@ public struct UploadSample: Equatable, Sendable {
 /// climbs on, and only a second in a row goes back to the best level. A
 /// settled level is tried one step higher after `reprobeAfter` decisions,
 /// judged against its own latest rate, since the link a run starts on is not
-/// the one it has hours later. In either mode Google pushing back ends the
-/// climb for the run: a 429 halves the level, two or more retryable failures
-/// in one request take one off, and the level only ever goes down after that.
+/// the one it has hours later.
+///
+/// In either mode Google pushing back lowers it. A 429 halves the level and
+/// ends the climb for the run. Retryable failures (5xx, timeouts) lower it in
+/// proportion to how much of the request failed (issue #66): not at all
+/// below two failures or below a tenth of the request's items, one off from
+/// there, and half when half or more failed. Measured 2026-11-05 on 0.6.1 at
+/// 16 to one account: Google's commit call answered 500/503 about 190 times
+/// in 3.4 minutes across 104 files, and the first 100-photo batch saved 42
+/// (0.2 a second); at about 4 to 8 on 0.6.0 there were 12 such errors in 70
+/// minutes (0.66 a second). Taking one off per request took about 12
+/// batches, over 40 minutes, to come down from 16; halving takes one or two.
+/// What Google limits is the commits one account takes at once, which can
+/// change over hours, so in automatic mode a level lowered this way is tried
+/// one step higher again after `reprobeAfter` clean decisions (no retryable
+/// failure in any request they measured) and climbs from there as above. A
+/// chosen number stays lowered for the run.
 public struct UploadParallelism: Equatable, Sendable {
     /// The bridge's MAX_THREADS, and the most a chosen number may be. A
     /// ceiling for the climb, which reaches it only while each step keeps
@@ -69,6 +95,11 @@ public struct UploadParallelism: Equatable, Sendable {
     public static let decisionSeconds: TimeInterval = 4
     /// One passing 5xx is Google's noise, not pressure.
     public static let serverFailuresThatCount = 2
+    /// Retryable failures under this share of a request's items are noise
+    /// too: a 5xx or two in a hundred-photo batch say little about the level.
+    public static let serverFailureShare = 0.10
+    /// From this share of a request's items failed, the level halves.
+    public static let halvingShare = 0.5
     /// Steps in a row not faster than the best before the climb settles.
     public static let missesToSettle = 2
     /// Decisions at a settled level before it is tried one step higher: about
@@ -94,10 +125,14 @@ public struct UploadParallelism: Equatable, Sendable {
     private var best: Rate?
     /// Steps in a row, since the best, that were not faster than it.
     private var misses = 0
-    /// Decisions measured since the level settled.
+    /// Decisions measured since the level settled, or clean ones since
+    /// Google's trouble lowered it.
     private var settledDecisions = 0
     private var pendingBytes: Int64 = 0
     private var pendingSeconds: TimeInterval = 0
+    /// A request measured since the last decision had a retryable failure,
+    /// so that decision is not a clean one.
+    private var troubleSinceDecision = false
 
     public init(cap: Int, automatic: Bool) {
         self.cap = min(max(1, cap), Self.automaticCap)
@@ -118,21 +153,30 @@ public struct UploadParallelism: Equatable, Sendable {
             backOff(to: current / 2, because: .rateLimited)
             return
         }
-        if sample.serverFailures >= Self.serverFailuresThatCount {
-            backOff(to: current - 1, because: .serverTrouble)
+        if sample.serverFailures >= Self.serverFailuresThatCount, sample.failureShare >= Self.serverFailureShare {
+            backOff(to: sample.failureShare >= Self.halvingShare ? current / 2 : current - 1, because: .serverTrouble)
             return
         }
-        // Only a climbing or a settled level measures; a chosen number, the
-        // cap reached and a level Google pushed back stay where they are.
-        guard isClimbing || isSettled, sample.items > 0, !sample.includesStartUp else { return }
+        if sample.serverFailures > 0 { troubleSinceDecision = true }
+        // Only a climbing, a settled or (automatically) a level Google's
+        // trouble lowered measures; a chosen number, the cap reached and a
+        // level a 429 lowered stay where they are.
+        guard mayRise, sample.items > 0, !sample.includesStartUp else { return }
         pendingBytes += sample.bytes
         pendingSeconds += sample.seconds
         guard pendingBytes >= Self.decisionBytes, pendingSeconds >= Self.decisionSeconds else { return }
         let rate = Rate(level: current, bytesPerSecond: Double(pendingBytes) / pendingSeconds)
+        let clean = !troubleSinceDecision
         pendingBytes = 0
         pendingSeconds = 0
+        troubleSinceDecision = false
         if isClimbing {
             climb(rate)
+        } else if isRecovering, !clean {
+            // A failure too small to lower it still says Google is not keeping
+            // up: the count of clean decisions starts again.
+            best = rate
+            settledDecisions = 0
         } else {
             reprobe(rate)
         }
@@ -142,6 +186,15 @@ public struct UploadParallelism: Equatable, Sendable {
         if case .noFaster = reason { return true }
         return false
     }
+
+    /// Lowered for Google's trouble in automatic mode: tried one step higher
+    /// after `reprobeAfter` clean decisions.
+    private var isRecovering: Bool { automatic && reason == .serverTrouble }
+
+    /// Whether the level may still rise in this run: false at a chosen
+    /// number, at the cap, and once a 429 (or, for a chosen number, Google's
+    /// trouble) lowered it.
+    public var mayRise: Bool { isClimbing || isSettled || isRecovering }
 
     private mutating func climb(_ rate: Rate) {
         if let best, rate.bytesPerSecond < best.bytesPerSecond * (1 + Self.improvement) {
@@ -191,6 +244,9 @@ public struct UploadParallelism: Equatable, Sendable {
         reason = cause
         pendingBytes = 0
         pendingSeconds = 0
+        settledDecisions = 0
+        troubleSinceDecision = false
+        misses = 0
     }
 
     /// For Diagnostics: where it is and why.

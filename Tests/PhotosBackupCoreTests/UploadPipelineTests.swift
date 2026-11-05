@@ -5,8 +5,9 @@ import Testing
 private let megabyte: Int64 = 1_000_000
 
 private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int = 20, rateLimited: Bool = false,
-                    serverFailures: Int = 0) -> UploadSample {
-    UploadSample(bytes: megabytes * megabyte, seconds: seconds, items: items, rateLimited: rateLimited, serverFailures: serverFailures)
+                    serverFailures: Int = 0, requested: Int = 0) -> UploadSample {
+    UploadSample(bytes: megabytes * megabyte, seconds: seconds, items: items, rateLimited: rateLimited, serverFailures: serverFailures,
+                 requested: requested)
 }
 
 @Suite struct UploadParallelismTests {
@@ -169,9 +170,79 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         var parallelism = UploadParallelism(cap: 8, automatic: true)
         parallelism.measured(sample(40, serverFailures: 1))  // one passing 5xx is not pressure
         #expect(parallelism.current == 5)
-        parallelism.measured(sample(60, serverFailures: 2))
+        parallelism.measured(sample(60, items: 10, serverFailures: 2, requested: 12))
         #expect(parallelism.current == 4)
         #expect(parallelism.isClimbing == false)
+    }
+
+    /// Issue #66: two failures in a hundred-photo request are under a tenth
+    /// of it, Google's noise rather than the level.
+    @Test func failuresUnderATenthOfTheRequestAreNoise() {
+        var parallelism = UploadParallelism(cap: 16, automatic: false)
+        parallelism.measured(sample(40, items: 91, serverFailures: 9, requested: 100))
+        #expect(parallelism.current == 16)
+        parallelism.measured(sample(40, items: 90, serverFailures: 10, requested: 100))
+        #expect(parallelism.current == 15, "a tenth of the request takes one off")
+        // Not known how many were sent: the items that went up and the failures.
+        parallelism.measured(sample(40, items: 18, serverFailures: 2))
+        #expect(parallelism.current == 14)
+        parallelism.measured(sample(40, items: 19, serverFailures: 2))
+        #expect(parallelism.current == 14, "2 of 21 is under a tenth")
+    }
+
+    /// The 2026-11-05 run on 0.6.1: 16 at once to one account, 42 of 100
+    /// photos saved. One off per request took 40+ minutes to reach a level
+    /// Google accepts; half or more failing halves it.
+    @Test func halfTheRequestFailingHalvesTheLevel() {
+        var parallelism = UploadParallelism(cap: 16, automatic: false)
+        parallelism.measured(sample(40, items: 42, serverFailures: 58, requested: 100))
+        #expect(parallelism.current == 8)
+        parallelism.measured(sample(40, items: 50, serverFailures: 50, requested: 100))
+        #expect(parallelism.current == 4, "exactly half halves")
+        parallelism.measured(sample(40, items: 51, serverFailures: 49, requested: 100))
+        #expect(parallelism.current == 3, "just under half takes one off")
+        parallelism.measured(sample(4, items: 0, serverFailures: 3, requested: 3))
+        parallelism.measured(sample(4, items: 0, serverFailures: 3, requested: 3))
+        #expect(parallelism.current == 1, "never under one")
+        #expect(parallelism.summary == "1 at a time (Google had trouble keeping up)")
+    }
+
+    /// Issue #66: automatically, a level lowered for Google's trouble is
+    /// tried one step higher after `reprobeAfter` clean decisions, and climbs
+    /// on from there while each step is faster.
+    @Test func automaticTriesALevelLoweredForTroubleAgainAfterCleanDecisions() {
+        var parallelism = UploadParallelism(cap: 16, automatic: true)
+        for megabytes in [40, 60, 80, 100, 130, 170] as [Int64] { parallelism.measured(sample(megabytes)) }
+        #expect(parallelism.current == 16)
+        parallelism.measured(sample(40, items: 42, serverFailures: 58, requested: 100))
+        #expect(parallelism.current == 8)
+        #expect(parallelism.mayRise)
+        for _ in 1..<UploadParallelism.reprobeAfter { parallelism.measured(sample(60)) }
+        #expect(parallelism.current == 8)
+        parallelism.measured(sample(60))
+        #expect(parallelism.current == 10, "one step up the ladder")
+        #expect(parallelism.isClimbing)
+        parallelism.measured(sample(80))
+        #expect(parallelism.current == 13, "faster, so it climbs on")
+    }
+
+    @Test func aFailureTooSmallToLowerTheLevelStartsTheCleanCountAgain() {
+        var parallelism = UploadParallelism(cap: 16, automatic: false)
+        var automatic = UploadParallelism(cap: 8, automatic: true)
+        automatic.measured(sample(40, items: 10, serverFailures: 2, requested: 12))
+        #expect(automatic.current == 3)
+        for _ in 1..<UploadParallelism.reprobeAfter { automatic.measured(sample(60)) }
+        automatic.measured(sample(60, items: 99, serverFailures: 1, requested: 100))
+        #expect(automatic.current == 3, "that decision was not clean")
+        for _ in 1..<UploadParallelism.reprobeAfter { automatic.measured(sample(60)) }
+        #expect(automatic.current == 3)
+        automatic.measured(sample(60))
+        #expect(automatic.current == 4)
+        // A chosen number lowered for trouble stays lowered.
+        parallelism.measured(sample(40, items: 42, serverFailures: 58, requested: 100))
+        #expect(parallelism.mayRise == false)
+        for _ in 0..<(3 * UploadParallelism.reprobeAfter) { parallelism.measured(sample(400)) }
+        #expect(parallelism.current == 8)
     }
 
     @Test func aSmallSampleWaitsForMore() {
@@ -236,7 +307,7 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         parallelism.measured(sample(40, rateLimited: true))
         #expect(parallelism.current == 8)
         #expect(parallelism.summary == "8 at a time (Google asked to slow down)")
-        parallelism.measured(sample(40, serverFailures: 2))
+        parallelism.measured(sample(40, items: 10, serverFailures: 2, requested: 12))
         #expect(parallelism.current == 7)
         // It never goes back up within the run.
         for _ in 0..<20 { parallelism.measured(sample(400)) }
