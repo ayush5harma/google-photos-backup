@@ -423,23 +423,70 @@ def _connect(request: Event, factory: ClientFactory) -> Any:
     if not isinstance(timeout, int) or timeout <= 0:
         raise RequestError("`timeout` must be a positive integer")
     client = factory(auth_data, timeout)
+    _renew_one_at_a_time(client.api)
     _ = client.api.bearer_token
     return client
+
+
+# gpmc 0.9.0's bearer_token renews an expired token with no lock, from
+# whichever thread finds it expired. A serve session outlives the token (it
+# expires about an hour after sign-in), so every upload thread that reads it
+# during the renewal signed in again at once: up to MAX_THREADS sign-ins
+# (PR #52 review). Renewals now go one at a time, and a thread that waited
+# for one uses the token it brought. Without gpmc's _get_auth_token (a
+# fake, a later gpmc) this changes nothing.
+_RENEWAL_ATTRIBUTE = "_photos_backup_one_renewal"
+
+
+def _renew_one_at_a_time(api: Any) -> None:
+    renew = getattr(api, "_get_auth_token", None)
+    if renew is None or getattr(api, _RENEWAL_ATTRIBUTE, False):
+        return
+    lock = threading.Lock()
+
+    def renew_once() -> Any:
+        with lock:
+            cache = getattr(api, "auth_response_cache", None) or {}
+            # gpmc's own test for an expired token, the other way round.
+            if cache.get("Auth") and int(cache.get("Expiry", "0")) > int(time.time()):
+                return cache
+            renewed = renew()
+            # Stored before the lock opens: gpmc stores it only after this
+            # returns, and a thread let in meanwhile would find the old,
+            # expired token and sign in again.
+            api.auth_response_cache = renewed
+            return renewed
+
+    api._get_auth_token = renew_once
+    setattr(api, _RENEWAL_ATTRIBUTE, True)
 
 
 # gpmc 0.9.0 makes every call through `with self._new_session() as session:`,
 # a new requests.Session each time, so every call opens its own TCP and TLS
 # connection and closes it: four per uploaded file (hash check, upload token,
 # upload, commit), each a handshake away from Google before any byte moves.
-# While an upload or album step runs, Api._new_session hands out sessions from
-# a pool instead and `with` gives them back, so later calls reuse the open
-# connection. Each session is made by gpmc's own _new_session (same retry
-# adapter, proxies and TLS settings) and is used by one call at a time; the
-# headers and bodies are gpmc's own, per call, as before. Verification is left
-# on fresh sessions: verify_original clears a session's headers, cookies and
-# retries for its signed downloads.
+# In a serve session (the Mac app's run), while an upload or album step runs,
+# Api._new_session hands out sessions from a pool instead and `with` gives
+# them back, so later calls reuse the open connection. Each session is made
+# by gpmc's own _new_session (same retry adapter, proxies and TLS settings)
+# and is used by one call at a time; the headers and bodies are gpmc's own,
+# per call, as before. Verification is left on fresh sessions:
+# verify_original clears a session's headers, cookies and retries for its
+# signed downloads. A one-shot request (the Windows app, the Android app's
+# in-process run(), the Mac app's checks) keeps gpmc's fresh sessions.
 MAX_IDLE_SESSIONS = MAX_THREADS + 2
 _POOL_ATTRIBUTE = "_photos_backup_sessions"
+
+# A kept session idle longer than this is closed at checkout, not reused.
+# Between two requests the app may spend minutes exporting from Photos, and a
+# connection Google closed meanwhile fails the next call with
+# RemoteDisconnected. urllib3 1.26 (1.26.20 in the bundle) does not retry a
+# POST after a read error, so the item failed as a server error and the app
+# lowered its parallelism for the rest of the run (PR #52 review). 60 s is a
+# margin under the idle timeouts HTTP front ends commonly use; Google's own
+# was not measured.
+MAX_IDLE_SECONDS = 60.0
+_monotonic = time.monotonic  # the tests replace it
 
 
 class SessionPool:
@@ -447,14 +494,20 @@ class SessionPool:
 
     def __init__(self, make: Callable[[], Any]) -> None:
         self._make = make
-        self._idle: list[Any] = []
+        # (session, when it was given back), the most recent last.
+        self._idle: list[tuple[Any, float]] = []
         self._lock = threading.Lock()
         self._closed = False
         self.made = 0
 
     def checkout(self) -> Any:
+        now = _monotonic()
         with self._lock:
-            session = self._idle.pop() if self._idle else None
+            stale = [session for session, since in self._idle if now - since > MAX_IDLE_SECONDS]
+            self._idle = [(session, since) for session, since in self._idle if now - since <= MAX_IDLE_SECONDS]
+            session = self._idle.pop()[0] if self._idle else None
+        for old in stale:
+            type(old).close(old)
         if session is None:
             session = self._make()
             # `with session:` ends in close(): give it back instead.
@@ -468,7 +521,7 @@ class SessionPool:
     def _checkin(self, session: Any) -> None:
         with self._lock:
             if not self._closed and len(self._idle) < MAX_IDLE_SESSIONS:
-                self._idle.append(session)
+                self._idle.append((session, _monotonic()))
                 return
         type(session).close(session)
 
@@ -476,7 +529,7 @@ class SessionPool:
         with self._lock:
             self._closed = True
             idle, self._idle = self._idle, []
-        for session in idle:
+        for session, _ in idle:
             type(session).close(session)
 
 
@@ -484,8 +537,12 @@ _MISSING = object()
 
 
 @contextlib.contextmanager
-def _kept_sessions(client: Any) -> Iterator[None]:
-    """Route the client's gpmc calls through its session pool meanwhile."""
+def _kept_sessions(client: Any, keep: bool) -> Iterator[None]:
+    """Route the client's gpmc calls through its session pool meanwhile, in a
+    serve session (`keep`); a one-shot request is left as it was."""
+    if not keep:
+        yield
+        return
     api = getattr(client, "api", None)
     previous = getattr(api, "__dict__", {}).get("_new_session", _MISSING)
     pool = getattr(client, _POOL_ATTRIBUTE, None)
@@ -746,7 +803,7 @@ def _report_album(emit: Emit, album: Event, album_id: str | None, added: list[st
         emit(_event("album", album_id=album_id, added=len(added), **keys))
 
 
-def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop: StopSignal) -> int:
+def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop: StopSignal, keep_sessions: bool) -> int:
     items = _items(request)
     quality = request.get("quality", "original")
     if quality not in QUALITIES:
@@ -783,7 +840,7 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
             progress_callback=on_progress,
         )
 
-    with _kept_sessions(client):
+    with _kept_sessions(client, keep_sessions):
         counts, confirmed = _upload_all(items, upload_one, threads, emit, failures, skipped)
         if album and confirmed:
             # A stop must not land between Google creating the album and the app
@@ -978,6 +1035,9 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
     failures = FailureLog()
     logging.getLogger().addHandler(failures)
     client = None
+    # A serve session's ClientCache keeps the client between requests, and
+    # with it the kept connections; a one-shot request keeps neither.
+    keep_sessions = bool(getattr(client_factory, "keeps_clients", False))
     try:
         if not isinstance(request, dict):
             raise RequestError("the request must be a JSON object")
@@ -1023,10 +1083,10 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
             emit(_event("auth", email=_email(request["auth_data"])))
             return EXIT_OK
         if command == "add-to-album":
-            with _kept_sessions(client), stop.critical():
+            with _kept_sessions(client, keep_sessions), stop.critical():
                 _album_step(client, request["media_keys"], request["album"], emit, stop)
             return EXIT_OK
-        return _upload(request, client, emit, failures, stop)
+        return _upload(request, client, emit, failures, stop, keep_sessions)
     except StopRequested:
         emit(_event("stopped"))
         return EXIT_STOPPED
@@ -1050,7 +1110,7 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
         logging.getLogger().removeHandler(failures)
         # A client made for this request alone takes its connections with it;
         # a serve session's ClientCache keeps them for the next request.
-        if client is not None and not getattr(client_factory, "keeps_clients", False):
+        if client is not None and not keep_sessions:
             _close_sessions(client)
 
 

@@ -222,13 +222,33 @@ public struct ThroughputMeter: Equatable, Sendable {
 /// How far the export from Photos may run ahead of the upload (issue #50):
 /// the next batches are staged while one uploads, so the network does not
 /// wait on PhotoKit, but a new export starts only while fewer than two
-/// batches and under 2 GB are waiting.
+/// batches and under 2 GB are waiting, and an export ahead writes an item
+/// only while that keeps it within 2 GB and leaves the disk room.
 public enum StagingWindow {
     public static let batchesAhead = 2
     public static let bytesAhead: Int64 = 2_000_000_000
+    /// Free space an export ahead leaves on the staging volume. The batch
+    /// uploading is exported whatever the window says, and macOS needs room
+    /// of its own; 5 GB is a margin chosen for both, not a measured limit.
+    public static let freeSpaceFloor: Int64 = 5_000_000_000
 
     public static func mayStage(batchesReady: Int, bytesReady: Int64) -> Bool {
         batchesReady < batchesAhead && bytesReady < bytesAhead
+    }
+
+    /// Whether an export ahead may write its next item (PR #52 review: the
+    /// cap used to be judged on finished batches only, before an export
+    /// began, so one batch of large videos could stage any amount).
+    /// - Parameters:
+    ///   - staged: bytes exported ahead and not taken, the running export's included.
+    ///   - next: the item's size, or nil when it is not known until it is
+    ///     written; the window may then pass the cap by that one item.
+    ///   - freeSpace: what the staging volume has available, nil if it did not say.
+    public static func mayExportAhead(staged: Int64, next: Int64?, freeSpace: Int64?) -> Bool {
+        let fits = next.map { staged + $0 <= bytesAhead } ?? (staged < bytesAhead)
+        guard fits else { return false }
+        guard let freeSpace else { return true }
+        return freeSpace - (next ?? 0) >= freeSpaceFloor
     }
 
     /// The order a batch goes to the bridge: the largest first, so a long

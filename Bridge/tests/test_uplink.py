@@ -15,8 +15,12 @@ import re
 import signal
 import subprocess
 import sys
+import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -262,17 +266,118 @@ class KeptSessionTests(unittest.TestCase):
         self.assertNotIn("_new_session", vars(client.api))
         self.assertIsInstance(client.api._new_session(), FakeSession)
 
-    def test_a_one_shot_request_closes_its_sessions(self):
+    def test_a_one_shot_request_keeps_gpmcs_fresh_sessions(self):
+        # PR #52 review: the Windows app and the Android app's run() are one
+        # request each, and they stay as they were: a session per call.
         client = SessionClient()
-        run(upload(["a.jpg", "b.jpg"], threads=2), client)
-        self.assertLessEqual(FakeSession.made, 2)
+        code, _, _ = run(upload(["a.jpg", "b.jpg"], threads=2), client)
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual(FakeSession.made, 8)
+        self.assertEqual(len({id(session) for session in client.api.sessions_seen}), 8)
+        self.assertFalse(hasattr(client, gpmc_bridge._POOL_ATTRIBUTE))
         self.assertTrue(all(session.closed for session in client.api.sessions_seen))
+
+    def test_a_session_idle_too_long_is_closed_not_reused(self):
+        # PR #52 review: a connection Google closed while the app exported
+        # the next batch failed its next POST, which urllib3 does not retry.
+        pool = gpmc_bridge.SessionPool(FakeSession)
+        clock = [1000.0]
+        with mock.patch.object(gpmc_bridge, "_monotonic", lambda: clock[0]):
+            first = pool.checkout()
+            first.close()
+            clock[0] += gpmc_bridge.MAX_IDLE_SECONDS - 1
+            again = pool.checkout()
+            self.assertIs(again, first, "a session idle for less than the limit is reused")
+            again.close()
+            clock[0] += gpmc_bridge.MAX_IDLE_SECONDS + 1
+            fresh = pool.checkout()
+        self.assertIsNot(fresh, first)
+        self.assertTrue(first.closed, "the stale session's connection is closed, not left open")
+        self.assertFalse(fresh.closed)
 
     def test_an_api_without_new_session_still_uploads(self):
         client = FakeClient()
         code, _, _ = run(upload(["a.jpg"]), client)
         self.assertEqual(code, gpmc_bridge.EXIT_OK)
         self.assertEqual(len(client.upload_calls), 1)
+
+
+class ExpiringApi:
+    """gpmc 0.9.0's bearer_token as it is (gpmc/api.py): whichever thread
+    finds the token expired renews it, with no lock."""
+
+    def __init__(self):
+        self.auth_response_cache = {"Expiry": "0", "Auth": ""}
+        self.sign_ins = 0
+        self._count = threading.Lock()
+
+    @property
+    def bearer_token(self):
+        if int(self.auth_response_cache.get("Expiry", "0")) <= int(time.time()):
+            self.auth_response_cache = self._get_auth_token()
+        if token := self.auth_response_cache.get("Auth", ""):
+            return token
+        raise RuntimeError("Auth response does not contain bearer token")
+
+    def _get_auth_token(self):
+        with self._count:
+            self.sign_ins += 1
+        # Google takes a moment to answer; the threads meet meanwhile.
+        time.sleep(0.1)
+        return {"Expiry": str(int(time.time()) + 3600), "Auth": "bearer"}
+
+
+class TokenRenewalTests(unittest.TestCase):
+    """PR #52 review: a serve session outlives its token, and every upload
+    thread that found it expired signed in again at once."""
+
+    def read_from_threads(self, api, threads=gpmc_bridge.MAX_THREADS):
+        barrier = threading.Barrier(threads)
+
+        def read(_):
+            barrier.wait()
+            return api.bearer_token
+
+        with ThreadPoolExecutor(max_workers=threads) as pool:
+            return list(pool.map(read, range(threads)))
+
+    def test_an_expired_token_is_renewed_once_for_every_thread(self):
+        api = ExpiringApi()
+        gpmc_bridge._renew_one_at_a_time(api)
+        tokens = self.read_from_threads(api)
+        self.assertEqual(api.sign_ins, 1)
+        self.assertEqual(tokens, ["bearer"] * gpmc_bridge.MAX_THREADS)
+
+    def test_the_new_token_is_in_place_before_the_next_thread_looks(self):
+        # Review of the fix: gpmc stores the token only after the renewal
+        # returns, so a thread let in before that renewed again.
+        api = ExpiringApi()
+        gpmc_bridge._renew_one_at_a_time(api)
+        api._get_auth_token()
+        self.assertEqual(api.auth_response_cache["Auth"], "bearer")
+        api._get_auth_token()
+        self.assertEqual(api.sign_ins, 1)
+
+    def test_gpmc_alone_signs_in_from_every_thread(self):
+        # The fake has gpmc's race, so the test above is not vacuous.
+        api = ExpiringApi()
+        self.read_from_threads(api)
+        self.assertGreater(api.sign_ins, 1)
+
+    def test_every_request_of_a_session_connects_through_it_once(self):
+        client = FakeClient()
+        client.api = ExpiringApi()
+        request = {"auth_data": AUTH}
+        gpmc_bridge._connect(request, lambda auth_data, timeout: client)
+        renew = client.api._get_auth_token
+        gpmc_bridge._connect(request, lambda auth_data, timeout: client)
+        self.assertIs(client.api._get_auth_token, renew, "wrapped once, not once per request")
+        self.assertEqual(client.api.sign_ins, 1)
+
+    def test_an_api_without_gpmcs_renewal_is_left_alone(self):
+        api = FakeApi()
+        gpmc_bridge._renew_one_at_a_time(api)
+        self.assertFalse(hasattr(api, "_get_auth_token"))
 
 
 class ServeProcessTests(unittest.TestCase):
