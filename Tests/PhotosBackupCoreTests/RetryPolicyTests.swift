@@ -166,3 +166,62 @@ import Testing
         #expect(limiter.hold(at: until) == nil)
     }
 }
+
+/// Review of PR #68, HIGH 1: accounts side by side shared one limiter, so
+/// one account's success cancelled another's 429 hold.
+@Suite struct AccountRateLimitsTests {
+    private let start = Date(timeIntervalSince1970: 1_000_000)
+    private let first = "first@example.com"
+    private let second = "second@example.com"
+
+    @Test func anAccountInAHoldStaysHeldWhileAnotherAccountsRequestsSucceed() {
+        var limits = AccountRateLimits()
+        let until = limits.hitLimit(first, at: start)
+        // The second account's request was in flight and comes back confirmed.
+        limits.batchSucceeded(second)
+        limits.batchSucceeded(second)
+        #expect(limits.hold(first, at: start.addingTimeInterval(1)) == until, "still held a second later")
+        #expect(limits[first].holdsThisRun == 1)
+        #expect(limits.hold(second, at: start.addingTimeInterval(1)) == nil, "the other account sends on")
+    }
+
+    @Test func theHoldGrowsOnOneAccountsRepeatedLimitsWhateverAnotherDoes() {
+        var limits = AccountRateLimits()
+        var now = start
+        var holds: [TimeInterval] = []
+        for _ in 0..<4 {
+            let until = limits.hitLimit(first, at: now)
+            holds.append(until.timeIntervalSince(now))
+            limits.batchSucceeded(second)
+            now = until
+        }
+        #expect(holds == [60, 120, 240, 480])
+    }
+
+    @Test func eachAccountHasItsOwnAllowanceOfHolds() {
+        var limits = AccountRateLimits()
+        var now = start
+        for _ in 0...RateLimiter.maximumHoldsPerRun { now = limits.hitLimit(first, at: now) }
+        #expect(limits.runShouldGiveUp(first))
+        _ = limits.hitLimit(second, at: now)
+        #expect(!limits.runShouldGiveUp(second), "one 429 of its own does not end the second account's part")
+        #expect(limits[second].holdsThisRun == 1)
+
+        // A new run starts every allowance over and keeps Google's holds.
+        let during = now.addingTimeInterval(-1)
+        let hold = limits.hold(first, at: during)
+        #expect(hold != nil)
+        limits.runStarted()
+        #expect(!limits.runShouldGiveUp(first))
+        #expect(limits.hold(first, at: during) == hold)
+    }
+
+    @Test func theExportWaitsOnlyWhileEveryAccountIsHeld() {
+        var limits = AccountRateLimits()
+        let firstUntil = limits.hitLimit(first, at: start)
+        #expect(limits.everyHeld([first, second], at: start) == nil)
+        let secondUntil = limits.hitLimit(second, at: start.addingTimeInterval(10))
+        #expect(limits.everyHeld([first, second], at: start.addingTimeInterval(10)) == min(firstUntil, secondUntil))
+        #expect(limits.everyHeld([], at: start) == nil)
+    }
+}

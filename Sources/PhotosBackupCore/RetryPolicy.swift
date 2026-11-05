@@ -168,3 +168,53 @@ public struct RateLimiter: Equatable, Sendable {
         return holdUntil
     }
 }
+
+/// One RateLimiter per Google account (review of PR #68): Google's limits
+/// are per account, so the hold is too. With one shared limiter, account B's
+/// request that was already in flight came back with confirmations and
+/// cleared account A's fresh hold, so A sent again within a second, its hold
+/// never grew and its allowance of holds never ran out; and B could be ended
+/// after one 429 of its own because A had used up the shared allowance.
+/// Nothing a 429 says is global: a sign-in's 429 comes back on that
+/// account's own bridge too. Keyed by account id; lives across runs, as the
+/// single limiter did.
+public struct AccountRateLimits: Equatable, Sendable {
+    private var limiters: [String: RateLimiter] = [:]
+
+    public init() {}
+
+    /// The account's limiter; one that never hit a limit is a fresh one.
+    public subscript(account: String) -> RateLimiter {
+        limiters[account] ?? RateLimiter()
+    }
+
+    @discardableResult
+    public mutating func hitLimit(_ account: String, at now: Date) -> Date {
+        limiters[account, default: RateLimiter()].hitLimit(at: now)
+    }
+
+    public mutating func batchSucceeded(_ account: String) {
+        limiters[account]?.batchSucceeded()
+    }
+
+    /// Every account's allowance starts over; every hold stays.
+    public mutating func runStarted() {
+        for account in limiters.keys { limiters[account]?.runStarted() }
+    }
+
+    public func runShouldGiveUp(_ account: String) -> Bool {
+        self[account].runShouldGiveUp
+    }
+
+    public func hold(_ account: String, at now: Date) -> Date? {
+        self[account].hold(at: now)
+    }
+
+    /// When the soonest of these accounts' holds ends, once every one of
+    /// them is held; nil while any of them may send (or there are none).
+    public func everyHeld(_ accounts: [String], at now: Date) -> Date? {
+        let holds = accounts.map { hold($0, at: now) }
+        guard !holds.isEmpty, !holds.contains(nil) else { return nil }
+        return holds.compactMap { $0 }.min()
+    }
+}

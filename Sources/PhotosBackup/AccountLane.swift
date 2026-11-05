@@ -16,10 +16,11 @@ struct LanePlan: Equatable {
 
 /// One account's part of a run (issue #66): everything that was the engine's
 /// own while it backed up to one account at a time. Each account has its own
-/// bridge process, upload parallelism, retries, album work and run record,
-/// and its record is saved after each of its requests, as before; the
-/// engine runs the lanes of a pass side by side and shares only the export
-/// from Photos, the conditions, Google's 429 hold, Pause and Stop.
+/// bridge process, upload parallelism, retries, Google's 429 hold (the
+/// engine's AccountRateLimits, which outlives the run), album work and run
+/// record, and its record is saved after each of its requests, as before;
+/// the engine runs the lanes of a pass side by side and shares only the
+/// export from Photos, the conditions, Pause and Stop.
 ///
 /// One bridge process per account because a serve session answers one
 /// request at a time, in order, and its events carry no request id

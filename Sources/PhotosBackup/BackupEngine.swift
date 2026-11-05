@@ -207,8 +207,9 @@ final class BackupEngine {
     /// The rows being exported or sent; Retry leaves these alone.
     @ObservationIgnored private var inFlight = Set<String>()
     /// Lives across runs: Google's hold does not end because a run did. One
-    /// for every account: a 429 holds every upload, as it always has.
-    @ObservationIgnored private var rateLimiter = RateLimiter()
+    /// per account (review of PR #68): a 429 holds that account's uploads
+    /// and album calls; the other accounts carry on.
+    @ObservationIgnored private var rateLimits = AccountRateLimits()
     /// Back Up Now, picks, Retry and Shortcuts go ahead on a metered network
     /// or battery (RunTrigger.overridesConditions); other runs wait.
     @ObservationIgnored private var overridesConditions = false
@@ -649,7 +650,7 @@ final class BackupEngine {
     private func run(trigger: RunTrigger, plans: [LanePlan]) async -> Ended {
         lastError = nil
         meter = ThroughputMeter()
-        rateLimiter.runStarted()
+        rateLimits.runStarted()
         unstartedRecord = nil
         // Assets are planned afresh, so their earlier failures are tried
         // again anyway; a pick or a Messages item is only if Retry queues it.
@@ -1284,9 +1285,10 @@ final class BackupEngine {
     /// While batch `index` uploads, exports the next batches of the pass,
     /// one at a time in order, as far as StagingWindow allows. Not while the
     /// run is held: iCloud originals download during an export, and the
-    /// batch exports with its own wait once it is its turn.
+    /// batch exports with its own wait once it is its turn. One account in a
+    /// 429 hold does not hold the run while another still sends.
     private func stageAhead(_ pass: SharedPass, after index: Int) {
-        guard !shouldHalt, holdingCondition() == nil, rateLimiter.hold(at: Date()) == nil else { return }
+        guard !shouldHalt, holdingCondition() == nil, everyLaneRateHeld(at: Date()) == nil else { return }
         var exports: [Int: (ids: [String], hidden: Bool, owners: [String: [String]])] = [:]
         for next in pass.batches.indices where next > index {
             let batch = pass.batches[next]
@@ -1480,8 +1482,9 @@ final class BackupEngine {
 
     /// Sends staged items to one account through its bridge until each is
     /// confirmed or has failed for this run: retryable failures go again
-    /// after their backoff, a 429 holds every upload and refunds the attempt,
-    /// and the staged files stay in place for every round.
+    /// after their backoff, a 429 holds this account's uploads (not the
+    /// others') and refunds the attempt, and the staged files stay in place
+    /// for every round.
     private func send(_ items: [BatchItem], lane: AccountLane, album: (id: String, title: String)?, category: EventCategory,
                       settings: BackupSettings) async -> Outcome {
         guard let runtime else { return .halt }
@@ -1665,12 +1668,12 @@ final class BackupEngine {
                 return .halt
             }
             if limited {
-                if holdForRateLimit() {
+                if holdForRateLimit(lane) {
                     endPart(lane, failing: Self.rateLimitGiveUp, category: .network, leaving: next.map { Self.row(account, $0) })
                     return .halt
                 }
             } else if !confirmed.isEmpty {
-                rateLimiter.batchSucceeded()
+                rateLimits.batchSucceeded(account)
             }
             pending = next
         }
@@ -1743,17 +1746,24 @@ final class BackupEngine {
         }
     }
 
-    /// Starts (or joins) Google's hold; true when this run has waited
-    /// through its allowance of holds and should end instead.
-    private func holdForRateLimit() -> Bool {
-        let previous = rateLimiter.holdUntil
-        let until = rateLimiter.hitLimit(at: Date())
-        if rateLimiter.runShouldGiveUp { return true }
+    /// Starts (or joins) Google's hold on the lane's account; true when this
+    /// account's part has waited through its allowance of holds and should
+    /// end instead.
+    private func holdForRateLimit(_ lane: AccountLane) -> Bool {
+        let previous = rateLimits[lane.account].holdUntil
+        let until = rateLimits.hitLimit(lane.account, at: Date())
+        if rateLimits.runShouldGiveUp(lane.account) { return true }
         if until != previous {
             let seconds = Int(until.timeIntervalSinceNow.rounded())
-            model.log(.network, "\(EventPhrase.rateLimited); uploads wait \(seconds) s and then carry on.")
+            model.log(.network, "\(EventPhrase.rateLimited); uploads wait \(seconds) s and then carry on\(to(lane)).")
         }
         return false
+    }
+
+    /// Google's hold the export waits for: only once every account still
+    /// sending is held, since an export for one that is not feeds it.
+    private func everyLaneRateHeld(at now: Date) -> Date? {
+        rateLimits.everyHeld(lanes.filter { !$0.halted }.map(\.account), at: now)
     }
 
     private func addToAlbum(_ assetIDs: [String], albumID: String, albumTitle: String, lane: AccountLane) async -> Outcome {
@@ -1805,7 +1815,7 @@ final class BackupEngine {
                 // Google refused the call, or a later part of it: what went in
                 // is recorded above, and the rest goes again once the hold is
                 // over.
-                if holdForRateLimit() {
+                if holdForRateLimit(lane) {
                     endPart(lane, failing: Self.rateLimitGiveUp, category: .network, leaving: [])
                     return .halt
                 }
@@ -1854,7 +1864,7 @@ final class BackupEngine {
                 } else {
                     offlineSince = nil
                 }
-            } else if let until = rateLimiter.hold(at: now) {
+            } else if let until = waiter == Self.exportWaiter ? everyLaneRateHeld(at: now) : rateLimits.hold(waiter, at: now) {
                 reason = .rateLimited(until: until)
             } else if let retryAt, retryAt > now {
                 reason = .retrying(until: retryAt)
