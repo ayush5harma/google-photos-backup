@@ -52,9 +52,18 @@ extension AppModel {
         photosStatus == .authorized || photosStatus == .limited || library.isAuthorized
     }
 
+    /// The primary account's address; `state` may be another account's
+    /// while a pass is on it.
     var accountEmail: String? {
-        if case let .connected(email) = account { return email ?? state.accountEmail }
-        return state.accountEmail
+        if case let .connected(email?) = account { return email }
+        return primaryAccount?.email
+    }
+
+    /// Where the run in progress is going, when there is more than one
+    /// account to tell apart.
+    var runningAccountEmail: String? {
+        guard accounts.count > 1, let id = runner.current else { return nil }
+        return accounts.first { $0.id == id }?.title
     }
 
     /// AppModel.describe words a full Google account this way.

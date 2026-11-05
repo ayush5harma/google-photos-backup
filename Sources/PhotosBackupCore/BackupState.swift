@@ -58,6 +58,8 @@ public struct BackupState: Codable, Equatable, Sendable {
     public var selectedAlbumIDs: Set<String> = []
     /// The Google account the records above belong to; nil until the first
     /// account check (and in state written before accounts were tracked).
+    /// Each account has a record of its own (AccountLibrary), so records
+    /// are never handed from one account to another.
     public var accountEmail: String?
 
     public init() {}
@@ -129,22 +131,6 @@ public struct BackupState: Codable, Equatable, Sendable {
         fresh.accountEmail = accountEmail
         fresh.forcedUploads = forcedUploads
         return fresh
-    }
-
-    /// The state for `email`'s account. Records made for another account do
-    /// not carry over: its media keys and albums exist only there, and
-    /// keeping them would make the new account look backed up when it holds
-    /// nothing. The selection does carry over.
-    public func adopting(account email: String) -> BackupState {
-        if let current = accountEmail, !GoogleSignIn.sameAccount(current, email) {
-            var fresh = BackupState()
-            fresh.selectedAlbumIDs = selectedAlbumIDs
-            fresh.accountEmail = email
-            return fresh
-        }
-        var same = self
-        same.accountEmail = email
-        return same
     }
 
     /// Where the next batch for this album should go: the album the first

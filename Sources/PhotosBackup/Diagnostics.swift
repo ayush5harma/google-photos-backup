@@ -175,7 +175,10 @@ final class Diagnostics {
             snapshot.account = email
         case let .failed(message): snapshot.accountStatus = "Problem: \(message)"
         }
-        snapshot.account = snapshot.account ?? model.state.accountEmail
+        snapshot.account = snapshot.account ?? model.primaryAccount?.email
+        if model.accounts.count > 1 {
+            snapshot.accountStatus += " (primary; \(model.accounts.count - 1) more account\(model.accounts.count == 2 ? "" : "s"))"
+        }
         snapshot.photosAccess = switch model.photosStatus {
         case .authorized: .full
         case .limited: .limited

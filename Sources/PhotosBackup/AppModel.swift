@@ -192,7 +192,26 @@ private enum Verification {
 final class AppModel {
     let library = PhotoLibrary()
     let paths = AppPaths.standard
-    @ObservationIgnored private let store: BackupStore
+    /// accounts.json and each account's record file.
+    @ObservationIgnored private let accountsStore: AccountsStore
+    @ObservationIgnored private let keychain = Keychain.app
+    /// Every account's record. The active account's lives in `state` while
+    /// it is active and is handed back here when another account becomes so.
+    @ObservationIgnored private var accountLibrary: AccountLibrary
+    /// Signed-in accounts in run order; the first is the primary.
+    private(set) var accounts: [BackupAccount] = []
+    /// Whose record `state` is and whose credential `authData` is: the
+    /// account a run is going to, else the primary. It changes only while
+    /// the engine is idle, so whatever a run confirms lands in its account.
+    private(set) var activeAccountID: String?
+    private(set) var accountStatuses: [String: AccountStatus] = [:]
+    /// Accounts with a credential in the keychain, cached so that drawing a
+    /// view never queries the keychain (which can prompt after a re-sign).
+    private(set) var credentialAccounts: Set<String> = []
+    /// The account the legacy keychain item belongs to when moving it
+    /// failed this launch: it is read where it is until the next launch.
+    @ObservationIgnored private var unmovedLegacyCredential: String?
+    @ObservationIgnored private var accountSummaries: [String: (selection: Set<String>, summary: BackupSummary)] = [:]
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var messagesScanGeneration = 0
@@ -216,15 +235,13 @@ final class AppModel {
             }
         }
     }
-    private(set) var account: AccountStatus = .missing
     private(set) var connectState: ConnectState = .idle
     var showingSignIn = false
-    /// Whether the keychain holds auth_data, cached so that drawing a view
-    /// never queries the keychain (which can prompt after a re-sign).
-    private(set) var hasAuthData = false
     private(set) var runtimeDescription = "Checking..."
     private(set) var messagesStatus: MessagesStatus = .off
     @ObservationIgnored lazy var engine = BackupEngine(model: self)
+    /// Takes each backup through the accounts one after another.
+    @ObservationIgnored lazy var runner = AccountRunner(model: self)
     @ObservationIgnored lazy var iCloud = ICloudSource(model: self)
     /// USB/Wi-Fi camera imports are separate from the Mac Photos library.
     @ObservationIgnored lazy var connectedDevice = ConnectedDeviceSource()
@@ -242,25 +259,44 @@ final class AppModel {
         E2EHooks.refuseUnsandboxedCopy()
         #endif
         let paths = AppPaths.standard
-        let store = BackupStore(url: paths.state)
-        self.store = store
+        let store = AccountsStore(directory: paths.support)
+        accountsStore = store
         settings = BackupSettings.load()
         photosStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
-        do {
-            state = try store.load()
-        } catch {
-            // Keep the unreadable file for inspection; starting empty only
-            // costs gpmc hash checks, never duplicate uploads.
-            state = BackupState()
-            stateError = "The backup history could not be read (\(error.localizedDescription)); starting fresh."
-            try? FileManager.default.moveItem(at: paths.state, to: paths.state.appendingPathExtension("unreadable"))
+        // The single credential from before accounts, filed under its
+        // account. Unreadable records are set aside by the store; starting
+        // such an account empty costs gpmc hash checks, never duplicate
+        // uploads.
+        let keychain = Keychain.app
+        let legacy = keychain.load(account: AccountLibrary.legacyKeychainAccount)
+        let loaded = store.load(legacyCredential: (legacy != nil, legacy.flatMap(GoogleSignIn.email(inCredential:))))
+        accountLibrary = loaded.library
+        if !loaded.unreadable.isEmpty {
+            let names = loaded.unreadable.keys.sorted().joined(separator: ", ")
+            stateError = "Backup history could not be read (\(names)); it was set aside with an .unreadable ending and those accounts start fresh."
         }
+        var indexChanged = loaded.indexChanged
+        if let target = loaded.legacyCredentialAccount, target != AccountLibrary.legacyKeychainAccount {
+            do {
+                try keychain.move(from: AccountLibrary.legacyKeychainAccount, to: target)
+            } catch {
+                unmovedLegacyCredential = target
+            }
+        }
+        indexChanged = Self.adoptStrayCredentials(keychain: keychain, store: store, into: &accountLibrary) || indexChanged
+        state = BackupState()
         // A crash mid-batch leaves exported copies behind, and picked hidden
         // photos copied out of the picker by an earlier launch.
         try? FileManager.default.removeItem(at: paths.staging)
         try? FileManager.default.removeItem(at: PickedFile.root)
-        hasAuthData = Keychain.load() != nil
-        if hasAuthData { account = .connected(email: nil) }
+        refreshCredentials()
+        accounts = accountLibrary.accounts
+        activeAccountID = accountLibrary.primary?.id
+        state = currentRecord()
+        if indexChanged { saveIndex() }
+        for account in accounts where credentialAccounts.contains(account.id) {
+            accountStatuses[account.id] = .connected(email: account.email)
+        }
         // 2026-10-15: Version 0.1.0 saved settings only after a change. An
         // existing account or backup state without that blob is an upgrade,
         // so the welcome guide must not stop its automatic runs.
@@ -270,7 +306,126 @@ final class AppModel {
         }
     }
 
-    var authData: String? { Keychain.load() }
+    /// A credential in the keychain that accounts.json does not show signed
+    /// in (the index was lost, or written before the keychain was): the
+    /// credential says whose it is, and that account is signed in again with
+    /// its record, if one is on disk.
+    private static func adoptStrayCredentials(keychain: Keychain, store: AccountsStore, into library: inout AccountLibrary) -> Bool {
+        var changed = false
+        for id in keychain.accounts() where id != AccountLibrary.legacyKeychainAccount && library.account(id)?.removed != false {
+            guard let credential = keychain.load(account: id) else { continue }
+            let email = GoogleSignIn.email(inCredential: credential) ?? library.account(id)?.email ?? (id.contains("@") ? id : nil)
+            guard let email, GoogleSignIn.normalizedEmail(email) == id else { continue }
+            library.adopting(account: email, stored: { store.readState($0) })
+            changed = true
+        }
+        return changed
+    }
+
+    /// The active account's credential: the one a run started now would use.
+    var authData: String? { activeAccountID.flatMap(credential(for:)) }
+
+    /// The primary account's credential, for what only one account takes
+    /// (iCloud), whichever account a run is on.
+    var primaryAuthData: String? { primaryAccount.flatMap { credential(for: $0.id) } }
+
+    func credential(for id: String) -> String? {
+        if let value = keychain.load(account: id) { return value }
+        return id == unmovedLegacyCredential ? keychain.load(account: AccountLibrary.legacyKeychainAccount) : nil
+    }
+
+    /// The first signed-in account. It also takes what only one account
+    /// can: Messages media, picked photos, device imports and iCloud.
+    var primaryAccount: BackupAccount? { accounts.first }
+
+    /// Whether any signed-in account has its credential.
+    var hasAuthData: Bool { accounts.contains { credentialAccounts.contains($0.id) } }
+
+    /// The primary account's status: what the menu bar and the window report.
+    var account: AccountStatus { primaryAccount.map { status(of: $0.id) } ?? .missing }
+
+    func status(of id: String) -> AccountStatus {
+        accountStatuses[id] ?? (credentialAccounts.contains(id) ? .connected(email: accountLibrary.account(id)?.email) : .missing)
+    }
+
+    /// Accounts the next run goes to, in order: signed in, with a credential,
+    /// and (for an added account) with its storage check confirmed.
+    var runnableAccounts: [BackupAccount] {
+        accounts.filter { $0.storageChecked && credentialAccounts.contains($0.id) }
+    }
+
+    /// An account's own backup record, the active one's included.
+    func record(of id: String) -> BackupState? {
+        id == activeAccountID ? state : accountLibrary.state(for: id)
+    }
+
+    /// The selection against one account's record: "backed up" per account.
+    func summary(of id: String) -> BackupSummary {
+        if id == activeAccountID { return summary }
+        let albums = albums, selection = state.selectedAlbumIDs
+        if let cached = accountSummaries[id], cached.selection == selection { return cached.summary }
+        var record = accountLibrary.state(for: id) ?? BackupState()
+        record.selectedAlbumIDs = selection
+        let summary = BackupPlanner.summary(albums: albums.map(\.snapshot), state: record)
+        accountSummaries[id] = (selection, summary)
+        return summary
+    }
+
+    /// What the selection asks of an added account's storage before its
+    /// first run.
+    func storageCheck(for id: String) -> StorageCheck {
+        StorageCheck(items: summary(of: id).pending, averageItemBytes: StorageCheck.averageItemBytes(in: diagnostics.runs),
+                     quality: settings.quality)
+    }
+
+    // MARK: - The active account
+
+    /// Makes `id`'s record and credential the ones a run uses. Refused while
+    /// the engine is running or paused: its results belong to the account
+    /// it started with.
+    @discardableResult
+    func activate(_ id: String?) -> Bool {
+        guard id != activeAccountID else { return true }
+        guard !engine.isActive, engine.phase != .paused else { return false }
+        syncActiveRecord()
+        activeAccountID = id
+        state = currentRecord()
+        return true
+    }
+
+    /// Hands `state` back to the library, which then holds every record.
+    private func syncActiveRecord() {
+        accountLibrary.select(state.selectedAlbumIDs)
+        if let id = activeAccountID, accountLibrary.account(id) != nil {
+            accountLibrary.update(state, for: id)
+            accountSummaries[id] = nil
+        } else if accountLibrary.unclaimed != nil {
+            accountLibrary.updateUnclaimed(state)
+        }
+    }
+
+    /// The active account's record; with no account, the unclaimed record
+    /// from before accounts or an empty one, with the selection either way.
+    private func currentRecord() -> BackupState {
+        if let id = activeAccountID, let record = accountLibrary.state(for: id) { return record }
+        var record = accountLibrary.unclaimed ?? BackupState()
+        record.selectedAlbumIDs = accountLibrary.selection
+        return record
+    }
+
+    private func refreshCredentials() {
+        var stored = Set(keychain.accounts())
+        if let unmovedLegacyCredential, stored.contains(AccountLibrary.legacyKeychainAccount) { stored.insert(unmovedLegacyCredential) }
+        credentialAccounts = stored
+    }
+
+    private func saveIndex() {
+        do {
+            try accountsStore.save(accountLibrary.index)
+        } catch {
+            stateError = "Could not save the accounts list: \(error.localizedDescription)"
+        }
+    }
 
     var summary: BackupSummary {
         // Read both first so a view that only ever hits the cache still
@@ -303,7 +458,7 @@ final class AppModel {
         conditions.onChange = { [weak self] in self?.conditionsChanged() }
         conditions.start(settings: settings)
         if library.isAuthorized { await connectLibrary() }
-        if case .connected = account { await checkAccount() }
+        if hasAuthData { await checkAccounts() }
         timer = Timer.scheduledTimer(withTimeInterval: 30 * 60, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.automaticRun(trigger: .timer) }
         }
@@ -367,22 +522,36 @@ final class AppModel {
         // the albums are chosen) is finished or skipped.
         guard settings.onboardingCompleted else { return }
         if settings.messagesArchive, settings.archiveAutomatically { archive.runIfDue(trigger: trigger) }
-        guard settings.automatic, hasAuthData, engine.phase == .idle else { return }
+        guard settings.automatic, hasAuthData, engine.phase == .idle, !runner.isRunning else { return }
         // Automatic runs wait for the conditions; Back Up Now does not.
         guard conditions.blocking(for: settings) == nil else { return }
-        if settings.messagesMedia {
-            backUpMessages(includingPhotos: true, trigger: trigger)
-        } else if library.isAuthorized {
-            engine.start(trigger: trigger)
-        }
+        runner.start(trigger: trigger, messages: true)
     }
 
+    /// Every account in turn; Messages media too when it is on.
     func startBackupNow(trigger: RunTrigger = .manual) {
-        if settings.messagesMedia { backUpMessages(includingPhotos: true, trigger: trigger) }
-        else if library.isAuthorized { engine.start(trigger: trigger) }
+        runner.start(trigger: trigger, messages: true)
     }
+
+    /// The selected albums to every account in turn.
+    func backUpPhotosNow(trigger: RunTrigger) {
+        runner.start(trigger: trigger, messages: false)
+    }
+
+    /// A busy engine, or a pass between two accounts.
+    var isBackingUp: Bool { engine.isActive || runner.isRunning }
+
+    /// False while a pass is on an added account: picks and device imports,
+    /// which only the primary account takes, wait for it to come back.
+    var isPrimaryActive: Bool { activeAccountID == primaryAccount?.id }
 
     func backUpMessages(includingPhotos: Bool = false, trigger: RunTrigger = .manual) {
+        Task { await scanMessages(includingPhotos: includingPhotos, trigger: trigger) }
+    }
+
+    /// Scans Messages and hands what the primary account lacks to the
+    /// engine; returns once the engine has it (or nothing is to be done).
+    func scanMessages(includingPhotos: Bool, trigger: RunTrigger) async {
         #if DEBUG
         // Snapshot runs must never inherit a real user's Messages access from
         // persisted settings. They render the UI without touching private data.
@@ -402,27 +571,30 @@ final class AppModel {
         let root = MessagesMediaScanner.defaultConfiguration()
         let configuration = MessagesMediaScanner.Configuration(attachmentsRoot: root.attachmentsRoot, database: root.database,
                                                                homeDirectory: root.homeDirectory, cursor: settings.messagesCursor)
-        Task { [weak self] in
-            let result = await Task.detached(priority: .utility) {
-                Result { try MessagesMediaScanner(configuration: configuration).scan() }
-            }.value
-            guard let self else { return }
-            guard self.messagesScanGeneration == generation, self.settings.messagesMedia, self.hasAuthData else { return }
-            switch result {
-            case let .success(report):
-                let pending = report.items.filter { self.state.uploaded[$0.id] == nil }
-                // 2026-10-14: after reaching the tail, rescan from row zero so an
-                // attachment skipped while iCloud had not downloaded it can be found later.
-                self.settings.messagesCursor = report.nextCursor ?? 0
-                self.messagesStatus = .ready(found: pending.count, skipped: report.skipped, partial: report.nextCursor != nil)
-                self.engine.backUp(messages: pending, includingPhotos: includingPhotos, trigger: trigger)
-                if includingPhotos, pending.isEmpty, self.library.isAuthorized, self.engine.phase == .idle { self.engine.start(trigger: trigger) }
-            case let .failure(error):
-                self.messagesStatus = .failed(MessagesMediaScanner.describe(error))
-                // A Messages scan is additive. Its failure must never prevent
-                // a selected Photos-library backup from running.
-                if includingPhotos, self.library.isAuthorized, self.engine.phase == .idle { self.engine.start(trigger: trigger) }
+        let result = await Task.detached(priority: .utility) {
+            Result { try MessagesMediaScanner(configuration: configuration).scan() }
+        }.value
+        guard messagesScanGeneration == generation, settings.messagesMedia, hasAuthData else { return }
+        switch result {
+        case let .success(report):
+            // Messages media goes to the primary account only; while a pass
+            // is on another account, the items wait for the next one.
+            guard activeAccountID == primaryAccount?.id else {
+                messagesStatus = .idle
+                return
             }
+            let pending = report.items.filter { state.uploaded[$0.id] == nil }
+            // 2026-10-14: after reaching the tail, rescan from row zero so an
+            // attachment skipped while iCloud had not downloaded it can be found later.
+            settings.messagesCursor = report.nextCursor ?? 0
+            messagesStatus = .ready(found: pending.count, skipped: report.skipped, partial: report.nextCursor != nil)
+            engine.backUp(messages: pending, includingPhotos: includingPhotos, trigger: trigger)
+            if includingPhotos, pending.isEmpty, library.isAuthorized, engine.phase == .idle { engine.start(trigger: trigger) }
+        case let .failure(error):
+            messagesStatus = .failed(MessagesMediaScanner.describe(error))
+            // A Messages scan is additive. Its failure must never prevent
+            // a selected Photos-library backup from running.
+            if includingPhotos, library.isAuthorized, engine.phase == .idle { engine.start(trigger: trigger) }
         }
     }
 
@@ -457,8 +629,10 @@ final class AppModel {
         if settings.messagesMedia { messagesStatus = .idle }
     }
 
+    /// Stops the run and the rest of the pass: no other account starts.
     func stopBackup() {
         cancelMessagesScan()
+        runner.stop()
         engine.stop()
     }
 
@@ -474,25 +648,66 @@ final class AppModel {
         if state.selectedAlbumIDs.contains(album.id) { automaticRun(trigger: .albumSelected) }
     }
 
+    /// Writes the active account's record (as state.json was always written)
+    /// and, when the selection changed, the shared selection in accounts.json.
     func saveState() {
         do {
-            try store.save(state)
+            if let id = activeAccountID, let account = accountLibrary.account(id) {
+                try accountsStore.save(state, file: account.stateFile)
+            } else if accountLibrary.unclaimed != nil {
+                accountLibrary.updateUnclaimed(state)
+                try accountsStore.save(state, file: AccountLibrary.legacyStateFile)
+            }
+            if state.selectedAlbumIDs != accountLibrary.selection {
+                accountLibrary.select(state.selectedAlbumIDs)
+                try accountsStore.save(accountLibrary.index)
+            }
             stateError = nil
         } catch {
             stateError = "Could not save the backup history: \(error.localizedDescription)"
         }
     }
 
-    func forgetAlbumLinks() {
-        state.mirrors = [:]
-        saveState()
+    /// Changes one account's record, active or not, and writes it.
+    private func changeRecord(of id: String, _ change: (inout BackupState) -> Void) {
+        if id == activeAccountID {
+            change(&state)
+            saveState()
+            return
+        }
+        guard let account = accountLibrary.account(id), var record = accountLibrary.storedState(for: id) else { return }
+        change(&record)
+        accountLibrary.update(record, for: id)
+        accountSummaries[id] = nil
+        do {
+            try accountsStore.save(record, file: account.stateFile)
+        } catch {
+            stateError = "Could not save the backup history: \(error.localizedDescription)"
+        }
     }
 
-    func resetHistory() {
-        cancelMessagesScan()
-        settings.messagesCursor = 0
-        state = state.clearingHistory()
-        saveState()
+    /// One account's album links; nil means the primary account's.
+    func forgetAlbumLinks(of id: String? = nil) {
+        guard let id = id ?? primaryAccount?.id ?? activeAccountID else {
+            state.mirrors = [:]
+            return saveState()
+        }
+        changeRecord(of: id) { $0.mirrors = [:] }
+    }
+
+    /// One account's upload history; nil means the primary account's.
+    func resetHistory(of id: String? = nil) {
+        let target = id ?? primaryAccount?.id ?? activeAccountID
+        if target == nil || target == primaryAccount?.id {
+            // The Messages cursor belongs to the primary account's record.
+            cancelMessagesScan()
+            settings.messagesCursor = 0
+        }
+        guard let target else {
+            state = state.clearingHistory()
+            return saveState()
+        }
+        changeRecord(of: target) { $0 = $0.clearingHistory() }
     }
 
     // MARK: - Account and runtime
@@ -533,81 +748,167 @@ final class AppModel {
         }
     }
 
-    /// Checks a credential with Google before it replaces the stored one.
-    /// Only a definite refusal is discarded: a credential Google could not
-    /// be asked about (offline, Google overloaded) is kept, because a fresh
-    /// sign-in cannot be repeated, and is checked again at the next launch.
+    /// Checks a credential with Google before it is kept. Only a definite
+    /// refusal is discarded: a credential Google could not be asked about
+    /// (offline, Google overloaded) is kept, because a fresh sign-in cannot
+    /// be repeated, and is checked again at the next launch.
+    ///
+    /// The address decides the account. One already known (signed in, or
+    /// removed earlier) gets its new credential and keeps its record; any
+    /// other is added next to the accounts there are, with a record of its
+    /// own. No account's record is ever replaced, so signing in can no
+    /// longer make a run recreate albums.
     private func connect(credential: String, email knownEmail: String?) async {
         let verification = await verify(credential)
         if case let .refused(message) = verification {
             connectState = .failed(message)
             return
         }
-        let email = verification.email ?? knownEmail
-        // The account the history belongs to: recorded, or for history from
-        // before accounts were recorded, the one in the credential it used.
-        // (History from then with no credential left, after Remove, is
-        // assumed to be the new account's.)
-        let previous = state.accountEmail ?? authData.flatMap(GoogleSignIn.email(inCredential:))
-        let switching = email.map { new in previous.map { !GoogleSignIn.sameAccount($0, new) } ?? false } ?? false
-        if switching {
-            cancelMessagesScan()
-            settings.messagesCursor = 0
-            // Let the running backup finish with the old account first, or
-            // its last items would be recorded against the new one.
-            await engine.stopAndWait()
-            guard !engine.isActive else {
-                connectState = .failed("The backup is still stopping. Sign in again in a moment.")
-                automaticRun(trigger: .signIn)
-                return
-            }
+        guard let email = verification.email ?? knownEmail else {
+            connectState = .failed("Google did not say which account this is, so it cannot be kept apart from other accounts. Sign in again once Google can be reached.")
+            return
         }
+        let primaryBefore = primaryAccount?.id
+        syncActiveRecord()
+        var candidate = accountLibrary
+        let store = accountsStore
+        let adoption = candidate.adopting(account: email, stored: { store.readState($0) })
         do {
-            try Keychain.save(credential)
+            try keychain.save(credential, account: adoption.account.id)
         } catch {
             connectState = .failed("Could not store the account in the keychain: \(error.localizedDescription)")
             return
         }
-        hasAuthData = true
-        if let email {
-            if state.accountEmail == nil { state.accountEmail = previous }
-            state = state.adopting(account: email)
-            saveState()
+        accountLibrary = candidate
+        saveIndex()
+        refreshCredentials()
+        accounts = accountLibrary.accounts
+        if activeAccountID == nil || accountLibrary.account(activeAccountID ?? "")?.removed == true {
+            // The first account (or the first after the last was removed).
+            activate(primaryAccount?.id)
+        } else if activeAccountID == adoption.account.id {
+            state = currentRecord()
         }
+        primaryChanged(from: primaryBefore)
         switch verification {
-        case let .unconfirmed(message): account = .failed(message)
-        default: account = .connected(email: email)
+        case let .unconfirmed(message): accountStatuses[adoption.account.id] = .failed(message)
+        default: accountStatuses[adoption.account.id] = .connected(email: email)
         }
         connectState = .idle
         showingSignIn = false
-        log(.account, "Connected \(email ?? "an account")")
-        automaticRun(trigger: .signIn)
+        let added = adoption.isNew && accounts.count > 1
+        log(.account, added ? "Added \(email); its first backup waits for a storage check" : "Connected \(email)")
+        if adoption.account.storageChecked { automaticRun(trigger: .signIn) }
     }
 
-    func removeAuthData() {
-        stopBackup()
-        Keychain.delete()
-        hasAuthData = false
-        account = .missing
+    /// Signs one account out: its credential leaves the keychain and runs
+    /// stop going to it. The other accounts are not touched, and its record
+    /// stays, so signing in to it again carries on where it left off.
+    func removeAccount(_ id: String) async {
+        if activeAccountID == id, engine.isActive || engine.phase == .paused {
+            if id == primaryAccount?.id { cancelMessagesScan() }
+            runner.stop()
+            await engine.stopAndWait()
+            guard !engine.isActive else {
+                log(.account, "\(accountLibrary.account(id)?.title ?? "The account") was not removed: the backup to it is still stopping.", problem: true)
+                return
+            }
+        }
+        let primaryBefore = primaryAccount?.id
+        let title = accountLibrary.account(id)?.title ?? "an account"
+        keychain.delete(account: id)
+        if id == unmovedLegacyCredential {
+            keychain.delete(account: AccountLibrary.legacyKeychainAccount)
+            unmovedLegacyCredential = nil
+        }
+        syncActiveRecord()
+        accountLibrary.remove(id)
+        saveIndex()
+        refreshCredentials()
+        accounts = accountLibrary.accounts
+        accountStatuses[id] = nil
+        if activeAccountID == id { activate(primaryAccount?.id) }
+        primaryChanged(from: primaryBefore)
+        log(.account, "Removed \(title)")
     }
 
-    func checkAccount() async {
-        guard let auth = authData else { account = .missing; return }
-        account = .checking
+    /// Every account; the snapshot bundle's tidy-up.
+    func removeAllAccounts() async {
+        for account in accounts { await removeAccount(account.id) }
+    }
+
+    /// The Messages cursor and scan are the primary account's: a new primary
+    /// starts its Messages media from the first row.
+    private func primaryChanged(from previous: String?) {
+        guard primaryAccount?.id != previous else { return }
+        cancelMessagesScan()
+        settings.messagesCursor = 0
+    }
+
+    /// After the storage check, an added account joins the runs.
+    func confirmStorage(for id: String) {
+        guard let account = accountLibrary.account(id), !account.storageChecked else { return }
+        syncActiveRecord()
+        accountLibrary.confirmStorage(id)
+        saveIndex()
+        accounts = accountLibrary.accounts
+        log(.account, "Backups to \(account.title) start")
+        startBackupNow(trigger: .manual)
+    }
+
+    func checkAccounts() async {
+        for account in accounts {
+            await checkAccount(account.id)
+        }
+    }
+
+    func checkAccount(_ id: String) async {
+        guard let auth = credential(for: id) else { accountStatuses[id] = .missing; return }
+        accountStatuses[id] = .checking
         let verification = await verify(auth)
         // A sign-in may have replaced the credential while this one was
         // being checked; its result is not about the account stored now.
-        guard authData == auth else { return }
+        guard credential(for: id) == auth else { return }
         switch verification {
         case let .accepted(email):
-            account = .connected(email: email)
-            if let email {
-                state = state.adopting(account: email)
-                saveState()
+            if let email, GoogleSignIn.normalizedEmail(email) != id {
+                refile(id, as: email)
+            } else {
+                accountStatuses[id] = .connected(email: email ?? accountLibrary.account(id)?.email)
             }
         case let .refused(message), let .unconfirmed(message):
-            account = .failed(message)
+            accountStatuses[id] = .failed(message)
         }
+    }
+
+    /// The credential kept under `id` is `email`'s: the legacy item without
+    /// an address learns it, or a credential that was filed under the wrong
+    /// account moves to its own. Never while a run uses it.
+    private func refile(_ id: String, as email: String) {
+        guard activeAccountID != id || (!engine.isActive && engine.phase != .paused) else {
+            accountStatuses[id] = .connected(email: email)
+            return
+        }
+        syncActiveRecord()
+        var candidate = accountLibrary
+        let target = candidate.credential(of: id, belongsTo: email)
+        do {
+            try keychain.move(from: id, to: target)
+        } catch {
+            accountStatuses[id] = .failed("This sign-in is for \(email) and could not be filed under it: \(error.localizedDescription)")
+            return
+        }
+        accountLibrary = candidate
+        saveIndex()
+        refreshCredentials()
+        accounts = accountLibrary.accounts
+        accountStatuses[id] = nil
+        accountStatuses[target] = .connected(email: email)
+        if activeAccountID == id {
+            activeAccountID = target
+            state = currentRecord()
+        }
+        log(.account, "A sign-in turned out to be \(email)'s and is kept for that account")
     }
 
     private func verify(_ credential: String) async -> Verification {
@@ -643,14 +944,32 @@ final class AppModel {
     }
 
     #if DEBUG
-    /// Snapshot fixtures only: a library, an account and a runtime to draw,
-    /// without PhotoKit, the keychain or the bridge.
-    func applyFixture(albums: [LibraryAlbum], account: AccountStatus, runtime: String, messages: MessagesStatus = .off) {
+    struct FixtureAccount {
+        var email: String
+        var status: AccountStatus
+        var storageChecked = true
+        /// nil keeps whatever record the fixture sets as `state` later.
+        var record: BackupState?
+    }
+
+    /// Snapshot fixtures only: a library, accounts and a runtime to draw,
+    /// without PhotoKit, the keychain, the disk or the bridge.
+    func applyFixture(albums: [LibraryAlbum], accounts fixture: [FixtureAccount], runtime: String, messages: MessagesStatus = .off) {
         self.albums = albums
         albumsLoaded = true
         photosStatus = .authorized
-        self.account = account
-        hasAuthData = account != .missing
+        var library = AccountLibrary()
+        for item in fixture {
+            let id = library.adopting(account: item.email, storageChecked: item.storageChecked).account.id
+            if let record = item.record { library.update(record, for: id) }
+        }
+        accountLibrary = library
+        accounts = library.accounts
+        credentialAccounts = Set(fixture.filter { $0.status != .missing }.map { GoogleSignIn.normalizedEmail($0.email) })
+        accountStatuses = Dictionary(fixture.map { (GoogleSignIn.normalizedEmail($0.email), $0.status) }, uniquingKeysWith: { first, _ in first })
+        activeAccountID = accounts.first?.id
+        accountSummaries = [:]
+        state = currentRecord()
         runtimeDescription = runtime
         messagesStatus = messages
     }
@@ -658,8 +977,14 @@ final class AppModel {
 
     // MARK: - Hooks for the engine and the archive
 
-    /// Every run ends here: it joins the history and may notify.
+    /// Every run ends here: it joins the history, with the account it went
+    /// to, and may notify.
     func runFinished(_ record: RunRecord) {
+        var record = record
+        if record.kind != .messagesArchive, let id = activeAccountID {
+            record.account = accountLibrary.account(id)?.email ?? state.accountEmail
+            runner.finished(record.outcome, for: id)
+        }
         diagnostics.record(record)
         notifier.runFinished(record, settings: settings)
     }

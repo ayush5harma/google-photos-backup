@@ -14,7 +14,7 @@ extension AppModel {
             startBackupNow(trigger: trigger)
         case .backUp(.photos):
             guard hasAuthData, canReadPhotos else { return log(.app, "Link could not back up photos: sign in and allow Photos access first", problem: true) }
-            engine.start(trigger: trigger)
+            backUpPhotosNow(trigger: trigger)
         case .backUp(.messagesMedia):
             guard hasAuthData else { return log(.app, "Link could not back up Messages media: sign in first", problem: true) }
             backUpMessages(includingPhotos: false, trigger: trigger)
