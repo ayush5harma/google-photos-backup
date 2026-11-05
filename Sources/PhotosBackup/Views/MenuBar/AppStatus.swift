@@ -60,9 +60,12 @@ extension AppModel {
     }
 
     /// Where the run in progress is going, when there is more than one
-    /// account to tell apart.
+    /// account to tell apart: one account's address, or how many accounts
+    /// it backs up to at once.
     var runningAccountEmail: String? {
-        guard accounts.count > 1, let id = runner.current else { return nil }
+        let ids = engine.accountsBackingUp
+        guard accounts.count > 1, let id = ids.first else { return nil }
+        if ids.count > 1 { return "\(ids.count) accounts at once" }
         return accounts.first { $0.id == id }?.title
     }
 

@@ -104,6 +104,37 @@ struct SpeedLine: View {
     }
 }
 
+/// With several accounts backing up at once (issue #66): each account's own
+/// progress and how many uploads go to it at a time. The speed line above
+/// is the total over all of them.
+struct AccountProgress: View {
+    let lanes: [AccountLane]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(lanes, id: \.account) { lane in
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Label(lane.title, systemImage: lane.halted ? "exclamationmark.triangle.fill" : "person.crop.circle")
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer()
+                        Text(lane.halted ? "Stopped early" : lane.progressLine)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                    }
+                    ProgressView(value: lane.tally.total > 0 ? Double(lane.tally.done) / Double(lane.tally.total) : 0)
+                        .controlSize(.small)
+                        .accessibilityLabel("Progress to \(lane.title)")
+                }
+                .font(.callout)
+                .help(lane.halted ? (lane.lastError ?? "") : lane.parallelism.summary)
+            }
+        }
+    }
+}
+
 private struct RunPanel: View {
     @Environment(AppModel.self) private var model
 
@@ -127,6 +158,9 @@ private struct RunPanel: View {
                 if engine.isActive || engine.runTotal > 0 {
                     ProgressView(value: engine.runFraction)
                         .accessibilityLabel("Overall progress")
+                }
+                if engine.lanes.count > 1, engine.isActive || engine.runTotal > 0 {
+                    AccountProgress(lanes: engine.lanes)
                 }
                 SpeedLine(engine: engine).font(.callout)
                 if let reason = engine.waitReason { WaitLine(reason: reason) }

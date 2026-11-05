@@ -200,7 +200,7 @@ struct AccountStatusLine: View {
     let account: BackupAccount
 
     var body: some View {
-        if model.runner.current == account.id, model.engine.isActive {
+        if model.engine.isBackingUp(to: account.id) {
             Label("Backing up now", systemImage: "arrow.up.circle.fill")
                 .foregroundStyle(.tint)
         } else {
