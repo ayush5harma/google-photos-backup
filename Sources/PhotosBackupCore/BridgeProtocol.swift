@@ -78,22 +78,22 @@ public struct AlbumTarget: Codable, Equatable, Sendable {
     public var name: String?
     /// Ask the bridge to split out keys Google no longer has instead of
     /// failing the album call; the album event then lists the keys added.
+    /// The bridge tells a live album from a deleted one only by the request's
+    /// own adds: until 0.6.0 this target also carried keys the album held
+    /// ("probe_media_keys"), and re-adding one put back a photo the owner had
+    /// taken out of a shared album by hand. An album request carries no key
+    /// but the ones it adds.
     public var splitMissing: Bool?
-    /// Up to three keys the album already holds, which tell a live album
-    /// from a deleted one when Google refuses a call.
-    public var probeMediaKeys: [String]?
 
     enum CodingKeys: String, CodingKey {
         case id, name
         case splitMissing = "split_missing"
-        case probeMediaKeys = "probe_media_keys"
     }
 
-    public init(id: String? = nil, name: String? = nil, splitMissing: Bool? = nil, probeMediaKeys: [String]? = nil) {
+    public init(id: String? = nil, name: String? = nil, splitMissing: Bool? = nil) {
         self.id = id
         self.name = name
         self.splitMissing = splitMissing
-        self.probeMediaKeys = probeMediaKeys
     }
 }
 

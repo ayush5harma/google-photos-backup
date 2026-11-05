@@ -115,20 +115,47 @@ private func fields(_ form: String) -> [String: String] {
         return state
     }
 
+    private func library(with state: BackupState) -> AccountLibrary {
+        AccountLibrary.migrating(legacy: state, credentialEmail: state.accountEmail, hasCredential: true)
+    }
+
     @Test func anotherAccountStartsFromNothingButTheSelection() {
-        let adopted = backedUp(by: "old@gmail.com").adopting(account: "new@gmail.com")
-        #expect(adopted.uploaded.isEmpty)
-        #expect(adopted.mirrors.isEmpty)
-        #expect(adopted.selectedAlbumIDs == ["all-photos"])
-        #expect(adopted.accountEmail == "new@gmail.com")
+        var accounts = library(with: backedUp(by: "old@gmail.com"))
+        let adopted = accounts.adopting(account: "new@gmail.com")
+        #expect(adopted.isNew)
+        #expect(adopted.state.uploaded.isEmpty)
+        #expect(adopted.state.mirrors.isEmpty)
+        #expect(adopted.state.selectedAlbumIDs == ["all-photos"])
+        #expect(adopted.state.accountEmail == "new@gmail.com")
     }
 
     @Test func theSameAccountKeepsItsHistory() {
         let state = backedUp(by: "Me@Gmail.com")
-        #expect(state.adopting(account: "me@gmail.com").uploaded == state.uploaded)
-        #expect(state.adopting(account: "m.e@googlemail.com").uploaded == state.uploaded)
-        // History from before accounts were tracked is assumed to be this one.
-        #expect(backedUp(by: nil).adopting(account: "me@gmail.com").uploaded.count == 1)
+        var accounts = library(with: state)
+        #expect(accounts.adopting(account: "me@gmail.com").state.uploaded == state.uploaded)
+        #expect(accounts.adopting(account: "m.e@googlemail.com").state.uploaded == state.uploaded)
+        #expect(accounts.accounts.count == 1)
+    }
+
+    /// Before accounts, signing in to another account and back wiped the
+    /// first one's album links, and its next run duplicated every album.
+    @Test func switchingBackSelectsTheFirstAccountsRecord() {
+        let state = backedUp(by: "old@gmail.com")
+        var accounts = library(with: state)
+        _ = accounts.adopting(account: "new@gmail.com")
+        let back = accounts.adopting(account: "old@gmail.com")
+        #expect(!back.isNew)
+        #expect(back.state.uploaded == state.uploaded)
+        #expect(back.state.mirrors == state.mirrors)
+    }
+
+    @Test func historyFromBeforeAccountsIsTheFirstSignInsWhenNoCredentialIsLeft() {
+        var accounts = AccountLibrary.migrating(legacy: backedUp(by: nil), credentialEmail: nil, hasCredential: false)
+        #expect(accounts.accounts.isEmpty && accounts.unclaimed != nil)
+        let adopted = accounts.adopting(account: "me@gmail.com")
+        #expect(adopted.state.uploaded.count == 1)
+        #expect(adopted.account.stateFile == AccountLibrary.legacyStateFile)
+        #expect(accounts.unclaimed == nil)
     }
 
     @Test func stateWrittenBeforeAccountsDecodes() throws {

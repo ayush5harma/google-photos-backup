@@ -81,6 +81,26 @@ enum E2EHooks {
         case "connect":
             guard let auth = query["auth"] else { return true }
             Task { @MainActor in await model.connect(pasted: auth) }
+        case "remove":
+            // Settings' Remove for one account, by address.
+            guard let email = query["account"] else { return true }
+            Task { @MainActor in await model.removeAccount(GoogleSignIn.normalizedEmail(email)) }
+        case "confirm-storage":
+            // Settings' "Start Backing Up" on an added account's storage check.
+            guard let email = query["account"] else { return true }
+            model.confirmStorage(for: GoogleSignIn.normalizedEmail(email))
+        case "include":
+            // An account's "Include in backups" (on=1 or on=0).
+            guard let email = query["account"] else { return true }
+            model.setIncluded(GoogleSignIn.normalizedEmail(email), query["on"] == "1")
+        case "back-up-to":
+            // Settings' "Back up to": choice=all or choice=chosen.
+            guard let choice = query["choice"].flatMap(AccountsChoice.init(rawValue:)) else { return true }
+            model.chooseAccounts(choice)
+        case "recheck":
+            // An account's "Re-check Backups…".
+            guard let email = query["account"] else { return true }
+            model.resetHistory(of: GoogleSignIn.normalizedEmail(email))
         case "settings":
             applySettings(query, model: model)
         case "select":
@@ -172,6 +192,21 @@ enum E2EHooks {
             "photosAuthorized": model.library.isAuthorized,
             "account": "\(model.account)",
             "hasAuthData": model.hasAuthData,
+            "activeAccount": model.activeAccountID,
+            "runningAccount": model.runner.current,
+            "passRunning": model.runner.isRunning,
+            "backUpTo": model.accountsChoice.rawValue,
+            "accounts": model.accounts.map { account in
+                let record = model.record(of: account.id) ?? BackupState()
+                let summary = model.summary(of: account.id)
+                return ["id": account.id, "email": account.email as Any, "stateFile": account.stateFile,
+                        "storageChecked": account.storageChecked, "hasCredential": model.credentialAccounts.contains(account.id),
+                        "included": model.isIncluded(account.id),
+                        "status": "\(model.status(of: account.id))", "uploadedCount": record.uploaded.count,
+                        "uploadedIDs": Array(record.uploaded.keys).sorted(),
+                        "mirrors": record.mirrors.mapValues { ["googleAlbumID": $0.googleAlbumID as Any, "added": $0.addedAssetIDs.count] },
+                        "summary": ["backedUp": summary.backedUp, "pending": summary.pending]] as [String: Any]
+            },
             "messagesStatus": model.visibleMessagesStatus.menuTitle,
             "archiveStatus": archiveStatus,
             "archiveFolder": archive.folder.path,
@@ -182,8 +217,9 @@ enum E2EHooks {
             "conditions": model.conditions.summary,
             "blocking": model.conditions.blocking(for: model.settings)?.title,
             "runs": model.diagnostics.runs.prefix(20).map { run in
-                ["kind": run.kind.rawValue, "trigger": run.trigger.rawValue, "uploaded": run.uploaded, "existing": run.existing,
-                 "failed": run.failed, "outcome": run.outcome.map { "\($0)" } as Any, "finished": run.finishedAt != nil]
+                ["id": run.id.uuidString, "kind": run.kind.rawValue, "trigger": run.trigger.rawValue, "uploaded": run.uploaded, "existing": run.existing,
+                 "failed": run.failed, "outcome": run.outcome.map { "\($0)" } as Any, "finished": run.finishedAt != nil,
+                 "account": model.accountTitle(reference: run.account) as Any]
             },
             "events": model.diagnostics.events.prefix(60).map { ["category": $0.category.rawValue, "message": $0.message, "problem": $0.isProblem] },
             "settings": (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(model.settings))) as Any,

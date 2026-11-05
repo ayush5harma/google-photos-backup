@@ -10,8 +10,31 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
 }
 
 @Suite struct UploadParallelismTests {
-    @Test func automaticStartsAtFourAndClimbsWhileEachStepIsFaster() {
+    @Test func theCeilingIsSixteenAndTheStartStaysAtFour() {
+        #expect(UploadParallelism.automaticCap == 16)
+        #expect(UploadParallelism.initial == 4)
+        #expect(UploadParallelism(cap: UploadParallelism.automaticCap).current == 4)
+        #expect(UploadParallelism(cap: 17).cap == 16)
+    }
+
+    @Test func automaticClimbsToSixteenOnlyWhileEveryStepIsFaster() {
         var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap)
+        // Twelve steps, 4 to 16, each 20% faster than the last.
+        var megabytes = 40.0
+        for level in 4...15 {
+            #expect(parallelism.current == level)
+            parallelism.measured(sample(Int64(megabytes)))
+            megabytes *= 1.2
+        }
+        #expect(parallelism.current == 16)
+        #expect(parallelism.isClimbing)
+        parallelism.measured(sample(Int64(megabytes)))
+        #expect(parallelism.current == 16)
+        #expect(parallelism.isClimbing == false)
+    }
+
+    @Test func automaticStartsAtFourAndClimbsWhileEachStepIsFaster() {
+        var parallelism = UploadParallelism(cap: 8)
         #expect(parallelism.current == 4)
         for (level, megabytes) in zip(4...7, [40, 50, 60, 70] as [Int64]) {
             #expect(parallelism.current == level)

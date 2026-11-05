@@ -63,6 +63,15 @@ private enum FailureSource {
     case device(DeviceMediaItem)
 }
 
+/// A failed item and the account whose run it failed in. Retry queues on
+/// the active account, which after a pass is the primary again: a failure
+/// of another account's run retried there went to the wrong account
+/// (PR #53 review). That account's next run plans it again anyway.
+private struct Failure {
+    let source: FailureSource
+    let account: String?
+}
+
 /// One staged file in a batch, with what to record once Google confirms it.
 private struct BatchItem {
     let bridgeItem: BridgeItem
@@ -130,7 +139,7 @@ final class BackupEngine {
     /// The run in progress, counted as it goes; it joins the history at the end.
     private(set) var currentRun: RunRecord?
     /// Items that failed for their run, by id, until retried or backed up.
-    private var failures: [String: FailureSource] = [:]
+    private var failures: [String: Failure] = [:]
 
     /// Upload speed and time left in this run.
     private(set) var meter = ThroughputMeter()
@@ -167,6 +176,12 @@ final class BackupEngine {
     @ObservationIgnored private var messagesOnly = false
     @ObservationIgnored private var failedAssets = Set<String>()
     @ObservationIgnored private var failedAlbums = Set<String>()
+    /// Guard C (2): per album, the photos this run added by itself to a
+    /// Google album linked before it (BackupState.recordAlbum's count),
+    /// which BackupPlanner.linkedAlbumAddLimit caps.
+    @ObservationIgnored private var albumAddsThisRun: [String: Int] = [:]
+    /// Albums whose held adds this run already put in the timeline.
+    @ObservationIgnored private var heldAlbumsLogged = Set<String>()
     /// The batch being exported or sent; Retry leaves these alone.
     @ObservationIgnored private var inFlight = Set<String>()
     @ObservationIgnored private var retries = RetryTracker()
@@ -193,8 +208,45 @@ final class BackupEngine {
     var remaining: Int { max(0, runTotal - runDone) }
     var runFraction: Double { runTotal == 0 ? 0 : Double(runDone) / Double(runTotal) }
     var isActive: Bool { phase == .running || phase == .pausing || phase == .stopping || phase == .waiting }
-    /// Failed items that Retry would queue again.
-    var failedCount: Int { failures.count }
+    /// Failed items that Retry would queue again: those of the active
+    /// account's runs.
+    var failedCount: Int { failures.values.filter(isRetryableHere).count }
+
+    private func isRetryableHere(_ failure: Failure) -> Bool { failure.account == model.activeAccountID }
+    /// Picks, Messages media or a device import still queued, as a run that
+    /// halted (a refused sign-in, a full account) leaves them. Only the
+    /// primary account takes these, so AccountRunner starts no other
+    /// account's run while any are queued: that run would send them first.
+    var hasQueuedPrimaryOnlyWork: Bool { !picked.isEmpty || !messages.isEmpty || !deviceItems.isEmpty }
+
+    /// Takes the primary-only work out of the queues before another
+    /// account's run, which would send it first. Picks go back to the app
+    /// with their picker files, to wait for the primary; Messages media and
+    /// a device import are let go (a later scan finds those Messages items
+    /// again; the device keeps its files). Only while no run is going.
+    /// - Returns: the picks, their files, and how many items were let go.
+    func setAsidePrimaryOnlyWork() -> (picked: [String], files: [String: URL], dropped: Int) {
+        guard task == nil else { return ([], [:], 0) }
+        let held = picked
+        let files = pickedFiles.filter { held.contains($0.key) }
+        for id in held { pickedFiles[id] = nil }
+        picked = []
+        let dropped = messages.count + deviceItems.count
+        messages = []
+        deviceItems = []
+        deviceSource?.releaseSelectedDeviceAfterImport()
+        deviceSource = nil
+        deviceAlbumName = nil
+        deviceReclaimRequested = false
+        return (held, files, dropped)
+    }
+
+    /// Forgets failed picks, Messages media and device items, so that Retry
+    /// cannot send what the old primary account was to take to a new one.
+    func forgetPrimaryOnlyFailures() {
+        failures = failures.filter { if case .asset = $0.value.source { true } else { false } }
+        discardPickedFiles()
+    }
     /// Google's words for each failed row, for the diagnostic report.
     var failureMessages: [String] { activity.compactMap { $0.isFailed ? ($0.detail ?? $0.status.label) : nil } }
 
@@ -354,7 +406,7 @@ final class BackupEngine {
         startRetry()
     }
 
-    func canRetry(_ id: String) -> Bool { phase != .stopping && failures[id] != nil && !isBusy(id) }
+    func canRetry(_ id: String) -> Bool { phase != .stopping && failures[id].map(isRetryableHere) == true && !isBusy(id) }
 
     /// Being sent now, or queued to be: Retry must not reset its attempts.
     /// (A failure of this run stays in its queue until the next prune; that
@@ -366,7 +418,9 @@ final class BackupEngine {
     }
 
     private func requeue(_ id: String) -> Bool {
-        guard failures[id] != nil, !isBusy(id), let source = failures.removeValue(forKey: id) else { return false }
+        guard let failure = failures[id], isRetryableHere(failure), !isBusy(id) else { return false }
+        failures[id] = nil
+        let source = failure.source
         failedAssets.remove(id)
         retries.forget(id)
         // A failure of this run stops counting; the item counts again when
@@ -409,6 +463,12 @@ final class BackupEngine {
         self.waitReason = waitReason
         self.lastError = lastError
     }
+
+    /// Tests only: the pick queue set without starting a run, so planPass
+    /// can be read without exporting anything (exports reach PhotoKit).
+    func setPickedForTesting(_ ids: [String]) {
+        picked = ids
+    }
     #endif
 
     // MARK: - The run
@@ -423,6 +483,8 @@ final class BackupEngine {
         lastError = nil
         failedAssets = []
         failedAlbums = []
+        albumAddsThisRun = [:]
+        heldAlbumsLogged = []
         retries = RetryTracker()
         tally = RunTally()
         meter = ThroughputMeter()
@@ -430,7 +492,7 @@ final class BackupEngine {
         rateLimiter.runStarted()
         // Assets are planned afresh, so their earlier failures are tried
         // again anyway; a pick or a Messages item is only if Retry queues it.
-        if !messagesOnly { failures = failures.filter { if case .asset = $0.value { false } else { true } } }
+        if !messagesOnly { failures = failures.filter { if case .asset = $0.value.source { false } else { true } } }
         currentRun = RunRecord(kind: messagesOnly ? .messagesMedia : .photos, trigger: trigger, conditions: model.conditions.summary)
         model.diagnostics.runActive = true
 
@@ -487,18 +549,7 @@ final class BackupEngine {
             if messagesOnly { break }
             await model.reloadAlbums()
             let settings = model.settings
-            let albums = model.albums.map(\.snapshot)
-            if settings.reuploadEdits { stampEarlierUploads(in: albums) }
-            picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
-            // What this run already confirmed is never planned again in it,
-            // not even as an edit (Photos' analysis or a favourite can move
-            // its date mid-run), so every asset goes to Google at most once
-            // per run and re-uploads cannot keep the passes going.
-            let steps = BackupPlanner.plan(picked: picked, state: model.state, batchSize: settings.batchSize)
-                + BackupPlanner.plan(albums: albums, state: model.state, mirrorAlbums: settings.mirrorAlbums,
-                                     batchSize: settings.batchSize,
-                                     excludingAssets: failedAssets.union(picked).union(tally.confirmedIDs),
-                                     excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits)
+            let steps = planPass(settings: settings)
             guard !steps.isEmpty else { break }
             planned(steps.reduce(0) { total, step in
                 if case let .upload(_, _, ids) = step { total + ids.count } else { total }
@@ -523,6 +574,95 @@ final class BackupEngine {
         }
         if phase == .pausing { phase = .paused }
         return phase == .stopping
+    }
+
+    /// One pass over the Photos library: the picks first, then the selected
+    /// albums. An account the choice leaves out gets only what it alone takes
+    /// (the queues before this and the picks), never the selected albums;
+    /// AppModel.activeTakesSelection says which, and is read every pass, so
+    /// unticking an account mid-run stops its albums at the next pass.
+    /// Only the primary may be sent a hidden photo the albums list (and
+    /// never into an album): another account never gets one.
+    func planPass(settings: BackupSettings) -> [PlannedStep] {
+        let albums = model.activeTakesSelection ? model.albums.map(\.snapshot) : []
+        if settings.mirrorAlbums, model.activeTakesSelection { rebaselineUnknownMirrors(in: albums + model.unlistedAlbums) }
+        if settings.reuploadEdits { stampEarlierUploads(in: albums) }
+        picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
+        // What this run already confirmed is never planned again in it,
+        // not even as an edit (Photos' analysis or a favourite can move
+        // its date mid-run), so every asset goes to Google at most once
+        // per run and re-uploads cannot keep the passes going.
+        let steps = BackupPlanner.plan(picked: picked, state: model.state, batchSize: settings.batchSize)
+            + BackupPlanner.plan(albums: albums, state: model.state, mirrorAlbums: settings.mirrorAlbums,
+                                 batchSize: settings.batchSize,
+                                 excludingAssets: failedAssets.union(picked).union(tally.confirmedIDs),
+                                 excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits,
+                                 uploadsHidden: model.isPrimaryActive, albumAddsThisRun: albumAddsThisRun)
+        if settings.mirrorAlbums { holdAlbumAdds(in: albums) }
+        return steps
+    }
+
+    /// Guard C (2): adds held back from an album that already exists are
+    /// kept in its record until the owner chooses (a hold caused by this
+    /// run's earlier adds would otherwise go in by itself next run), and go
+    /// in the timeline as a problem once per album and run; the Overview
+    /// offers "Add them" and "Skip" for each (AppModel.heldAlbumAdds).
+    private func holdAlbumAdds(in albums: [AlbumSnapshot]) {
+        let held = BackupPlanner.heldAlbumAdds(albums: albums, state: model.state, albumAddsThisRun: albumAddsThisRun)
+        // Only a hold that grew is news: one already waiting is on the
+        // Overview, and a problem line every run would bury the timeline.
+        let grown = held.filter { model.state.holdAlbumAdds($0.albumID, assetIDs: $0.assetIDs) }
+        if !grown.isEmpty { model.saveState() }
+        for album in grown where heldAlbumsLogged.insert(album.albumID).inserted {
+            let photos = Self.photos(album.assetIDs.count)
+            model.log(.photos, "\(photos) waiting to be added to an album: more than \(BackupPlanner.linkedAlbumAddLimit) would have "
+                      + "gone into a Google album that already exists, so none were sent. Add them or skip them on the Overview.",
+                      problem: true)
+            model.log(.photos, "Waiting for Add Them or Skip: \(photos) for \"\(album.title)\".")
+        }
+    }
+
+    /// An album call Google refused outright: the album is gone, or every
+    /// photo sent was. The bridge cannot tell which without re-adding a photo
+    /// the album holds (which could put back one removed by hand), so nothing
+    /// is uploaded again; the timeline names the album for the owner to look.
+    private func logAlbumRefused(_ title: String, _ message: String) {
+        model.log(.photos, "Google Photos refused to add photos to an album (\(message)). Its Google album may have been "
+                  + "deleted; nothing was sent again, and the next backup tries once more.", problem: true)
+        model.log(.photos, "The album Google Photos refused is \"\(title)\".")
+    }
+
+    /// Problem lines reach the shareable report (DiagnosticReport keeps the
+    /// last 30), so they carry counts only; each album's title goes in a
+    /// plain line beside it, which stays in the timeline.
+    private static func photos(_ count: Int) -> String {
+        "\(count.formatted()) photo\(count == 1 ? "" : "s")"
+    }
+
+    /// Records what an album call put in, and counts it against the run's
+    /// limit for albums linked before the call. A call that creates the
+    /// album passes its visible members, which may all follow uncounted.
+    private func recordAlbum(_ albumID: String, googleAlbumID: String, added: [String]) {
+        let members = model.state.mirrors[albumID]?.googleAlbumID == nil
+            ? model.albums.first { $0.id == albumID }?.snapshot.visibleAssetIDs ?? []
+            : []
+        let counted = model.state.recordAlbum(albumID, googleAlbumID: googleAlbumID, added: added, members: members)
+        if counted > 0 { albumAddsThisRun[albumID, default: 0] += counted }
+    }
+
+    /// Guard C (1): a linked album found with no record of its members is
+    /// never refilled, only re-baselined; the timeline says which and how
+    /// many, as a problem, since something reset the record.
+    private func rebaselineUnknownMirrors(in albums: [AlbumSnapshot]) {
+        let rebaselined = model.state.rebaselineUnknownMirrors(in: albums)
+        guard !rebaselined.isEmpty else { return }
+        model.saveState()
+        for album in rebaselined {
+            let photos = Self.photos(album.count)
+            model.log(.photos, "A Google album had no record of what it holds, so nothing was added to it: its \(photos) are "
+                      + "taken as already there, and only photos added to the album from now on go in.", problem: true)
+            model.log(.photos, "The album taken as already holding its \(photos) is \"\(album.title)\".")
+        }
     }
 
     /// Drops from the queues what is backed up or failed for this run, and
@@ -1022,7 +1162,7 @@ final class BackupEngine {
                     case let .album(googleID, _, addedKeys):
                         if let album {
                             let added = addedKeys.map { self.model.state.assets(confirmed, withMediaKeys: $0) } ?? confirmed
-                            self.model.state.recordAlbum(album.id, googleAlbumID: googleID, added: added)
+                            self.recordAlbum(album.id, googleAlbumID: googleID, added: added)
                         }
                     case let .albumFailed(message):
                         guard let album else { break }
@@ -1033,10 +1173,11 @@ final class BackupEngine {
                             // waits for the hold (with its cap).
                             albumLimited = true
                         } else {
-                            // The title stays out: it lands in the timeline
-                            // and the shareable report.
+                            // The title stays out of lastError, which lands in
+                            // the shareable report; the timeline names it.
                             self.failedAlbums.insert(album.id)
                             self.lastError = "Backed up, but not added to a Google Photos album: \(message)"
+                            self.logAlbumRefused(album.title, message)
                         }
                     case let .fatal(kind, message):
                         fatal = (kind, message)
@@ -1046,13 +1187,13 @@ final class BackupEngine {
                 }
             } catch {
                 // Confirmations already read are on disk before the run ends.
-                forgetMissing(missingKeys)
+                forgetMissing(missingKeys, among: confirmed, album: album?.id)
                 model.saveState()
                 lastError = error.localizedDescription
                 markStopped(pending)
                 return .halt
             }
-            forgetMissing(missingKeys)
+            forgetMissing(missingKeys, among: confirmed, album: album?.id)
             model.saveState()
             if !confirmed.isEmpty { progressed = true }
 
@@ -1225,7 +1366,7 @@ final class BackupEngine {
                         missingKeys += keys
                     case let .album(googleID, _, addedKeys):
                         let added = addedKeys.map { self.model.state.assets(pending, withMediaKeys: $0) } ?? pending
-                        self.model.state.recordAlbum(albumID, googleAlbumID: googleID, added: added)
+                        self.recordAlbum(albumID, googleAlbumID: googleID, added: added)
                         progressed = progressed || !added.isEmpty
                     case let .fatal(kind, message):
                         fatal = (kind, message)
@@ -1234,14 +1375,14 @@ final class BackupEngine {
                     }
                 }
             } catch {
-                forgetMissing(missingKeys)
+                forgetMissing(missingKeys, among: pending, album: albumID)
                 model.saveState()
                 lastError = error.localizedDescription
                 return .halt
             }
             // Forgotten photos are planned for upload on the next pass, so a
             // call that only found dead keys still moved the run on.
-            progressed = forgetMissing(missingKeys) > 0 || progressed
+            progressed = forgetMissing(missingKeys, among: pending, album: albumID) > 0 || progressed
             model.saveState()
             guard let (kind, message) = fatal else { return progressed ? .progressed : .nothing }
             if phase == .stopping { return .halt }
@@ -1262,7 +1403,7 @@ final class BackupEngine {
             default:
                 failedAlbums.insert(albumID)
                 lastError = "Could not add photos to a Google Photos album: \(message)"
-                model.log(.photos, lastError ?? message, problem: true)
+                logAlbumRefused(albumTitle, message)
                 return progressed ? .progressed : .nothing
             }
         }
@@ -1401,8 +1542,8 @@ final class BackupEngine {
     /// run already sent waits for the next backup, since the planner never
     /// sends an asset twice in a run. Returns how many uploads were forgotten.
     @discardableResult
-    private func forgetMissing(_ keys: [String]) -> Int {
-        let forgotten = model.state.forgetUploads(withMediaKeys: keys)
+    private func forgetMissing(_ keys: [String], among assetIDs: [String], album albumID: String?) -> Int {
+        let forgotten = model.state.forgetUploads(withMediaKeys: keys, among: assetIDs, reportedBy: albumID)
         guard !forgotten.isEmpty else { return 0 }
         let later = forgotten.filter { tally.confirmedIDs.contains($0) }.count
         let now = forgotten.count - later
@@ -1430,12 +1571,14 @@ final class BackupEngine {
         inFlight.remove(id)
         tally.failed(id)
         syncRunCounts()
+        // The active account is the run's: it changes only while idle.
+        let account = model.activeAccountID
         if id.hasPrefix("messages:") {
-            if let item = messages.first(where: { $0.id == id }) { failures[id] = .messages(item) }
+            if let item = messages.first(where: { $0.id == id }) { failures[id] = Failure(source: .messages(item), account: account) }
         } else if id.hasPrefix("device:") {
-            if let item = deviceItems.first(where: { $0.id == id }) { failures[id] = .device(item) }
+            if let item = deviceItems.first(where: { $0.id == id }) { failures[id] = Failure(source: .device(item), account: account) }
         } else {
-            failures[id] = picked.contains(id) ? .picked : .asset
+            failures[id] = Failure(source: picked.contains(id) ? .picked : .asset, account: account)
         }
         let firstLine = message.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? message
         let label = firstLine.count > Self.labelLimit ? String(firstLine.prefix(Self.labelLimit - 3)) + "..." : firstLine

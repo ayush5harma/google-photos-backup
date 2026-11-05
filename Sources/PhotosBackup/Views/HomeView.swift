@@ -14,7 +14,9 @@ struct HomeView: View {
             VStack(alignment: .leading, spacing: Metrics.sectionSpacing) {
                 // The hero carries the sign-in button for a missing account.
                 SetupBanners(section: $section, hiding: model.hasAuthData ? [] : ["sign-in"])
+                HeldAlbumBanners()
                 OverviewHero()
+                if model.accounts.count > 1 { AccountsOverview() }
                 stats
                 selectedAlbums
                 RecentActivity(section: $section)
@@ -29,8 +31,8 @@ struct HomeView: View {
         let summary = model.summary
         let failed = model.engine.failedCount
         return HStack(spacing: 12) {
-            StatTile(value: summary.backedUp.formatted(), label: "Backed up", symbol: "checkmark.icloud", tint: .green)
-            StatTile(value: summary.pending.formatted(), label: "To back up", symbol: "arrow.up.circle", tint: .accentColor)
+            StatTile(value: model.leadingSummary.backedUp.formatted(), label: "Backed up", symbol: "checkmark.icloud", tint: .green)
+            StatTile(value: model.overallSummary.pending.formatted(), label: "To back up", symbol: "arrow.up.circle", tint: .accentColor)
             StatTile(value: summary.selectedAlbums.formatted(), label: summary.selectedAlbums == 1 ? "Album" : "Albums",
                      symbol: "rectangle.stack", tint: .orange)
             StatTile(value: failed.formatted(), label: "Failed", symbol: "exclamationmark.triangle", tint: failed > 0 ? .red : .secondary)
@@ -88,7 +90,9 @@ private struct OverviewHero: View {
         let status = model.status
         let engine = model.engine
         let summary = model.summary
-        let coverage = summary.total == 0 ? 0 : Double(summary.backedUp) / Double(summary.total)
+        // With several accounts, every copy the accounts are to hold.
+        let overall = model.overallSummary
+        let coverage = overall.total == 0 ? 0 : Double(overall.backedUp) / Double(overall.total)
         HStack(alignment: .center, spacing: 24) {
             ProgressRing(fraction: model.hasAuthData ? coverage : 0, lineWidth: 10) {
                 VStack(spacing: 0) {
@@ -124,6 +128,13 @@ private struct OverviewHero: View {
                     VStack(alignment: .leading, spacing: 4) {
                         ProgressView(value: engine.runTotal > 0 ? engine.runFraction : nil)
                             .progressViewStyle(.linear)
+                        if let to = model.runningAccountEmail {
+                            Label("To \(to)", systemImage: "person.crop.circle")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                         if let item = model.currentItem {
                             Text(item.filename)
                                 .font(.callout)
@@ -158,8 +169,7 @@ private struct OverviewHero: View {
                     .disabled(engine.phase == .stopping)
             case .idle:
                 if model.hasAuthData {
-                    Button { model.startBackupNow() } label: { Label("Back Up Now", systemImage: "arrow.up") }
-                        .buttonStyle(.borderedProminent)
+                    BackUpNowButton(prominent: true)
                         .disabled(!model.canReadPhotos && !model.settings.messagesMedia)
                 } else {
                     Button { model.beginSignIn() } label: { Label("Sign In with Google…", systemImage: "person.crop.circle") }
@@ -187,26 +197,104 @@ private struct OverviewHero: View {
         let engine = model.engine
         switch status.kind {
         case .upToDate:
-            return "\(summary.backedUp.formatted()) photos and videos are in Google Photos."
+            let targets = model.targetAccounts
+            let count = model.leadingSummary.backedUp.formatted()
+            if targets.count > 1 {
+                return targets.count == model.accounts.count
+                    ? "\(count) photos and videos are in each of your \(targets.count) Google accounts."
+                    : "\(count) photos and videos are in each of the \(targets.count) accounts you back up to."
+            }
+            if model.accounts.count > 1, let only = targets.first { return "\(count) photos and videos are in \(only.title)." }
+            return "\(count) photos and videos are in Google Photos."
         case .backingUp:
             if engine.isActive {
                 return engine.remaining > 0 ? "\(engine.remaining.formatted()) items left in this backup." : "Looking for new photos and videos…"
             }
             return "Your conversations are being saved to the archive."
         case .ready:
+            if let left = model.accountsPendingPhrase { return left + "." }
             return summary.total == 0 ? "Turn on albums in Albums, or start with All Photos." : "\(summary.pending.formatted()) of \(summary.total.formatted()) items aren't in Google Photos yet."
         case .paused:
+            if let left = model.accountsPendingPhrase { return left + ". Resume to continue." }
             return summary.pending > 0 ? "\(summary.pending.formatted()) items are waiting. Resume to continue." : "Resume to continue."
         case .waiting:
             let reason = engine.waitReason
             return [reason?.title, reason?.resumeHint ?? "Uploads continue by themselves."].compactMap { $0 }.joined(separator: ". ")
         case .attention:
             if !model.hasAuthData { return "Connect your Google account to back up \(summary.total.formatted()) items." }
+            if model.noAccountIncluded, !model.isStorageFull, !model.account.isFailed {
+                return "Every account is left out. Include one in Settings > Account, or back up to all accounts."
+            }
             if model.isStorageFull || model.account.isFailed {
                 return "\(summary.backedUp.formatted()) of \(summary.total.formatted()) items are in Google Photos; the rest wait until this is fixed."
             }
             return "Everything else is in Google Photos. Retry them from Activity."
         }
+    }
+}
+
+/// Each account's share of the selection, so an account still catching up
+/// is visible next to one that is complete.
+private struct AccountsOverview: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(title: "Google accounts", action: ("Manage", { AppRouter.shared.openSettings(.account) }))
+            Card(padding: 0) {
+                ForEach(Array(model.accounts.enumerated()), id: \.element.id) { index, account in
+                    if index > 0 { Divider().padding(.leading, 52) }
+                    row(account).padding(.horizontal, 14).padding(.vertical, 8)
+                }
+            }
+        }
+    }
+
+    private func row(_ account: BackupAccount) -> some View {
+        let summary = model.summary(of: account.id)
+        let fraction = summary.total == 0 ? 0 : Double(summary.backedUp) / Double(summary.total)
+        let included = model.isIncluded(account.id)
+        return HStack(spacing: 12) {
+            HStack(spacing: 12) {
+                AccountAvatar(size: 26, email: account.email ?? "")
+                    .opacity(included ? 1 : 0.5)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(account.title).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Text(state(account, summary: summary))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    ProgressView(value: fraction)
+                        .progressViewStyle(.linear)
+                        .tint(included ? .accentColor : .secondary)
+                        .opacity(included ? 1 : 0.5)
+                }
+            }
+            .accessibilityElement(children: .combine)
+            Toggle("Include \(account.title) in backups", isOn: Binding(get: { model.isIncluded(account.id) },
+                                                                        set: { model.setIncluded(account.id, $0) }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help(included ? "Included in backups" : "Not included: Back Up Now and automatic backups skip this account")
+        }
+    }
+
+    private func state(_ account: BackupAccount, summary: BackupSummary) -> String {
+        if model.runner.current == account.id, model.engine.isActive { return "Backing up now" }
+        if !account.storageChecked { return "Waiting for its storage check" }
+        if !model.isIncluded(account.id) { return "Not included" }
+        switch model.status(of: account.id) {
+        case .missing: return "Signed out"
+        case .failed: return "Needs attention"
+        default: break
+        }
+        if summary.total > 0, summary.pending == 0 { return "Up to date" }
+        let percent = summary.total == 0 ? 0 : min(99, summary.backedUp * 100 / summary.total)
+        return "\(percent)% · \(summary.pending.formatted()) to back up"
     }
 }
 
@@ -229,7 +317,7 @@ private struct RecentActivity: View {
                 } else if !runs.isEmpty {
                     ForEach(Array(runs.enumerated()), id: \.element.id) { index, run in
                         if index > 0 { Divider().padding(.leading, 46) }
-                        RunRow(run: run).padding(.horizontal, 14)
+                        RunRow(run: run, account: model.accounts.count > 1 ? model.accountTitle(reference: run.account) : nil).padding(.horizontal, 14)
                     }
                 } else {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
@@ -244,12 +332,14 @@ private struct RecentActivity: View {
 
 private struct RunRow: View {
     let run: RunRecord
+    /// With several accounts, the address of the one the run went to.
+    var account: String?
 
     var body: some View {
         HStack(spacing: 12) {
             AlbumIcon(symbol: symbol, size: 22, tint: tint)
             VStack(alignment: .leading, spacing: 1) {
-                Text("\(run.kind.title) · \(run.trigger.title)").lineLimit(1)
+                Text(title).lineLimit(1).truncationMode(.middle)
                 Text(summary).font(.callout).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
@@ -259,6 +349,12 @@ private struct RunRow: View {
         }
         .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
+    }
+
+    private var title: String {
+        let base = "\(run.kind.title) · \(run.trigger.title)"
+        guard let account else { return base }
+        return "\(base) · \(account)"
     }
 
     private var summary: String {
@@ -375,7 +471,7 @@ struct PickPhotosButton<Label: View>: View {
         // format instead of becoming a JPEG.
         styled(PhotosPicker(selection: $selection, matching: .any(of: [.images, .videos]), preferredItemEncoding: .current,
                             photoLibrary: .shared()) { label })
-            .disabled(!model.hasAuthData || !model.canReadPhotos)
+            .disabled(!model.hasAuthData || !model.canReadPhotos || !model.isPrimaryActive)
             .onChange(of: selection) { _, items in
                 // itemIdentifier is the PHAsset local identifier because the
                 // picker was given the shared library.
@@ -388,7 +484,7 @@ struct PickPhotosButton<Label: View>: View {
                 let ids = picks.map(\.0)
                 let unseen = Set(AssetExporter.unseen(ids)).subtracting(ids.filter { model.state.uploaded[$0] != nil })
                 let visible = ids.filter { !unseen.contains($0) }
-                if !visible.isEmpty { model.engine.backUp(picked: visible) }
+                if !visible.isEmpty { model.backUp(picked: visible) }
                 guard !unseen.isEmpty else { return }
                 Task {
                     var files: [String: URL] = [:]
@@ -399,7 +495,7 @@ struct PickPhotosButton<Label: View>: View {
                             model.log(.photos, "Photos did not hand over a picked item: \(error.localizedDescription)", problem: true)
                         }
                     }
-                    model.engine.backUp(picked: ids.filter { unseen.contains($0) }, files: files)
+                    model.backUp(picked: ids.filter { unseen.contains($0) }, files: files)
                 }
             }
     }
@@ -412,6 +508,54 @@ struct PickPhotosButton<Label: View>: View {
 
 /// What still stands between the person and a working backup, and the
 /// last error a run left.
+/// Guard C (2): photos held back from a Google album that already exists,
+/// one row per album, with the two ways forward. Nothing is sent until the
+/// owner picks one.
+struct HeldAlbumBanners: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        let notices = model.heldAlbumAdds
+        if !notices.isEmpty {
+            VStack(spacing: 8) {
+                ForEach(notices) { row($0) }
+            }
+        }
+    }
+
+    private func row(_ notice: AppModel.HeldAlbumNotice) -> some View {
+        let photos = "\(notice.count.formatted()) photo\(notice.count == 1 ? "" : "s")"
+        let account = notice.accountTitle.map { " in \($0)" } ?? ""
+        return HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "rectangle.stack.badge.plus")
+                .symbolRenderingMode(.hierarchical)
+                .font(.system(size: 20))
+                .foregroundStyle(.orange)
+                .frame(width: 26)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("\(photos) waiting to be added to \u{201C}\(notice.held.title)\u{201D}").font(.headline)
+                Text("More than \(BackupPlanner.linkedAlbumAddLimit) photos would have gone at once into a Google album that "
+                     + "already exists\(account), so none were sent. If the album is shared, everyone in it would see them.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button("Skip") { model.skipHeldPhotos(notice) }
+                .help("Keep these photos out of the Google album; photos added to the album later still go in")
+            Button("Add Them") { model.addHeldPhotos(notice) }
+                .help("Add these photos to the Google album")
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: Metrics.panelRadius, style: .continuous)
+                .fill(Color.orange.opacity(0.09))
+                .strokeBorder(Color.orange.opacity(0.22), lineWidth: 1)
+        }
+    }
+}
+
 struct SetupBanners: View {
     @Environment(AppModel.self) private var model
     @Binding var section: AppSection

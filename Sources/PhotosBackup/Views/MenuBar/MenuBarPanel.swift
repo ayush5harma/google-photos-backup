@@ -132,7 +132,8 @@ private struct PanelHero: View {
         let status = model.status
         let engine = model.engine
         let summary = model.summary
-        let coverage = summary.total == 0 ? 0 : Double(summary.backedUp) / Double(summary.total)
+        let overall = model.overallSummary
+        let coverage = overall.total == 0 ? 0 : Double(overall.backedUp) / Double(overall.total)
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 14) {
                 ProgressRing(fraction: model.hasAuthData ? coverage : 0, lineWidth: 5) {
@@ -145,6 +146,13 @@ private struct PanelHero: View {
                          ? "Mac sources backed up" : model.heroTitle)
                         .font(.title3.weight(.semibold))
                         .lineLimit(1)
+                    if model.engine.isActive, let to = model.runningAccountEmail {
+                        Label("To \(to)", systemImage: "person.crop.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                     if status.kind == .backingUp, model.engine.isActive, let item = model.currentItem {
                         Text(item.filename)
                             .font(.subheadline)
@@ -228,6 +236,7 @@ private struct PanelHero: View {
         }
         if status.kind == .attention {
             if !model.hasAuthData { return "Sign in to back up \(summary.total.formatted()) items." }
+            if model.noAccountIncluded, !model.isStorageFull, !model.account.isFailed { return "Include an account in Settings." }
             if model.isStorageFull || model.account.isFailed {
                 return "\(summary.backedUp.formatted()) of \(summary.total.formatted()) items are in Google Photos."
             }
@@ -239,10 +248,16 @@ private struct PanelHero: View {
         }
         switch status.kind {
         case .upToDate:
-            return "\(summary.backedUp.formatted()) items in Google Photos"
+            let targets = model.targetAccounts.count
+            let count = model.leadingSummary.backedUp.formatted()
+            if targets > 1 { return "\(count) items in each of \(targets) accounts" }
+            if model.accounts.count > 1, let only = model.targetAccounts.first { return "\(count) items in \(only.title)" }
+            return "\(count) items in Google Photos"
         case .ready:
+            if let left = model.accountsPendingPhrase { return left }
             return summary.total == 0 ? "Choose albums in Photos Backup" : "\(summary.pending.formatted()) of \(summary.total.formatted()) items to go"
         case .paused:
+            if let left = model.accountsPendingPhrase { return left }
             return summary.pending > 0 ? "\(summary.pending.formatted()) items to go" : "Resume to continue"
         default:
             return status.headline
@@ -254,7 +269,7 @@ private struct PanelStats: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        let summary = model.summary
+        let summary = model.leadingSummary
         let failed = model.engine.failedCount
         VStack(spacing: 0) {
             StatRow(symbol: "photo.on.rectangle.angled", tint: .accentColor, title: "Photos backed up",
@@ -264,9 +279,9 @@ private struct PanelStats: View {
             if failed > 0 {
                 Divider().padding(.leading, 38)
                 StatRow(symbol: "exclamationmark.triangle.fill", tint: .orange, title: "\(failed.formatted()) couldn't be backed up", value: nil) {
-                    Button("Retry") { model.engine.retryFailed() }
+                    Button("Retry") { model.retryFailed() }
                         .controlSize(.small)
-                        .disabled(model.engine.isActive)
+                        .disabled(model.engine.isActive || !model.canRetryFailures)
                 }
             }
         }
@@ -379,7 +394,26 @@ private struct PanelControls: View {
                 .prominentGlassButton()
                 .controlSize(.large)
                 .keyboardShortcut("b")
-                .disabled(engine.isActive || !model.hasAuthData)
+                .disabled(model.isBackingUp || !model.hasAuthData)
+
+                if model.accounts.count > 1 {
+                    // One-offs to all accounts or one; Back Up Mac follows
+                    // the choice in Settings.
+                    Menu {
+                        BackUpDestinations(model: model)
+                    } label: {
+                        Image(systemName: "person.2").frame(width: 18)
+                    }
+                    .menuStyle(.button)
+                    .menuIndicator(.hidden)
+                    .glassButton()
+                    .buttonBorderShape(.circle)
+                    .controlSize(.large)
+                    .fixedSize()
+                    .disabled(model.isBackingUp || !model.hasAuthData)
+                    .help("Back up to all accounts or to one")
+                    .accessibilityLabel("Back up to")
+                }
 
                 Button {
                     paused ? engine.resume() : engine.pauseAfterCurrent()

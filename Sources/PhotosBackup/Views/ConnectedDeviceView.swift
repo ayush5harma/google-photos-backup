@@ -107,7 +107,7 @@ struct ConnectedDeviceView: View {
                 }
             } label: { Label("Back Up Selected", systemImage: "arrow.up") }
             .buttonStyle(.borderedProminent)
-            .disabled(selected.isEmpty || model.engine.isActive || !model.hasAuthData)
+            .disabled(selected.isEmpty || model.isBackingUp || !model.isPrimaryActive || !model.hasAuthData)
         }
         .alert("Remove verified originals?", isPresented: $showReclaimConfirmation) {
             Button("Keep originals", role: .cancel) {}

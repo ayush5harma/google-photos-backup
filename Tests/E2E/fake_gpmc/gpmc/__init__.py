@@ -28,6 +28,7 @@ Scenario keys (all optional):
                                  answers 404, as Google does for a key it
                                  no longer has
   "delay": 0.2                   seconds each file takes (to test Stop)
+  "refuse_accounts": ["<email>"] sign-ins for these accounts answer 403
   "network": {...}               a simulated link, for measuring throughput;
                                  every key optional, seconds and MB/s:
       "startup"      importing gpmc (once per bridge process)
@@ -39,6 +40,9 @@ Scenario keys (all optional):
       "commit"       Google's extra time to commit an upload
       "link_mb_s"    the uplink, shared by every upload in the process
       "stream_mb_s"  the most one connection carries
+  "per_account": true            each account (the credential's Email) holds
+                                 its own media and albums, as separate Google
+                                 accounts do, under "accounts" in the ledger
 
 Like gpmc 0.9.0, every call goes through `with self.api._new_session() as s:`
 and a session's close() ends its connection, so the bridge's kept sessions
@@ -48,12 +52,14 @@ Ledger (JSON, written under an exclusive file lock):
   {"media": {"<sha1 hex>": "<media key>"},
    "counters": {"uploads": n, "auth": n, "<file name>": attempts},
    "uploads": [{"filename", "sha1", "status": "uploaded" | "existing" | "failed", "message"?,
-                "saver", "use_quota", "quality", "model", "pid", "connections"}],
-   "albums": {"<album id>": {"name", "media_keys": [...]}}}
+                "account", "saver", "use_quota", "quality", "model", "pid", "connections"}],
+   "albums": {"<album id>": {"name", "media_keys": [...]}},
+   "accounts": {"<email>": {"media": {...}, "albums": {...}}}}   with "per_account"
   An uploaded entry carries what gpmc 0.9.0 would commit: the flags the bridge
   passed, and the quality and device model Client._upload_file derives from
   them ("original" / "Pixel XL" is the free path). "connections" counts the
-  connections the process had opened by then.
+  connections the process had opened by then. Every entry records the account,
+  so a test can prove each account goes up as Original quality.
 """
 
 from __future__ import annotations
@@ -65,6 +71,7 @@ import logging
 import os
 import threading
 import time
+import urllib.parse
 from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
@@ -161,6 +168,26 @@ def _ledger(scenario: dict[str, Any]) -> Iterator[dict[str, Any]]:
             handle.truncate()
             json.dump(data, handle, indent=1, sort_keys=True)
             handle.flush()
+
+
+def _email(auth_data: str) -> str:
+    """The Email field of an auth_data string."""
+    for pair in auth_data.split("&"):
+        name, _, value = pair.partition("=")
+        if name == "Email":
+            return urllib.parse.unquote_plus(value)
+    return ""
+
+
+def _space(data: dict[str, Any], scenario: dict[str, Any], account: str) -> dict[str, Any]:
+    """Where this account's media and albums live: the ledger itself, or with
+    "per_account" a Google account of its own."""
+    if not scenario.get("per_account"):
+        return data
+    space = data.setdefault("accounts", {}).setdefault(account or "unknown", {})
+    space.setdefault("media", {})
+    space.setdefault("albums", {})
+    return space
 
 
 def _count(data: dict[str, Any], key: str) -> int:
@@ -262,6 +289,7 @@ if _network().get("startup"):
 class Api:
     def __init__(self, auth_data: str) -> None:
         self.auth_data = auth_data
+        self.account = _email(auth_data)
         self.model = "Pixel XL"
         self.make = "Google"
         self._token: str | None = None
@@ -282,7 +310,7 @@ class Api:
             session.call(server=float(_network().get("auth", 0)))
         if attempt <= scenario.get("auth_rate_limit_first", 0) or auth == "rate_limit":
             raise _error("429", AUTH_URL)
-        if auth == "refuse":
+        if auth == "refuse" or self.account in scenario.get("refuse_accounts", []):
             raise _error("403", AUTH_URL)
         if auth == "network":
             raise ConnectionError("HTTPSConnectionPool(host='android.googleapis.com', port=443): Max retries exceeded")
@@ -295,19 +323,29 @@ class Api:
         # gpmc 0.9.0 appends to an existing album here, not on Client.
         with self._new_session() as session:
             session.call()
-        _album(media_keys, album_id=album_media_key)
+        _album(media_keys, album_id=album_media_key, account=self.account)
         return {}
 
     def create_album(self, album_name: str, media_keys: list[str]) -> str:
         with self._new_session() as session:
             session.call()
-        return _album(media_keys, name=album_name)
+        return _album(media_keys, name=album_name, account=self.account)
+
+    def get_download_urls(self, media_key: str) -> dict:
+        # Read-only, as the bridge uses it to tell a dead key from a refusing
+        # album: a key in dead_media_keys answers 404 like an album call.
+        with self._new_session() as session:
+            session.call()
+        if media_key in _scenario().get("dead_media_keys", []):
+            raise _error("404", "https://photosdata-pa.googleapis.com/$rpc/PhotosPrepareDownload")
+        return {"1": {"5": {"2": {"6": f"https://lh3.googleusercontent.com/fake/{media_key}=d"}}}}
 
     def find_remote_media_by_hash(self, sha1_hash: bytes) -> str | None:
         with self._new_session() as session:
             session.call()
-        with _ledger(_scenario()) as data:
-            return data["media"].get(sha1_hash.hex())
+        scenario = _scenario()
+        with _ledger(scenario) as data:
+            return _space(data, scenario, self.account)["media"].get(sha1_hash.hex())
 
     def get_upload_token(self, sha_hash_b64: str, file_size: int) -> str:
         with self._new_session() as session:
@@ -323,6 +361,9 @@ class Api:
                       quality: str = "original", model: str | None = None, upload_timestamp: int | None = None) -> str:
         with self._new_session() as session:
             session.call(server=float(_network().get("commit", 0)))
+        if _scenario().get("per_account"):
+            # A key of the account's own: one item in two accounts has two keys.
+            return "fake-" + hashlib.sha1((self.account + sha1_hash.hex()).encode()).hexdigest()[:24]
         return f"fake-{sha1_hash.hex()[:24]}"
 
 
@@ -341,6 +382,7 @@ class Client:
         self.timeout = timeout
         self.language = language
         self.api = Api(auth_data)
+        self.account = self.api.account
 
     def upload(
         self,
@@ -366,11 +408,13 @@ class Client:
                     progress_callback(self._event("error", path, filename, 0))
                 _logger.error(f"Error uploading file {path}: {error}")
                 with _ledger(_scenario()) as data:
-                    data["uploads"].append({"filename": filename, "status": "failed", "message": str(error)})
+                    data["uploads"].append({"filename": filename, "status": "failed", "message": str(error),
+                                            "account": self.account, "saver": saver, "use_quota": use_quota})
         return results
 
     def _upload_file(self, path: Path, filename: str, force: bool, saver: bool, use_quota: bool,
                      progress: Callable[[dict[str, Any]], None] | None) -> dict[str, str]:
+        tags = {"account": self.account, "saver": saver, "use_quota": use_quota}
         scenario = _scenario()
         report = (lambda phase, done: progress(self._event(phase, path, filename, done))) if progress else (lambda *_: None)
         size = path.stat().st_size
@@ -383,7 +427,7 @@ class Client:
             report("checking", 0)
             if key := self.api.find_remote_media_by_hash(bytes.fromhex(sha1)):
                 with _ledger(scenario) as data:
-                    data["uploads"].append({"filename": filename, "sha1": sha1, "status": "existing"})
+                    data["uploads"].append({"filename": filename, "sha1": sha1, "status": "existing", **tags})
                 report("skipped", size)
                 return {path.absolute().as_posix(): key}
         with _ledger(scenario) as data:
@@ -416,9 +460,9 @@ class Client:
             model = "Pixel 8"
         media_key = self.api.commit_upload(uploaded, filename, bytes.fromhex(sha1), quality=quality, model=model)
         with _ledger(scenario) as data:
-            data["media"][sha1] = media_key
-            data["uploads"].append({"filename": filename, "sha1": sha1, "status": "uploaded", "saver": saver,
-                                    "use_quota": use_quota, "quality": quality, "model": model,
+            _space(data, scenario, self.account)["media"][sha1] = media_key
+            data["uploads"].append({"filename": filename, "sha1": sha1, "status": "uploaded", **tags,
+                                    "quality": quality, "model": model,
                                     "pid": os.getpid(), "connections": _connections_so_far()})
         report("complete", size)
         return {path.absolute().as_posix(): media_key}
@@ -433,16 +477,18 @@ class Client:
         return [self.api.create_album(album_name, media_keys)]
 
 
-def _album(media_keys: list[str], name: str | None = None, album_id: str | None = None) -> str:
+def _album(media_keys: list[str], name: str | None = None, album_id: str | None = None, account: str = "") -> str:
     scenario = _scenario()
     if scenario.get("album_error"):
         raise RuntimeError(scenario["album_error"])
     if set(media_keys) & set(scenario.get("dead_media_keys", [])):
         raise _error("404", ALBUM_URL)
     with _ledger(scenario) as data:
+        albums = _space(data, scenario, account)["albums"]
         if album_id is None:
-            album_id = f"fake-album-{len(data['albums']) + 1}"
-            data["albums"][album_id] = {"name": name, "media_keys": []}
-        album = data["albums"].setdefault(album_id, {"name": name, "media_keys": []})
+            prefix = f"fake-album-{account}-" if scenario.get("per_account") else "fake-album-"
+            album_id = f"{prefix}{len(albums) + 1}"
+            albums[album_id] = {"name": name, "media_keys": []}
+        album = albums.setdefault(album_id, {"name": name, "media_keys": []})
         album["media_keys"] += [key for key in media_keys if key not in album["media_keys"]]
     return album_id

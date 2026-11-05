@@ -96,7 +96,10 @@ private let live = AlbumSnapshot(id: "live", title: "Live Photos", kind: .smart,
         #expect(cleared.mirrors == state.mirrors)
     }
 
-    @Test func clearedHistoryRechecksIntoTheSameGoogleAlbum() {
+    /// Guard C: the re-check goes to the library only. "b" is already in
+    /// the Google album, or the owner took it out by hand: either way it is
+    /// never sent to the album again.
+    @Test func clearedHistoryRechecksWithoutRefillingTheGoogleAlbum() {
         var state = BackupState()
         state.selectedAlbumIDs = ["trip"]
         state.recordUpload(assetID: "b", mediaKey: "k", existing: false)
@@ -105,42 +108,77 @@ private let live = AlbumSnapshot(id: "live", title: "Live Photos", kind: .smart,
         let trip = AlbumSnapshot(id: "trip", title: "Trip", kind: .user, assetIDs: ["b"])
 
         #expect(BackupPlanner.plan(albums: [trip], state: cleared, mirrorAlbums: true, batchSize: 10)
-            == [.upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["b"])])
+            == [.upload(albumID: "trip", albumTitle: nil, assetIDs: ["b"])])
         #expect(cleared.albumTarget(for: "trip", title: "Trip").id == "g1")
         cleared.recordUpload(assetID: "b", mediaKey: "k", existing: true)
         #expect(BackupPlanner.plan(albums: [trip], state: cleared, mirrorAlbums: true, batchSize: 10).isEmpty)
     }
 
     @Test func keysGoogleNoLongerHasAreUploadedAgainIntoTheSameAlbum() {
-        var state = state(selected: ["trip"], uploaded: ["b", "d"],
-                          mirrors: ["trip": AlbumMirror(googleAlbumID: "g1", addedAssetIDs: ["b"])])
+        let trip = AlbumSnapshot(id: "trip", title: "Trip", kind: .user, assetIDs: ["a", "b", "d"])
+        var state = state(selected: ["trip"], uploaded: ["a", "b", "d"],
+                          mirrors: ["trip": AlbumMirror(googleAlbumID: "g1", addedAssetIDs: ["a", "b"])])
 
-        #expect(state.forgetUploads(withMediaKeys: ["key-b", "key-d", "key-unknown"]) == ["b", "d"])
-        #expect(state.uploaded.isEmpty)
-        #expect(state.mirrors["trip"]?.addedAssetIDs.isEmpty == true)
+        // "b" and "d" were being added to the album when their keys came back dead.
+        #expect(state.forgetUploads(withMediaKeys: ["key-d", "key-unknown"], among: ["d"], reportedBy: "trip") == ["d"])
+        #expect(state.uploaded.keys.sorted() == ["a", "b"])
+        #expect(state.mirrors["trip"]?.addedAssetIDs == ["a", "b"])
         #expect(state.albumTarget(for: "trip", title: "Trip").id == "g1")
         #expect(BackupPlanner.plan(albums: [trip], state: state, mirrorAlbums: true, batchSize: 10)
-            == [.upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["b", "d"])])
-        #expect(state.forgetUploads(withMediaKeys: []) == [])
+            == [.upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["d"])])
+        #expect(state.forgetUploads(withMediaKeys: [String](), among: ["a"], reportedBy: "trip") == [])
+    }
+
+    /// Review of feat/53-guards, MAJOR 2: a dead key one album's call reports
+    /// is forgotten for that asset only (not another sharing the key), and
+    /// only that album loses it; another linked album, perhaps shared, keeps
+    /// it recorded and never gets the new key by itself.
+    @Test func aDeadKeyReportedByOneAlbumNeverReturnsToAnother() {
+        var state = state(selected: ["shared", "other"], uploaded: ["p"], mirrors: [
+            "shared": AlbumMirror(googleAlbumID: "g-shared", addedAssetIDs: ["old"]),
+            "other": AlbumMirror(googleAlbumID: "g-other", addedAssetIDs: ["p", "x"]),
+        ])
+        state.recordUpload(assetID: "q", mediaKey: "key-p", existing: true)
+        #expect(state.forgetUploads(withMediaKeys: ["key-p"], among: ["p"], reportedBy: "shared") == ["p"])
+        #expect(state.uploaded["q"]?.mediaKey == "key-p", "another asset sharing the key is left alone")
+        #expect(state.mirrors["other"]?.addedAssetIDs == ["p", "x"])
+
+        state.recordUpload(assetID: "p", mediaKey: "key-p2", existing: false)
+        state.recordUpload(assetID: "old", mediaKey: "key-old", existing: false)
+        state.recordUpload(assetID: "x", mediaKey: "key-x", existing: false)
+        let shared = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: ["p", "old"])
+        let other = AlbumSnapshot(id: "other", title: "Other", kind: .user, assetIDs: ["p", "x"])
+        #expect(BackupPlanner.plan(albums: [shared, other], state: state, mirrorAlbums: true, batchSize: 10)
+            == [.addToAlbum(albumID: "shared", albumTitle: "Shared", assetIDs: ["p"], mediaKeys: ["key-p2"])],
+                "only the album that was adding it gets the new key")
     }
 
     @Test func photosGoogleLostGoUpAgainWithoutTheHashCheckOnce() {
         var state = state(selected: ["trip"], uploaded: ["b", "d"])
-        state.forgetUploads(withMediaKeys: ["key-b"])
+        state.forgetUploads(withMediaKeys: ["key-b"], among: ["b"], reportedBy: nil)
         #expect(state.forcedUploads == ["b"])
         state.recordUpload(assetID: "b", mediaKey: "key-b2", existing: false)
         #expect(state.forcedUploads?.isEmpty == true)
         #expect(state.clearingHistory().forcedUploads == state.forcedUploads)
     }
 
-    @Test func splittingTargetChecksTheAlbumWithPhotosItHolds() {
+    /// Until 0.6.0 the target carried up to three keys the album already
+    /// held, and the bridge re-added one to check the album was there: a
+    /// photo the owner had taken out of a shared album by hand went back
+    /// in. An album request now carries only the keys it adds.
+    @Test func anAlbumRequestCarriesNoKeyButTheOnesItAdds() throws {
         var state = state(selected: ["trip"], uploaded: ["a", "b", "c", "d"])
         #expect(state.splittingAlbumTarget(for: "trip", title: "Trip") == AlbumTarget(id: nil, name: "Trip", splitMissing: true))
-        state.recordAlbum("trip", googleAlbumID: "g1", added: ["d", "c", "b", "a"])
+        state.recordAlbum("trip", googleAlbumID: "g1", added: ["d", "c", "b"])
         let target = state.splittingAlbumTarget(for: "trip", title: "Trip")
-        #expect(target.id == "g1" && target.splitMissing == true)
-        let probes = target.probeMediaKeys ?? []
-        #expect(probes.count == 3 && Set(probes).isSubset(of: ["key-a", "key-b", "key-c", "key-d"]))
+        #expect(target == AlbumTarget(id: "g1", name: "Trip", splitMissing: true))
+
+        let request = try BridgeRequest.addToAlbum("auth", mediaKeys: ["key-a"], album: target).encoded()
+        let json = try #require(JSONSerialization.jsonObject(with: request) as? [String: Any])
+        let album = try #require(json["album"] as? [String: Any])
+        #expect(Set(album.keys) == ["id", "name", "split_missing"])
+        let text = String(decoding: request, as: UTF8.self)
+        #expect(!["key-b", "key-c", "key-d"].contains { text.contains($0) }, "a key the album holds went to the bridge")
         #expect(state.assets(["a", "b", "x"], withMediaKeys: ["key-b", "key-x"]) == ["b"])
     }
 

@@ -145,7 +145,12 @@ private func uploaded(_ stamps: [String: EditStamp?], selected: Set<String> = ["
         #expect(try BackupStore(url: url).load() == state)
     }
 
-    @Test func aReuploadWithANewMediaKeyIsFiledInItsAlbumsAgain() {
+    /// An edit re-uploaded as a new Google item goes to the library only: the
+    /// owner may have taken the photo out of a shared album by hand, and the
+    /// app cannot see that, so a linked album never gets it back by itself
+    /// (review of feat/53-guards, BLOCKER 1; "Re-upload edits" is on by
+    /// default).
+    @Test func aReuploadWithANewMediaKeyNeverGoesBackIntoALinkedAlbum() {
         var state = BackupState()
         state.recordUpload(assetID: "A", mediaKey: "old", existing: false, stamp: EditStamp(modified: t0, edited: false))
         state.recordAlbum("trip", googleAlbumID: "g", added: ["A", "B"])
@@ -155,11 +160,11 @@ private func uploaded(_ stamps: [String: EditStamp?], selected: Set<String> = ["
 
         state.recordUpload(assetID: "A", mediaKey: "new", existing: false, stamp: EditStamp(modified: t0.addingTimeInterval(90), edited: true))
         #expect(state.uploaded["A"]?.mediaKey == "new")
-        #expect(state.mirrors["trip"]?.addedAssetIDs == ["B"])
+        #expect(state.mirrors["trip"]?.recordedAssetIDs == ["A", "B"], "still recorded: never sent again")
         let trip = AlbumSnapshot(id: "trip", title: "Trip", kind: .user, assetIDs: ["A"])
         state.selectedAlbumIDs = ["trip"]
-        #expect(BackupPlanner.plan(albums: [trip], state: state, mirrorAlbums: true, batchSize: 10)
-            == [.addToAlbum(albumID: "trip", albumTitle: "Trip", assetIDs: ["A"], mediaKeys: ["new"])])
+        #expect(BackupPlanner.plan(albums: [trip], state: state, mirrorAlbums: true, batchSize: 10, uploadsHidden: true).isEmpty)
+        #expect(BackupPlanner.heldAlbumAdds(albums: [trip], state: state).isEmpty)
     }
 
     @Test func refreshingAStampLeavesTheRecordOtherwiseAlone() {

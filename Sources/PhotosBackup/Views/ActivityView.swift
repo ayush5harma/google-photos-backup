@@ -159,7 +159,9 @@ private struct RunPanel: View {
                 .disabled((engine.phase == .idle && !model.isMessagesScanning) || engine.phase == .stopping)
             Spacer()
             if engine.failedCount > 0 {
-                Button("Retry Failed (\(engine.failedCount.formatted()))", systemImage: "arrow.clockwise") { engine.retryFailed() }
+                Button("Retry Failed (\(engine.failedCount.formatted()))", systemImage: "arrow.clockwise") { model.retryFailed() }
+                    .disabled(!model.canRetryFailures)
+                    .help(model.canRetryFailures ? "" : "Retry waits until the backup to the other accounts is through")
             }
             Button("Clear Finished") { engine.clearFinished() }
                 .disabled(!engine.activity.contains { $0.status.isFinished })
@@ -253,9 +255,9 @@ struct ActivityRow: View {
                     .buttonStyle(.borderless)
                     .help("What Google said")
                     .popover(isPresented: $showingDetail, arrowEdge: .trailing) {
-                        FailureDetail(item: item, canRetry: model.engine.canRetry(item.id)) {
+                        FailureDetail(item: item, canRetry: model.canRetry(item.id)) {
                             showingDetail = false
-                            model.engine.retry(item.id)
+                            model.retry(item.id)
                         }
                     }
             }
@@ -265,8 +267,8 @@ struct ActivityRow: View {
         .contentShape(Rectangle())
         .onTapGesture { if item.isFailed { showingDetail = true } }
         .contextMenu {
-            Button("Retry") { model.engine.retry(item.id) }
-                .disabled(!model.engine.canRetry(item.id))
+            Button("Retry") { model.retry(item.id) }
+                .disabled(!model.canRetry(item.id))
             Button("Copy Error") { copy(item.detail ?? item.status.label) }
                 .disabled(!item.isFailed)
         }
@@ -354,6 +356,9 @@ private struct HistoryPane: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(run.kind.title)
                         Text(run.trigger.title).font(.callout).foregroundStyle(.secondary)
+                        if model.accounts.count > 1, let account = model.accountTitle(reference: run.account) {
+                            Text(account).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }
                     }
                 }
                 .width(min: 120, ideal: 160)

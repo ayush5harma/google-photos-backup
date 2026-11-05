@@ -339,9 +339,9 @@ struct MainToolbar: ToolbarContent {
                     .help("Pause after the current uploads")
                     .disabled(engine.phase != .running)
             }
-            Button { model.startBackupNow() } label: { Label("Back Up Now", systemImage: "arrow.up") }
+            BackUpNowButton()
                 .help("Back up everything selected now (Command-B)")
-                .disabled(engine.isActive || !model.hasAuthData)
+                .disabled(model.isBackingUp || !model.hasAuthData)
         }
         ToolbarItem(placement: .primaryAction) {
             AccountMenu()
@@ -358,7 +358,12 @@ struct BackupCommands: Commands {
         CommandMenu("Backup") {
             Button("Back Up Now") { model.startBackupNow() }
                 .keyboardShortcut("b")
-                .disabled(model.engine.isActive || !model.hasAuthData)
+                .disabled(model.isBackingUp || !model.hasAuthData)
+            if model.accounts.count > 1 {
+                // One-offs: the choice in Settings > Account stays as it is.
+                Menu("Back Up To") { BackUpDestinations(model: model) }
+                    .disabled(model.isBackingUp || !model.hasAuthData)
+            }
             if model.engine.phase == .paused || model.engine.phase == .pausing {
                 Button("Resume") { model.engine.resume() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
@@ -373,8 +378,8 @@ struct BackupCommands: Commands {
             Divider()
             Button("Archive Messages Now") { model.archive.start(trigger: .manual) }
                 .disabled(!model.settings.messagesArchive || model.archive.isRunning)
-            Button("Retry Failed Items") { model.engine.retryFailed() }
-                .disabled(model.engine.failedCount == 0 || model.engine.isActive)
+            Button("Retry Failed Items") { model.retryFailed() }
+                .disabled(model.engine.failedCount == 0 || model.engine.isActive || !model.canRetryFailures)
         }
         CommandGroup(after: .appSettings) {
             Button("Show Welcome Guide…") { AppRouter.shared.showWelcome() }
