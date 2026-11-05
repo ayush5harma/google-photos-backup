@@ -608,10 +608,11 @@ final class BackupEngine {
     private func logHeldAlbumAdds(in albums: [AlbumSnapshot]) {
         let held = BackupPlanner.heldAlbumAdds(albums: albums, state: model.state, albumAddsThisRun: albumAddsThisRun)
         for album in held where heldAlbumsLogged.insert(album.albumID).inserted {
-            let count = album.assetIDs.count
-            model.log(.photos, "\(count.formatted()) photo\(count == 1 ? "" : "s") waiting to be added to \"\(album.title)\": more than "
-                      + "\(BackupPlanner.linkedAlbumAddLimit) would have gone into a Google album that already exists, so none were sent. "
-                      + "Add them or skip them on the Overview.", problem: true)
+            let photos = Self.photos(album.assetIDs.count)
+            model.log(.photos, "\(photos) waiting to be added to an album: more than \(BackupPlanner.linkedAlbumAddLimit) would have "
+                      + "gone into a Google album that already exists, so none were sent. Add them or skip them on the Overview.",
+                      problem: true)
+            model.log(.photos, "Waiting for Add Them or Skip: \(photos) for \"\(album.title)\".")
         }
     }
 
@@ -620,8 +621,16 @@ final class BackupEngine {
     /// the album holds (which could put back one removed by hand), so nothing
     /// is uploaded again; the timeline names the album for the owner to look.
     private func logAlbumRefused(_ title: String, _ message: String) {
-        model.log(.photos, "Google Photos refused to add photos to \"\(title)\" (\(message)). Its Google album may have been "
+        model.log(.photos, "Google Photos refused to add photos to an album (\(message)). Its Google album may have been "
                   + "deleted; nothing was sent again, and the next backup tries once more.", problem: true)
+        model.log(.photos, "The album Google Photos refused is \"\(title)\".")
+    }
+
+    /// Problem lines reach the shareable report (DiagnosticReport keeps the
+    /// last 30), so they carry counts only; each album's title goes in a
+    /// plain line beside it, which stays in the timeline.
+    private static func photos(_ count: Int) -> String {
+        "\(count.formatted()) photo\(count == 1 ? "" : "s")"
     }
 
     /// Records what an album call put in, and counts it against the run's
@@ -643,9 +652,10 @@ final class BackupEngine {
         guard !rebaselined.isEmpty else { return }
         model.saveState()
         for album in rebaselined {
-            let photos = "\(album.count.formatted()) photo\(album.count == 1 ? "" : "s")"
-            model.log(.photos, "The Google album for \"\(album.title)\" had no record of what it holds, so nothing was added to it: "
-                      + "its \(photos) are taken as already there, and only photos added to the album from now on go in.", problem: true)
+            let photos = Self.photos(album.count)
+            model.log(.photos, "A Google album had no record of what it holds, so nothing was added to it: its \(photos) are "
+                      + "taken as already there, and only photos added to the album from now on go in.", problem: true)
+            model.log(.photos, "The album taken as already holding its \(photos) is \"\(album.title)\".")
         }
     }
 

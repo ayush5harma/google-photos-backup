@@ -521,9 +521,13 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(model.record(of: secondID)?.mirrors["shared"]?.knownAssetIDs, Set(members))
         let saved = try BackupStore(url: support.appendingPathComponent(AccountLibrary.stateFile(for: secondID))).load()
         XCTAssertEqual(saved.mirrors["shared"]?.knownAssetIDs, Set(members), "the new baseline is on disk")
-        let problems = model.diagnostics.events.filter { $0.isProblem && $0.message.contains("Shared With Family") }
+        // Problems reach the shareable report: counts only, the title in a plain line (review MAJOR 4).
+        let problems = model.diagnostics.events.filter { $0.isProblem && $0.message.contains("had no record") }
         XCTAssertEqual(problems.count, 1)
         XCTAssertTrue(problems.first?.message.contains("3 photos") == true, problems.first?.message ?? "no event")
+        XCTAssertFalse(model.diagnostics.events.contains { $0.isProblem && $0.message.contains("Shared With Family") },
+                       "an album title in a problem line")
+        XCTAssertTrue(model.diagnostics.events.contains { !$0.isProblem && $0.message.contains("Shared With Family") })
     }
 
     /// Guard C (2) on an added account: two albums it linked earlier have 30
@@ -573,7 +577,10 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(notices.first?.accountTitle, Self.second, "with several accounts, the notice names its account")
         let problems = model.diagnostics.events.filter { $0.isProblem && $0.message.contains("waiting to be added to") }
         XCTAssertEqual(problems.count, 2)
-        XCTAssertTrue(problems.contains { $0.message.hasPrefix("30 photos waiting to be added to \"Shared With Family\"") })
+        XCTAssertTrue(problems.contains { $0.message.hasPrefix("30 photos waiting to be added to an album") })
+        XCTAssertFalse(model.diagnostics.events.contains { $0.isProblem && ($0.message.contains("Shared With Family") || $0.message.contains("\"Other\"")) },
+                       "an album title in a problem line")
+        XCTAssertTrue(model.diagnostics.events.contains { !$0.isProblem && $0.message.contains("\"Shared With Family\"") })
 
         let addShared = try XCTUnwrap(notices.first { $0.held.albumID == "shared" })
         let skipOther = try XCTUnwrap(notices.first { $0.held.albumID == "other" })
