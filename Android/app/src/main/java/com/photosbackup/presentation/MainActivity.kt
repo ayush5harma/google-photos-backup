@@ -41,6 +41,7 @@ import androidx.work.WorkManager
 import com.photosbackup.BuildConfig
 import com.photosbackup.R
 import com.photosbackup.data.*
+import com.photosbackup.domain.UploadParallelism
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -391,6 +392,49 @@ class MainActivity : ComponentActivity() {
                                         Text(label, modifier = Modifier.weight(1f).padding(vertical = 12.dp))
                                     }
                                 }
+                        }
+                    }
+                    item {
+                        SettingsCard("Uploads at once") {
+                            Text(
+                                "Several uploads at once fill a fast connection. Never more than ${UploadParallelism.UNMETERED_CAP} on Wi-Fi or ${UploadParallelism.METERED_CAP} on mobile data, for battery and heat.",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                            val automatic = state.parallelUploads == UploadParallelism.AUTOMATIC
+                            listOf(
+                                    true to "Automatic · starts at ${UploadParallelism.INITIAL}, adds more while it gets faster",
+                                    false to "Choose a number",
+                                )
+                                .forEach { (value, label) ->
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth().selectable(
+                                            selected = automatic == value,
+                                            onClick = {
+                                                store.update {
+                                                    it.copy(parallelUploads = if (value) UploadParallelism.AUTOMATIC else UploadParallelism.INITIAL)
+                                                }
+                                            },
+                                            enabled = !busy,
+                                            role = Role.RadioButton,
+                                        ),
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        RadioButton(selected = automatic == value, onClick = null, enabled = !busy)
+                                        Text(label, modifier = Modifier.weight(1f).padding(vertical = 12.dp))
+                                    }
+                                }
+                            if (!automatic) {
+                                var chosen by remember(state.parallelUploads) { mutableFloatStateOf(state.parallelUploads.toFloat()) }
+                                Text("${Math.round(chosen)} at a time")
+                                Slider(
+                                    value = chosen,
+                                    onValueChange = { chosen = it },
+                                    onValueChangeFinished = { store.update { it.copy(parallelUploads = Math.round(chosen)) } },
+                                    valueRange = 1f..UploadParallelism.UNMETERED_CAP.toFloat(),
+                                    steps = UploadParallelism.UNMETERED_CAP - 2,
+                                    enabled = !busy,
+                                )
+                            }
                         }
                     }
                     item {
