@@ -89,6 +89,18 @@ enum E2EHooks {
             // Settings' "Start Backing Up" on an added account's storage check.
             guard let email = query["account"] else { return true }
             model.confirmStorage(for: GoogleSignIn.normalizedEmail(email))
+        case "include":
+            // An account's "Include in backups" (on=1 or on=0).
+            guard let email = query["account"] else { return true }
+            model.setIncluded(GoogleSignIn.normalizedEmail(email), query["on"] == "1")
+        case "back-up-to":
+            // Settings' "Back up to": choice=all or choice=chosen.
+            guard let choice = query["choice"].flatMap(AccountsChoice.init(rawValue:)) else { return true }
+            model.chooseAccounts(choice)
+        case "recheck":
+            // An account's "Re-check Backups…".
+            guard let email = query["account"] else { return true }
+            model.resetHistory(of: GoogleSignIn.normalizedEmail(email))
         case "settings":
             applySettings(query, model: model)
         case "select":
@@ -183,11 +195,13 @@ enum E2EHooks {
             "activeAccount": model.activeAccountID,
             "runningAccount": model.runner.current,
             "passRunning": model.runner.isRunning,
+            "backUpTo": model.accountsChoice.rawValue,
             "accounts": model.accounts.map { account in
                 let record = model.record(of: account.id) ?? BackupState()
                 let summary = model.summary(of: account.id)
                 return ["id": account.id, "email": account.email as Any, "stateFile": account.stateFile,
                         "storageChecked": account.storageChecked, "hasCredential": model.credentialAccounts.contains(account.id),
+                        "included": model.isIncluded(account.id),
                         "status": "\(model.status(of: account.id))", "uploadedCount": record.uploaded.count,
                         "uploadedIDs": Array(record.uploaded.keys).sorted(),
                         "mirrors": record.mirrors.mapValues { ["googleAlbumID": $0.googleAlbumID as Any, "added": $0.addedAssetIDs.count] },

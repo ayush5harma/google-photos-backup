@@ -4,7 +4,7 @@ fake Google.
 
     scripts/e2e.py --app <Photos Backup.app built by scripts/build-app.sh> [--work <dir>] [--only s1,s2]
 
-Several Google accounts (#49): --only launch,connect,photos,migrate,accounts
+Several Google accounts (#49): --only launch,connect,photos,migrate,accounts,choice
 
 What it does:
   1. Builds the debug binary and puts it in a copy of the given bundle (which
@@ -637,6 +637,59 @@ def s_accounts(h: Harness) -> None:
     h.scenario({})
 
 
+def s_choice(h: Harness) -> None:
+    """Back up to (#49, the owner's choice), with the real Photos library:
+    with the primary left out, backup/photos goes to the chosen account
+    only; ?account= sends a one-off to the account left out without
+    changing the choice; an unknown address is logged and ignored. Runs
+    after accounts (two accounts, both past their storage check)."""
+    h.scenario({"per_account": True})
+    s = h.state()
+    h.check("two accounts to choose from", [a["email"] for a in s["accounts"]] == [FIRST_ACCOUNT, SECOND_ACCOUNT])
+    h.check("backups go to all accounts by default", s.get("backUpTo") == "all")
+    # Re-check both, so each has the whole album to back up again (the
+    # fake answers "already there" for what its account holds).
+    h.link(f"debug/recheck?account={FIRST_ACCOUNT}")
+    h.link(f"debug/recheck?account={SECOND_ACCOUNT}")
+    h.link(f"debug/include?account={FIRST_ACCOUNT}&on=0")
+    s = h.wait("the primary left out", lambda s: s.get("backUpTo") == "chosen" and account(s, FIRST_ACCOUNT)["uploadedCount"] == 0
+               and account(s, SECOND_ACCOUNT)["uploadedCount"] == 0, timeout=30)
+    h.check("only the second account is included",
+            account(s, FIRST_ACCOUNT)["included"] is False and account(s, SECOND_ACCOUNT)["included"] is True)
+
+    newest = newest_run(s)
+    h.link("backup/photos")
+    s = h.wait("a backup to the chosen account", lambda s: idle(s) and not s["passRunning"] and newest_run(s) != newest
+               and account(s, SECOND_ACCOUNT)["summary"]["pending"] == 0, timeout=600)
+    h.check("the chosen account gets the album", account(s, SECOND_ACCOUNT)["summary"]["pending"] == 0)
+    h.check("the account left out gets nothing", account(s, FIRST_ACCOUNT)["uploadedCount"] == 0)
+    h.check("the run is the chosen account's", s["runs"][0].get("account") == SECOND_ACCOUNT)
+
+    newest = newest_run(s)
+    h.link(f"backup/photos?account={FIRST_ACCOUNT}")
+    s = h.wait("a one-off to the account left out", lambda s: idle(s) and not s["passRunning"] and newest_run(s) != newest
+               and account(s, FIRST_ACCOUNT)["summary"]["pending"] == 0, timeout=600)
+    h.check("a link naming an account backs up to it", account(s, FIRST_ACCOUNT)["summary"]["pending"] == 0)
+    h.check("and to no other", s["runs"][0].get("account") == FIRST_ACCOUNT
+            and (len(s["runs"]) < 2 or s["runs"][1].get("account") == SECOND_ACCOUNT))
+    h.check("the choice is unchanged", s["backUpTo"] == "chosen" and account(s, FIRST_ACCOUNT)["included"] is False)
+    h.check("every upload is Original quality on the Pixel XL path",
+            all(u.get("saver") is False and u.get("use_quota") is False for u in h.ledger()["uploads"] if "saver" in u))
+
+    newest = newest_run(s)
+    h.link("backup?account=nobody%40example.com")
+    s = h.wait("the unknown account to be logged",
+               lambda s: any("which is not an account signed in here" in e["message"] for e in s["events"]), timeout=30)
+    time.sleep(2)
+    s = h.state()
+    h.check("an unknown account is ignored, never guessed", newest_run(s) == newest and not s["passRunning"])
+
+    h.link("debug/back-up-to?choice=all")
+    s = h.wait("all accounts again", lambda s: s.get("backUpTo") == "all", timeout=30)
+    h.check("All accounts includes both", all(a["included"] for a in s["accounts"]))
+    h.scenario({})
+
+
 def s_migrate(h: Harness) -> None:
     """The upgrade from one account: state.json as the last single-account
     version left it and the "gpmc" keychain item. Runs after photos."""
@@ -664,7 +717,7 @@ SCENARIOS: dict[str, Callable[[Harness], None]] = {
     "guard": s_guard, "launch": s_launch, "connect": s_connect, "photos": s_photos, "retry": s_retry, "rate-limit": s_rate_limit,
     "controls": s_controls, "conditions": s_conditions, "shell": s_shell,
     "messages-no-access": s_messages_without_access, "messages": s_messages, "diagnostics": s_diagnostics,
-    "migrate": s_migrate, "accounts": s_accounts,
+    "migrate": s_migrate, "accounts": s_accounts, "choice": s_choice,
 }
 
 
