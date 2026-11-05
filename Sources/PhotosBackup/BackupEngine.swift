@@ -989,6 +989,9 @@ final class BackupEngine {
             let request = BridgeRequest.upload(auth, items: pending.compactMap { byID[$0]?.bridgeItem }, quality: settings.quality,
                                                threads: parallelism.current, album: target)
             let sentAt = Date()
+            // The request's album step runs after its uploads: the
+            // parallelism controller is timed to the last item's answer.
+            var uploadsEndedAt: Date?
             let exit: Int32
             do {
                 exit = try await bridge.run(request, runtime: runtime, workDirectory: model.paths.logs, log: model.paths.bridgeLog) { event in
@@ -999,6 +1002,7 @@ final class BackupEngine {
                     case let .item(id, mediaKey, existing) where sending.contains(id) && !answered.contains(id):
                         answered.insert(id)
                         confirmed.append(id)
+                        uploadsEndedAt = Date()
                         self.meter.finished(id: id, at: Date())
                         if !existing {
                             sample.items += 1
@@ -1007,6 +1011,7 @@ final class BackupEngine {
                         self.confirm(id, mediaKey: mediaKey, existing: existing, item: byID[id])
                     case let .itemFailed(id, message, retryable) where sending.contains(id) && !answered.contains(id):
                         answered.insert(id)
+                        uploadsEndedAt = Date()
                         self.meter.finished(id: id, at: Date())
                         failed.append((id, message, retryable))
                     case let .missingMedia(keys):
@@ -1060,7 +1065,7 @@ final class BackupEngine {
                 }
             }
             let unanswered = pending.filter { !answered.contains($0) }
-            sample.seconds = Date().timeIntervalSince(sentAt)
+            sample.seconds = (uploadsEndedAt ?? Date()).timeIntervalSince(sentAt)
             sample.rateLimited = limited || fatal?.0 == .rateLimit
             sample.includesStartUp = bridge.lastRequestStartedBridge
             adjustParallelism(after: sample, category: category)
