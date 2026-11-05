@@ -354,6 +354,9 @@ private struct HistoryPane: View {
                     VStack(alignment: .leading, spacing: 1) {
                         Text(run.kind.title)
                         Text(run.trigger.title).font(.callout).foregroundStyle(.secondary)
+                        if model.accounts.count > 1, let account = run.account {
+                            Text(account).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }
                     }
                 }
                 .width(min: 120, ideal: 160)

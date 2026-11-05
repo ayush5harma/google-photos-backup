@@ -145,6 +145,13 @@ private struct PanelHero: View {
                          ? "Mac sources backed up" : model.heroTitle)
                         .font(.title3.weight(.semibold))
                         .lineLimit(1)
+                    if model.engine.isActive, let to = model.runningAccountEmail {
+                        Label("To \(to)", systemImage: "person.crop.circle")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
                     if status.kind == .backingUp, model.engine.isActive, let item = model.currentItem {
                         Text(item.filename)
                             .font(.subheadline)
@@ -379,7 +386,7 @@ private struct PanelControls: View {
                 .prominentGlassButton()
                 .controlSize(.large)
                 .keyboardShortcut("b")
-                .disabled(engine.isActive || !model.hasAuthData)
+                .disabled(model.isBackingUp || !model.hasAuthData)
 
                 Button {
                     paused ? engine.resume() : engine.pauseAfterCurrent()

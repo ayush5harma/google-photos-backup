@@ -64,7 +64,7 @@ enum Snapshots {
             try? bitmap.representation(using: .png, properties: [:])?.write(to: output.appendingPathComponent("\(section.rawValue).png"))
         }
         if !uiOnly { await snapshotSignIn(model, into: output) }
-        if auth != nil { model.removeAuthData() }
+        if auth != nil { await model.removeAllAccounts() }
         NSApp.terminate(nil)
     }
 

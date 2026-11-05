@@ -15,6 +15,7 @@ struct HomeView: View {
                 // The hero carries the sign-in button for a missing account.
                 SetupBanners(section: $section, hiding: model.hasAuthData ? [] : ["sign-in"])
                 OverviewHero()
+                if model.accounts.count > 1 { AccountsOverview() }
                 stats
                 selectedAlbums
                 RecentActivity(section: $section)
@@ -124,6 +125,13 @@ private struct OverviewHero: View {
                     VStack(alignment: .leading, spacing: 4) {
                         ProgressView(value: engine.runTotal > 0 ? engine.runFraction : nil)
                             .progressViewStyle(.linear)
+                        if let to = model.runningAccountEmail {
+                            Label("To \(to)", systemImage: "person.crop.circle")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                        }
                         if let item = model.currentItem {
                             Text(item.filename)
                                 .font(.callout)
@@ -210,6 +218,57 @@ private struct OverviewHero: View {
     }
 }
 
+/// Each account's share of the selection, so an account still catching up
+/// is visible next to one that is complete.
+private struct AccountsOverview: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SectionHeader(title: "Google accounts", action: ("Manage", { AppRouter.shared.openSettings(.account) }))
+            Card(padding: 0) {
+                ForEach(Array(model.accounts.enumerated()), id: \.element.id) { index, account in
+                    if index > 0 { Divider().padding(.leading, 52) }
+                    row(account).padding(.horizontal, 14).padding(.vertical, 8)
+                }
+            }
+        }
+    }
+
+    private func row(_ account: BackupAccount) -> some View {
+        let summary = model.summary(of: account.id)
+        let fraction = summary.total == 0 ? 0 : Double(summary.backedUp) / Double(summary.total)
+        return HStack(spacing: 12) {
+            AccountAvatar(size: 26, email: account.email ?? "")
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text(account.title).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Text(state(account, summary: summary))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                ProgressView(value: fraction).progressViewStyle(.linear)
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func state(_ account: BackupAccount, summary: BackupSummary) -> String {
+        if model.runner.current == account.id, model.engine.isActive { return "Backing up now" }
+        if !account.storageChecked { return "Waiting for its storage check" }
+        switch model.status(of: account.id) {
+        case .missing: return "Signed out"
+        case .failed: return "Needs attention"
+        default: break
+        }
+        if summary.total > 0, summary.pending == 0 { return "Up to date" }
+        let percent = summary.total == 0 ? 0 : min(99, summary.backedUp * 100 / summary.total)
+        return "\(percent)% · \(summary.pending.formatted()) to back up"
+    }
+}
+
 /// The last few runs (or, before any run is recorded, the last uploads),
 /// linking to Activity for the rest.
 private struct RecentActivity: View {
@@ -229,7 +288,7 @@ private struct RecentActivity: View {
                 } else if !runs.isEmpty {
                     ForEach(Array(runs.enumerated()), id: \.element.id) { index, run in
                         if index > 0 { Divider().padding(.leading, 46) }
-                        RunRow(run: run).padding(.horizontal, 14)
+                        RunRow(run: run, showsAccount: model.accounts.count > 1).padding(.horizontal, 14)
                     }
                 } else {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
@@ -244,12 +303,14 @@ private struct RecentActivity: View {
 
 private struct RunRow: View {
     let run: RunRecord
+    /// With several accounts, which one the run went to.
+    var showsAccount = false
 
     var body: some View {
         HStack(spacing: 12) {
             AlbumIcon(symbol: symbol, size: 22, tint: tint)
             VStack(alignment: .leading, spacing: 1) {
-                Text("\(run.kind.title) · \(run.trigger.title)").lineLimit(1)
+                Text(title).lineLimit(1).truncationMode(.middle)
                 Text(summary).font(.callout).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
@@ -259,6 +320,12 @@ private struct RunRow: View {
         }
         .padding(.vertical, 8)
         .accessibilityElement(children: .combine)
+    }
+
+    private var title: String {
+        let base = "\(run.kind.title) · \(run.trigger.title)"
+        guard showsAccount, let account = run.account else { return base }
+        return "\(base) · \(account)"
     }
 
     private var summary: String {
@@ -375,7 +442,7 @@ struct PickPhotosButton<Label: View>: View {
         // format instead of becoming a JPEG.
         styled(PhotosPicker(selection: $selection, matching: .any(of: [.images, .videos]), preferredItemEncoding: .current,
                             photoLibrary: .shared()) { label })
-            .disabled(!model.hasAuthData || !model.canReadPhotos)
+            .disabled(!model.hasAuthData || !model.canReadPhotos || !model.isPrimaryActive)
             .onChange(of: selection) { _, items in
                 // itemIdentifier is the PHAsset local identifier because the
                 // picker was given the shared library.

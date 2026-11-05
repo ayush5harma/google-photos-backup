@@ -341,7 +341,7 @@ struct MainToolbar: ToolbarContent {
             }
             Button { model.startBackupNow() } label: { Label("Back Up Now", systemImage: "arrow.up") }
                 .help("Back up everything selected now (Command-B)")
-                .disabled(engine.isActive || !model.hasAuthData)
+                .disabled(model.isBackingUp || !model.hasAuthData)
         }
         ToolbarItem(placement: .primaryAction) {
             AccountMenu()
@@ -358,7 +358,7 @@ struct BackupCommands: Commands {
         CommandMenu("Backup") {
             Button("Back Up Now") { model.startBackupNow() }
                 .keyboardShortcut("b")
-                .disabled(model.engine.isActive || !model.hasAuthData)
+                .disabled(model.isBackingUp || !model.hasAuthData)
             if model.engine.phase == .paused || model.engine.phase == .pausing {
                 Button("Resume") { model.engine.resume() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])
