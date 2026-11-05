@@ -50,9 +50,12 @@ public struct UploadSample: Equatable, Sendable {
 /// climb for the run: a 429 halves the level, two or more retryable failures
 /// in one request take one off, and the level only ever goes down after that.
 public struct UploadParallelism: Equatable, Sendable {
-    /// The bridge's MAX_THREADS. A ceiling: the climb reaches it only while
-    /// each step keeps improving throughput.
-    public static let automaticCap = 16
+    /// The bridge's MAX_THREADS, and the most a chosen number may be. A
+    /// ceiling for the climb, which reaches it only while each step keeps
+    /// improving throughput. 32 since 2026-11-05: with each photo about four
+    /// round trips, the photos in flight bound a run of small photos long
+    /// before a 177 Mbit/s uplink does.
+    public static let automaticCap = 32
     public static let initial = 4
     public static let improvement = 0.10
     /// A level is judged on at least this much: one batch of photos is

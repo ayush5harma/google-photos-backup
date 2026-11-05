@@ -33,7 +33,7 @@ On 16 October 2026, a photo and video from each supported platform were read bac
 
 On the Mac, the same album selection can now go to several Google accounts ([#49](https://github.com/ayush5harma/google-photos-backup/issues/49)). Add them in Settings > Account; each account has its own sign-in and its own backup record, and **Back up to** sends backups to all accounts or only the ones you tick. Back Up Now can also send a one-off backup to one account. Upgrading keeps the existing account's uploads and album links unchanged and keeps a one-time copy of the old record.
 
-Uploads keep the link busier ([#50](https://github.com/ayush5harma/google-photos-backup/issues/50)): the next batch is exported while one uploads, one uploader serves the whole run over kept connections, and parallel uploads adapt between 4 and 16 to the speed the link gives. Original quality still uploads the way that does not count against your storage.
+Uploads keep the link busier ([#50](https://github.com/ayush5harma/google-photos-backup/issues/50)): the next batch is exported while one uploads, one uploader serves the whole run over kept connections, and parallel uploads adapt between 4 and 32 to the speed the link gives, or stay at the number chosen in Settings. Original quality still uploads the way that does not count against your storage.
 
 Albums are more careful. Hidden photos never go into a Google album and never go to an account other than the first. An album the app has already created only receives photos newly added to it, and a large batch waits for you to add or skip it, so photos you removed from a Google album by hand are not put back.
 

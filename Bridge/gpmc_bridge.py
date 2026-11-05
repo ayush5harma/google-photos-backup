@@ -97,7 +97,14 @@ EXIT_STOPPED = 5
 EXIT_RATE_LIMIT = 6
 
 DEFAULT_TIMEOUT = 60
-MAX_THREADS = 16
+# Uploads one request may run at once (the app's UploadParallelism.automaticCap).
+# 32 since 2026-11-05: each file is about four round trips to Google (hash
+# check, upload token, bytes, commit), so on small photos the files in flight,
+# not the uplink, set the pace; 0.6.0 measured about one photo a second on a
+# 177 Mbit/s uplink. Nothing below serialises them: the executor gets every
+# item of the request, the session pool's lock covers a list operation, and
+# only token renewal (about hourly) goes one at a time.
+MAX_THREADS = 32
 
 # quality -> (saver, use_quota), the two gpmc flags that pick the device model
 # gpmc reports at commit: Pixel XL (original, free), Pixel 2 (storage saver),
@@ -475,7 +482,7 @@ def _renew_one_at_a_time(api: Any) -> None:
 # in-process run(), the Mac app's checks) keeps gpmc's fresh sessions.
 # One session serves one call at a time, so it holds one connection per host
 # and requests' per-session pool (10 connections a host) is never the limit,
-# however many threads run: sixteen threads are sixteen sessions. What must
+# however many threads run: 32 threads are 32 sessions. What must
 # cover every thread is this idle list: with fewer slots than threads, each
 # round of calls would close the surplus sessions and open them again.
 MAX_IDLE_SESSIONS = MAX_THREADS + 2

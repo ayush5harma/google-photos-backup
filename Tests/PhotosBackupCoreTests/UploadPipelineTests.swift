@@ -10,26 +10,28 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
 }
 
 @Suite struct UploadParallelismTests {
-    @Test func theCeilingIsSixteenAndTheStartStaysAtFour() {
-        #expect(UploadParallelism.automaticCap == 16)
+    @Test func theCeilingIsThirtyTwoAndTheStartStaysAtFour() {
+        #expect(UploadParallelism.automaticCap == 32)
         #expect(UploadParallelism.initial == 4)
         #expect(UploadParallelism(cap: UploadParallelism.automaticCap, automatic: true).current == 4)
-        #expect(UploadParallelism(cap: 17, automatic: true).cap == 16)
+        #expect(UploadParallelism(cap: 32, automatic: false).current == 32)
+        #expect(UploadParallelism(cap: 33, automatic: true).cap == 32)
+        #expect(UploadParallelism(cap: 33, automatic: false).current == 32)
     }
 
-    @Test func automaticClimbsToSixteenOnlyWhileEveryStepIsFaster() {
+    @Test func automaticClimbsToThirtyTwoOnlyWhileEveryStepIsFaster() {
         var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap, automatic: true)
-        // Twelve steps, 4 to 16, each 20% faster than the last.
+        // Twenty-eight steps, 4 to 32, each 20% faster than the last.
         var megabytes = 40.0
-        for level in 4...15 {
+        for level in 4...31 {
             #expect(parallelism.current == level)
             parallelism.measured(sample(Int64(megabytes)))
             megabytes *= 1.2
         }
-        #expect(parallelism.current == 16)
+        #expect(parallelism.current == 32)
         #expect(parallelism.isClimbing)
         parallelism.measured(sample(Int64(megabytes)))
-        #expect(parallelism.current == 16)
+        #expect(parallelism.current == 32)
         #expect(parallelism.isClimbing == false)
     }
 

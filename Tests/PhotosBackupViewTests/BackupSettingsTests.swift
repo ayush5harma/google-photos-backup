@@ -19,16 +19,18 @@ final class BackupSettingsTests: XCTestCase {
     }
 
     func testAChosenNumberStaysChosen() throws {
-        for threads in [1, 3, 8, 16] {
+        for threads in [1, 3, 8, 16, 32] {
             let settings = try decode(#"{"threads": \#(threads)}"#)
             XCTAssertFalse(settings.threadsAutomatic, "\(threads)")
             XCTAssertEqual(settings.parallelUploadCap, threads)
         }
     }
 
-    func testTheChosenNumberIsClampedToTheBridgesSixteen() throws {
-        XCTAssertEqual(BackupSettings.threadRange, 1...16)
-        XCTAssertEqual(try decode(#"{"threads": 40}"#).threads, 16)
+    func testTheChosenNumberIsClampedToTheBridgesThirtyTwo() throws {
+        XCTAssertEqual(BackupSettings.threadRange, 1...32)
+        XCTAssertEqual(try decode(#"{"threads": 32}"#).threads, 32)
+        XCTAssertEqual(try decode(#"{"threads": 33}"#).threads, 32)
+        XCTAssertEqual(try decode(#"{"threads": 40}"#).threads, 32)
         XCTAssertEqual(try decode(#"{"threads": 0}"#).threads, 1)
     }
 
