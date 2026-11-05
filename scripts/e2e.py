@@ -427,7 +427,10 @@ def s_controls(h: Harness) -> None:
     album, count = s_recheck(h)
     h.scenario({"delay": 1.5})
     h.launch("open")
-    h.settings(threads=1, batchSize=5)
+    # Serial on purpose: with automatic parallelism (on by default since #50)
+    # threads=1 is ignored, four uploads finish the first batch at once and the
+    # export-ahead batch starts before the Pause lands (6 of 6, 2026-11-05).
+    h.settings(threads=1, threadsAutomatic=False, batchSize=5)
     h.link("backup/photos")
     h.wait("the run to start uploading", lambda s: s["phase"] == "running" and s["runDone"] >= 1, timeout=180, poll=1)
     h.link("pause")
@@ -446,7 +449,7 @@ def s_controls(h: Harness) -> None:
     h.check("no uploader left running after Stop",
             subprocess.run(["pgrep", "-f", str(h.runtime / "gpmc_bridge.py")], capture_output=True).returncode != 0)
     h.scenario({})
-    h.settings(threads=2, batchSize=20)
+    h.settings(threads=2, threadsAutomatic=True, batchSize=20)
 
 
 def s_conditions(h: Harness) -> None:
