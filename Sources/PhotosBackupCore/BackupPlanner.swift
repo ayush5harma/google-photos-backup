@@ -281,11 +281,13 @@ public enum BackupPlanner {
         let recorded = mirror.recordedAssetIDs
         let newcomers = visible.filter { !recorded.contains($0) }
         let approved = mirror.approvedAssetIDs ?? []
-        let counted = newcomers.filter { !approved.contains($0) }
-        guard !counted.isEmpty, counted.count + addsThisRun > linkedAlbumAddLimit else {
-            return AlbumAdmission(admitted: Set(newcomers), held: [])
-        }
-        return AlbumAdmission(admitted: Set(newcomers.filter { approved.contains($0) }), held: counted)
+        // Held by an earlier run: they wait for the owner whatever the count.
+        let kept = mirror.heldAssetIDs ?? []
+        let counted = newcomers.filter { !approved.contains($0) && !kept.contains($0) }
+        let overLimit = !counted.isEmpty && counted.count + addsThisRun > linkedAlbumAddLimit
+        let held = newcomers.filter { !approved.contains($0) && (kept.contains($0) || overLimit) }
+        let waiting = Set(held)
+        return AlbumAdmission(admitted: Set(newcomers.filter { !waiting.contains($0) }), held: held)
     }
 
     /// The photos waiting for the owner, per selected album that already

@@ -268,6 +268,33 @@ private func added(_ steps: [PlannedStep]) -> [String] {
         #expect(BackupPlanner.heldAlbumAdds(albums: [shared, elsewhere], state: state).map(\.albumID) == ["shared"])
     }
 
+    /// Review of feat/53-guards, minor 7: a hold stays until the owner
+    /// chooses, even when what caused it (earlier adds in the same run) is
+    /// gone by the next run; it never goes in by itself.
+    @Test func aHeldPhotoWaitsForTheOwnerAcrossRuns() throws {
+        let json = #"{"mirrors":{"shared":{"addedAssetIDs":["old"],"googleAlbumID":"g","heldAssetIDs":["new0","new1"]}},"#
+            + #""selectedAlbumIDs":["shared"],"uploaded":{}}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        var state = try decoder.decode(BackupState.self, from: Data(json.utf8))
+        for id in ["old", "new0", "new1", "new2"] { state.recordUpload(assetID: id, mediaKey: "key-\(id)", existing: false) }
+        let album = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: ["new0", "new1", "new2", "old"])
+
+        #expect(added(BackupPlanner.plan(albums: [album], state: state, mirrorAlbums: true, batchSize: 10, uploadsHidden: true)) == ["new2"],
+                "a photo added since, under the limit, goes in; the held two do not")
+        #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: state)
+            == [HeldAlbumAdds(albumID: "shared", title: "Shared", assetIDs: ["new0", "new1"])])
+
+        var approved = state
+        approved.approveAlbumAdds("shared", assetIDs: ["new0", "new1"])
+        #expect(added(BackupPlanner.plan(albums: [album], state: approved, mirrorAlbums: true, batchSize: 10, uploadsHidden: true))
+            == ["new0", "new1", "new2"])
+        var skipped = state
+        skipped.skipAlbumAdds("shared", assetIDs: ["new0", "new1"])
+        #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: skipped).isEmpty)
+        #expect(added(BackupPlanner.plan(albums: [album], state: skipped, mirrorAlbums: true, batchSize: 10, uploadsHidden: true)) == ["new2"])
+    }
+
     @Test func aStateWithoutTheNewFieldsLoadsAndSavesAsBefore() throws {
         let json = #"{"mirrors":{"trip":{"addedAssetIDs":["b"],"googleAlbumID":"g1"}},"selectedAlbumIDs":["trip"],"uploaded":{}}"#
         let decoder = JSONDecoder()

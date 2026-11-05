@@ -60,17 +60,23 @@ public struct AlbumMirror: Codable, Equatable, Sendable {
     /// that stops part-way is not a re-add), and held members the owner
     /// chose to add. Dropped as they go in; nil when there are none.
     public var approvedAssetIDs: Set<String>?
+    /// Members a run held back (past BackupPlanner.linkedAlbumAddLimit),
+    /// kept until the owner chooses Add Them or Skip, so a hold whose cause
+    /// is gone by the next run (earlier adds in that run) never turns into
+    /// an add by itself. nil when there are none.
+    public var heldAssetIDs: Set<String>?
 
     public init(googleAlbumID: String? = nil, addedAssetIDs: Set<String> = [], knownAssetIDs: Set<String>? = nil,
-                approvedAssetIDs: Set<String>? = nil) {
+                approvedAssetIDs: Set<String>? = nil, heldAssetIDs: Set<String>? = nil) {
         self.googleAlbumID = googleAlbumID
         self.addedAssetIDs = addedAssetIDs
         self.knownAssetIDs = knownAssetIDs
         self.approvedAssetIDs = approvedAssetIDs
+        self.heldAssetIDs = heldAssetIDs
     }
 
     private enum CodingKeys: String, CodingKey {
-        case googleAlbumID, addedAssetIDs, knownAssetIDs, approvedAssetIDs
+        case googleAlbumID, addedAssetIDs, knownAssetIDs, approvedAssetIDs, heldAssetIDs
     }
 
     /// A mirror whose member list is missing (a hand edit, a damaged file)
@@ -83,6 +89,14 @@ public struct AlbumMirror: Codable, Equatable, Sendable {
         addedAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .addedAssetIDs) ?? []
         knownAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .knownAssetIDs)
         approvedAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .approvedAssetIDs)
+        heldAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .heldAssetIDs)
+    }
+
+    /// Removes members from one of the optional sets, keeping nil for none.
+    mutating func drop(_ ids: Set<String>, from set: WritableKeyPath<AlbumMirror, Set<String>?>) {
+        guard let current = self[keyPath: set] else { return }
+        let rest = current.subtracting(ids)
+        self[keyPath: set] = rest.isEmpty ? nil : rest
     }
 
     /// Whether the mirror knows what its album held when linked: some member
@@ -199,15 +213,31 @@ public struct BackupState: Codable, Equatable, Sendable {
         mirror.addedAssetIDs.formUnion(added)
         approved.subtract(mirror.addedAssetIDs)
         mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
+        mirror.drop(added, from: \.heldAssetIDs)
         mirrors[albumID] = mirror
         return counted
+    }
+
+    /// A run held these members back: they wait for the owner, across runs.
+    /// Returns whether any was not held already.
+    @discardableResult
+    public mutating func holdAlbumAdds(_ albumID: String, assetIDs: some Sequence<String>) -> Bool {
+        guard var mirror = mirrors[albumID], mirror.googleAlbumID != nil else { return false }
+        let held = mirror.heldAssetIDs ?? []
+        let more = held.union(assetIDs).subtracting(mirror.recordedAssetIDs)
+        guard more != held else { return false }
+        mirror.heldAssetIDs = more.isEmpty ? nil : more
+        mirrors[albumID] = mirror
+        return true
     }
 
     /// "Add them": the owner clears held members to go into the album.
     public mutating func approveAlbumAdds(_ albumID: String, assetIDs: some Sequence<String>) {
         guard var mirror = mirrors[albumID] else { return }
-        let approved = (mirror.approvedAssetIDs ?? []).union(assetIDs).subtracting(mirror.recordedAssetIDs)
+        let chosen = Set(assetIDs)
+        let approved = (mirror.approvedAssetIDs ?? []).union(chosen).subtracting(mirror.recordedAssetIDs)
         mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
+        mirror.drop(chosen, from: \.heldAssetIDs)
         mirrors[albumID] = mirror
     }
 
@@ -217,8 +247,8 @@ public struct BackupState: Codable, Equatable, Sendable {
         let skipped = Set(assetIDs)
         guard !skipped.isEmpty else { return }
         mirror.knownAssetIDs = (mirror.knownAssetIDs ?? []).union(skipped)
-        let approved = (mirror.approvedAssetIDs ?? []).subtracting(skipped)
-        mirror.approvedAssetIDs = approved.isEmpty ? nil : approved
+        mirror.drop(skipped, from: \.approvedAssetIDs)
+        mirror.drop(skipped, from: \.heldAssetIDs)
         mirrors[albumID] = mirror
     }
 
@@ -239,6 +269,7 @@ public struct BackupState: Codable, Equatable, Sendable {
             let members = Set(album.assetIDs).union(album.hiddenAssetIDs)
             mirror.knownAssetIDs = members
             mirror.approvedAssetIDs = nil
+            mirror.heldAssetIDs = nil
             mirrors[album.id] = mirror
             rebaselined.append(RebaselinedAlbum(albumID: album.id, title: album.title, count: members.count))
         }

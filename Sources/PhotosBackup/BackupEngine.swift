@@ -598,16 +598,22 @@ final class BackupEngine {
                                  excludingAssets: failedAssets.union(picked).union(tally.confirmedIDs),
                                  excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits,
                                  uploadsHidden: model.isPrimaryActive, albumAddsThisRun: albumAddsThisRun)
-        if settings.mirrorAlbums { logHeldAlbumAdds(in: albums) }
+        if settings.mirrorAlbums { holdAlbumAdds(in: albums) }
         return steps
     }
 
-    /// Guard C (2): adds held back from an album that already exists go in
-    /// the timeline as a problem, once per album and run; the Overview
+    /// Guard C (2): adds held back from an album that already exists are
+    /// kept in its record until the owner chooses (a hold caused by this
+    /// run's earlier adds would otherwise go in by itself next run), and go
+    /// in the timeline as a problem once per album and run; the Overview
     /// offers "Add them" and "Skip" for each (AppModel.heldAlbumAdds).
-    private func logHeldAlbumAdds(in albums: [AlbumSnapshot]) {
+    private func holdAlbumAdds(in albums: [AlbumSnapshot]) {
         let held = BackupPlanner.heldAlbumAdds(albums: albums, state: model.state, albumAddsThisRun: albumAddsThisRun)
-        for album in held where heldAlbumsLogged.insert(album.albumID).inserted {
+        // Only a hold that grew is news: one already waiting is on the
+        // Overview, and a problem line every run would bury the timeline.
+        let grown = held.filter { model.state.holdAlbumAdds($0.albumID, assetIDs: $0.assetIDs) }
+        if !grown.isEmpty { model.saveState() }
+        for album in grown where heldAlbumsLogged.insert(album.albumID).inserted {
             let photos = Self.photos(album.assetIDs.count)
             model.log(.photos, "\(photos) waiting to be added to an album: more than \(BackupPlanner.linkedAlbumAddLimit) would have "
                       + "gone into a Google album that already exists, so none were sent. Add them or skip them on the Overview.",

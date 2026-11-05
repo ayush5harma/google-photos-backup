@@ -603,6 +603,43 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(saved.mirrors["other"]?.addedAssetIDs, Set(old), "skipped photos are not taken for added")
     }
 
+    /// Review of feat/53-guards, minor 7: a hold the engine makes is kept and
+    /// shown until the owner chooses. Here 26 photos are held on the added
+    /// account; two are then taken out of the Apple album, which leaves 24,
+    /// under the limit, and they still wait instead of going in by themselves.
+    func testAHoldIsKeptUntilTheOwnerChooses() async throws {
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        model.settings.reuploadEdits = false
+        let old = (0..<3).map { "old-\($0)" }, new = (0..<26).map { "new-\($0)" }
+        func album(_ members: [String]) -> LibraryAlbum {
+            LibraryAlbum(snapshot: AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: members), symbol: "rectangle.stack")
+        }
+        model.useAlbumsForTesting([album(new + old)])
+        model.state.selectedAlbumIDs = ["shared"]
+        model.saveState()
+
+        var seen: [[PlannedStep]] = []
+        model.runner.turn = { turn, _ in
+            guard turn.account == secondID else { return }
+            if model.state.mirrors.isEmpty {
+                for id in old + new { model.state.recordUpload(assetID: id, mediaKey: "second-\(id)", existing: false) }
+                model.state.mirrors["shared"] = AlbumMirror(googleAlbumID: "fake-album-shared", addedAssetIDs: Set(old))
+            }
+            seen.append(model.engine.planPass(settings: model.settings))
+        }
+        model.startBackupNow(to: .only(secondID))
+        try await settle(model)
+        XCTAssertEqual(seen, [[]])
+
+        model.useAlbumsForTesting([album(Array(new.dropFirst(2)) + old)])
+        XCTAssertEqual(model.heldAlbumAdds.map(\.count), [24], "the hold is still shown")
+        model.startBackupNow(to: .only(secondID))
+        try await settle(model)
+        XCTAssertEqual(seen, [[], []], "the 24 left still wait for Add Them or Skip")
+    }
+
     /// With every account left out, nothing runs and the status says why,
     /// instead of "Everything is backed up".
     func testNoAccountIncludedRunsNothingAndSaysSo() async throws {
