@@ -253,6 +253,25 @@ public struct AccountLibrary: Equatable, Sendable {
             states[target] = state
             return target
         }
+        if id == Self.legacyKeychainAccount, var added = account(matching: email), let placeholder = account(id),
+           states[added.id].map({ $0.uploaded.isEmpty && $0.mirrors.isEmpty }) ?? true {
+            // The same account was added (as new, empty) before a check named
+            // the placeholder: the placeholder's record is its record. It takes
+            // it, the placeholder's file and place; its own empty one is
+            // dropped. Leaving it empty would make its next run recreate every
+            // album the placeholder's record links.
+            var state = states.removeValue(forKey: id) ?? BackupState()
+            state.accountEmail = state.accountEmail ?? email
+            states[added.id] = state
+            added.stateFile = placeholder.stateFile
+            added.storageChecked = added.storageChecked || placeholder.storageChecked
+            added.removed = false
+            index.accounts.removeAll { $0.id == added.id }
+            if let position = index.accounts.firstIndex(where: { $0.id == id }) { index.accounts[position] = added }
+            return added.id
+        }
+        // Otherwise both records are kept: the account the credential names
+        // signs in with its own, the other is signed out with its own.
         let adopted = adopting(account: email, now: now, storageChecked: account(id)?.storageChecked)
         remove(id)
         return adopted.account.id
@@ -283,8 +302,20 @@ public struct AccountLibrary: Equatable, Sendable {
 
     /// A record file that names nobody: a hash of the id.
     public static func stateFile(for id: String) -> String {
-        let digest = SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined()
-        return "state-\(digest.prefix(16)).json"
+        "state-\(reference(for: id)).json"
+    }
+
+    /// The account as the run history refers to it: history.json is kept
+    /// free of addresses, like the timeline, and the app shows the address
+    /// by looking the reference up among its accounts.
+    public static func reference(for id: String) -> String {
+        String(SHA256.hash(data: Data(id.utf8)).map { String(format: "%02x", $0) }.joined().prefix(16))
+    }
+
+    /// The account a history reference names, signed in or removed.
+    public func account(reference: String?) -> BackupAccount? {
+        guard let reference else { return nil }
+        return index.accounts.first { Self.reference(for: $0.id) == reference }
     }
 
     private func isFileTaken(_ file: String) -> Bool {

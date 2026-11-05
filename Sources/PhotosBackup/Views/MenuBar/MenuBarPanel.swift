@@ -275,9 +275,9 @@ private struct PanelStats: View {
             if failed > 0 {
                 Divider().padding(.leading, 38)
                 StatRow(symbol: "exclamationmark.triangle.fill", tint: .orange, title: "\(failed.formatted()) couldn't be backed up", value: nil) {
-                    Button("Retry") { model.engine.retryFailed() }
+                    Button("Retry") { model.retryFailed() }
                         .controlSize(.small)
-                        .disabled(model.engine.isActive)
+                        .disabled(model.engine.isActive || !model.canRetryFailures)
                 }
             }
         }

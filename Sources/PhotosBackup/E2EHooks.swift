@@ -205,7 +205,7 @@ enum E2EHooks {
             "runs": model.diagnostics.runs.prefix(20).map { run in
                 ["id": run.id.uuidString, "kind": run.kind.rawValue, "trigger": run.trigger.rawValue, "uploaded": run.uploaded, "existing": run.existing,
                  "failed": run.failed, "outcome": run.outcome.map { "\($0)" } as Any, "finished": run.finishedAt != nil,
-                 "account": run.account as Any]
+                 "account": model.accountTitle(reference: run.account) as Any]
             },
             "events": model.diagnostics.events.prefix(60).map { ["category": $0.category.rawValue, "message": $0.message, "problem": $0.isProblem] },
             "settings": (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(model.settings))) as Any,

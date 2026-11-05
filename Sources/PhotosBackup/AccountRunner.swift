@@ -90,6 +90,7 @@ final class AccountRunner {
         current = nil
         await settled()
         model.activate(model.primaryAccount?.id)
+        model.releaseHeldPicks()
     }
 
     /// Until the engine is idle: not running, stopping, waiting or paused.

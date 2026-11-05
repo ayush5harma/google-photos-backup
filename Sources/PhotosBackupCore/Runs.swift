@@ -79,8 +79,9 @@ public struct RunRecord: Codable, Equatable, Identifiable, Sendable {
     public var outcome: RunOutcome?
     /// The network and power conditions when it started, in words.
     public var conditions: String?
-    /// The Google account it went to; nil for runs from before there were
-    /// several, and for the Messages archive, which goes to no account.
+    /// The Google account it went to, as AccountLibrary.reference(for:):
+    /// history.json names no address. nil for runs from before there were
+    /// several accounts, and for the Messages archive, which goes to none.
     public var account: String?
 
     public init(id: UUID = UUID(), kind: RunKind, trigger: RunTrigger, startedAt: Date = Date(), finishedAt: Date? = nil,
