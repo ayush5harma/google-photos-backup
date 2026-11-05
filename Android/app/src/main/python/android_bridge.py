@@ -1,6 +1,7 @@
 """Android adapter. The upload engine is sourced directly from ../../Bridge by Gradle."""
 import json
 import logging
+import threading
 import gpmc_bridge as bridge
 # Never write auth responses, cookies or local file names to Android logcat.
 logging.disable(logging.CRITICAL)
@@ -8,11 +9,27 @@ logging.disable(logging.CRITICAL)
 
 def _run(payload, listener, cancellation, **factory):
     stop = bridge.StopSignal()
+    stopped = threading.Event()
+    request_thread = threading.current_thread()
     def emit(event):
+        # On a stop the bridge drops files not yet started, but its threads
+        # already uploading would carry on: in a separate bridge process they
+        # die with it, here they share the app's process and would send to the
+        # end, unheard, after Cancel. gpmc 0.9.0 reports progress while it
+        # streams a file and just before its commit, and catches only
+        # Exception there, so a StopRequested from any later emit ends that
+        # upload at its next report (issue #59 review). The request's own
+        # thread still reports the bridge's closing "stopped" event.
+        if stopped.is_set() and threading.current_thread() is not request_thread:
+            raise bridge.StopRequested
         # Confirmations are persisted before observing cancellation.
         listener.event(json.dumps(event))
         if cancellation.get():
-            stop.request()
+            try:
+                stop.request()
+            except bridge.StopRequested:
+                stopped.set()
+                raise
     if cancellation.get():
         return bridge.EXIT_STOPPED
     return bridge.run(json.loads(payload), emit, stop=stop, **factory)

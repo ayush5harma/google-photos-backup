@@ -185,6 +185,46 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(code, gpmc_bridge.EXIT_STOPPED)
         self.assertEqual(made, [])
 
+    def test_uploads_abandoned_on_a_stop_end_at_their_next_progress(self):
+        # The bridge runs inside the app: on a stop, its executor drops files not
+        # started but threads already uploading would send to the end with nobody
+        # listening. gpmc 0.9.0 reports progress while it streams a file and before
+        # its commit, and catches only Exception, so StopRequested there ends it.
+        cancellation = Cancellation()
+        slow_started = threading.Event()
+        slow_resumed = threading.Event()
+        outcome = {}
+        class Client(FakeClient):
+            def upload(self, target, progress_callback, **kwargs):
+                path = next(iter(target))
+                if path.name == "item-0.jpg":
+                    # Both in flight before the cancel lands.
+                    slow_started.wait(timeout=10)
+                    cancellation.value = True
+                    return {path.as_posix(): "key-first"}
+                slow_started.set()
+                slow_resumed.wait(timeout=10)
+                try:
+                    progress_callback({"path": path.as_posix(), "phase": "uploading", "bytes_completed": 1, "bytes_total": 4})
+                except BaseException as error:
+                    outcome["raised"] = type(error)
+                    raise
+                outcome["committed"] = True
+                return {path.as_posix(): "key-slow"}
+        client = Client()
+        session = android_bridge.session(client_factory=lambda auth, timeout: client)
+        listener = Listener()
+        code = session.run(upload_request(self.files(2), 2), listener, cancellation)
+        slow_resumed.set()
+        for _ in range(100):
+            if outcome:
+                break
+            threading.Event().wait(0.05)
+        session.close()
+        self.assertEqual(code, gpmc_bridge.EXIT_STOPPED)
+        self.assertEqual([event["media_key"] for event in listener.events if event["type"] == "item"], ["key-first"])
+        self.assertEqual(outcome, {"raised": gpmc_bridge.StopRequested})
+
     def test_session_cancel_midflight_keeps_the_confirmation(self):
         cancellation = Cancellation()
         client = FakeClient()
