@@ -2,6 +2,7 @@ package com.photosbackup
 
 import com.photosbackup.domain.StagingWindow
 import com.photosbackup.domain.ThroughputMeter
+import com.photosbackup.domain.UploadFailure
 import com.photosbackup.domain.UploadParallelism
 import com.photosbackup.domain.UploadSample
 import org.junit.Assert.*
@@ -134,6 +135,19 @@ class UplinkTest {
         val limited = wifi.at(10.0).at(12.0).measured(UploadSample(0, 1.0, 0, rateLimited = true))
         assertEquals(3, limited.current)
         assertEquals(2, limited.recapped(2).recapped(8).current)
+    }
+
+    @Test
+    fun failuresAreReadAsGpmcWordsThem() {
+        assertEquals(UploadFailure.Kind.RATE_LIMITED, UploadFailure.classify("429 Client Error: Too Many Requests for url: https://x", false))
+        assertEquals(UploadFailure.Kind.RATE_LIMITED, UploadFailure.classify("too many requests", null))
+        assertEquals(UploadFailure.Kind.RETRYABLE, UploadFailure.classify("503 Server Error: Service Unavailable for url: https://x", null))
+        assertEquals(UploadFailure.Kind.RETRYABLE, UploadFailure.classify("Max retries exceeded with url: /upload (too many 503 error responses)", null))
+        assertEquals(UploadFailure.Kind.RETRYABLE, UploadFailure.classify("('Connection aborted.', RemoteDisconnected(...))", null))
+        assertEquals(UploadFailure.Kind.PERMANENT, UploadFailure.classify("400 Client Error: Bad Request for url: https://x", true))
+        // A number inside a URL is not a status.
+        assertEquals(UploadFailure.Kind.PERMANENT, UploadFailure.classify("unsupported file https://x/429/y", false))
+        assertEquals(UploadFailure.Kind.RETRYABLE, UploadFailure.classify("something new", true))
     }
 
     @Test

@@ -31,6 +31,7 @@ data class UploadSample(
  * [UNMETERED_CAP] on Wi-Fi and other unmetered networks, [METERED_CAP] on a metered one, lower
  * than the desktop's 16 for battery and heat.
  */
+@ConsistentCopyVisibility
 data class UploadParallelism
 private constructor(
     val cap: Int,
@@ -158,6 +159,45 @@ private constructor(
         fun forSetting(setting: Int, metered: Boolean): UploadParallelism =
             if (setting == AUTOMATIC) automatic(networkCap(metered))
             else manual(setting, networkCap(metered))
+    }
+}
+
+/**
+ * What a failed item tells the parallelism controller, read from the bridge's item_failed text as
+ * the Mac's FailureClassifier reads it: gpmc 0.9.0 keeps only an exception's text, so requests'
+ * "503 Server Error: ..." or urllib3's "too many 503 error responses" is all either side has.
+ */
+object UploadFailure {
+    enum class Kind { RATE_LIMITED, RETRYABLE, PERMANENT }
+
+    private val statusPatterns =
+        listOf(
+                """\b([1-5][0-9]{2}) (?:Client|Server) Error\b""",
+                """too many ([1-5][0-9]{2}) error responses""",
+                """\bHTTP(?: Error)?:? ([1-5][0-9]{2})\b""",
+                """\bstatus(?: code)?:? ([1-5][0-9]{2})\b""",
+            )
+            .map { Regex(it, RegexOption.IGNORE_CASE) }
+
+    private val networkMarkers =
+        listOf(
+            "timed out", "timeout", "connection reset", "connection aborted", "connection refused",
+            "connectionerror", "remotedisconnected", "max retries exceeded", "newconnectionerror",
+            "nameresolutionerror", "name resolution", "network is unreachable", "no route to host",
+            "broken pipe", "temporarily unavailable", "eof occurred",
+        )
+
+    fun classify(message: String, bridgeRetryable: Boolean?): Kind {
+        val status = statusPatterns.firstNotNullOfOrNull { it.find(message)?.groupValues?.get(1)?.toInt() }
+        if (status != null) {
+            if (status == 429) return Kind.RATE_LIMITED
+            if (status == 408 || status >= 500) return Kind.RETRYABLE
+            if (status >= 400) return Kind.PERMANENT
+        }
+        val lowered = message.lowercase(Locale.ROOT)
+        if ("too many requests" in lowered) return Kind.RATE_LIMITED
+        if (networkMarkers.any { it in lowered }) return Kind.RETRYABLE
+        return if (bridgeRetryable == true) Kind.RETRYABLE else Kind.PERMANENT
     }
 }
 
