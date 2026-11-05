@@ -39,12 +39,16 @@ public struct UploadSample: Equatable, Sendable {
 /// not the bandwidth, set the pace.
 ///
 /// Automatically, it starts at four and adds one while each step is
-/// measurably faster (10% more bytes a second); the first step that is not
-/// goes back to the best level and stays. A step that is not faster is the
-/// link's limit showing as longer per-file times, so that is also how rising
-/// latency reads here. In either mode Google pushing back ends the climb for
-/// the run: a 429 halves the level, two or more retryable failures in one
-/// request take one off, and the level only ever goes down after that.
+/// measurably faster (10% more bytes a second than the best level so far).
+/// A step that is not faster is the link's limit showing as longer per-file
+/// times, so that is also how rising latency reads here; but one such step
+/// can as well be noise (a few slow commits, a batch of tiny files), so it
+/// climbs on, and only a second in a row goes back to the best level. A
+/// settled level is tried one step higher after `reprobeAfter` decisions,
+/// judged against its own latest rate, since the link a run starts on is not
+/// the one it has hours later. In either mode Google pushing back ends the
+/// climb for the run: a 429 halves the level, two or more retryable failures
+/// in one request take one off, and the level only ever goes down after that.
 public struct UploadParallelism: Equatable, Sendable {
     /// The bridge's MAX_THREADS. A ceiling: the climb reaches it only while
     /// each step keeps improving throughput.
@@ -57,9 +61,20 @@ public struct UploadParallelism: Equatable, Sendable {
     public static let decisionSeconds: TimeInterval = 4
     /// One passing 5xx is Google's noise, not pressure.
     public static let serverFailuresThatCount = 2
+    /// Steps in a row not faster than the best before the climb settles.
+    public static let missesToSettle = 2
+    /// Decisions at a settled level before it is tried one step higher: about
+    /// ten batches of photos, so a probe that is not faster costs a small
+    /// share of the run.
+    public static let reprobeAfter = 10
 
     private enum Reason: Equatable, Sendable {
         case finding, noFaster(Int), most, chosen, rateLimited, serverTrouble
+    }
+
+    private struct Rate: Equatable, Sendable {
+        let level: Int
+        let bytesPerSecond: Double
     }
 
     public let cap: Int
@@ -68,7 +83,11 @@ public struct UploadParallelism: Equatable, Sendable {
     public private(set) var current: Int
     public private(set) var isClimbing: Bool
     private var reason = Reason.finding
-    private var best: (level: Int, rate: Double)?
+    private var best: Rate?
+    /// Steps in a row, since the best, that were not faster than it.
+    private var misses = 0
+    /// Decisions measured since the level settled.
+    private var settledDecisions = 0
     private var pendingBytes: Int64 = 0
     private var pendingSeconds: TimeInterval = 0
 
@@ -95,26 +114,61 @@ public struct UploadParallelism: Equatable, Sendable {
             backOff(to: current - 1, because: .serverTrouble)
             return
         }
-        guard isClimbing, sample.items > 0, !sample.includesStartUp else { return }
+        // Only a climbing or a settled level measures; a chosen number, the
+        // cap reached and a level Google pushed back stay where they are.
+        guard isClimbing || isSettled, sample.items > 0, !sample.includesStartUp else { return }
         pendingBytes += sample.bytes
         pendingSeconds += sample.seconds
         guard pendingBytes >= Self.decisionBytes, pendingSeconds >= Self.decisionSeconds else { return }
-        let rate = Double(pendingBytes) / pendingSeconds
+        let rate = Rate(level: current, bytesPerSecond: Double(pendingBytes) / pendingSeconds)
         pendingBytes = 0
         pendingSeconds = 0
-        if let best, rate < best.rate * (1 + Self.improvement) {
-            reason = .noFaster(current)
-            current = best.level
-            isClimbing = false
+        if isClimbing {
+            climb(rate)
+        } else {
+            reprobe(rate)
+        }
+    }
+
+    private var isSettled: Bool {
+        if case .noFaster = reason { return true }
+        return false
+    }
+
+    private mutating func climb(_ rate: Rate) {
+        if let best, rate.bytesPerSecond < best.bytesPerSecond * (1 + Self.improvement) {
+            misses += 1
+            if misses >= Self.missesToSettle {
+                reason = .noFaster(current)
+                current = best.level
+                isClimbing = false
+                settledDecisions = 0
+            } else {
+                // At the cap this measures the same level once more.
+                current = min(current + 1, cap)
+            }
             return
         }
-        best = (current, rate)
+        best = rate
+        misses = 0
         if current < cap {
             current += 1
         } else {
             reason = .most
             isClimbing = false
         }
+    }
+
+    /// A decision at the settled level: its latest rate is the baseline the
+    /// next probe has to beat.
+    private mutating func reprobe(_ rate: Rate) {
+        best = rate
+        settledDecisions += 1
+        guard settledDecisions >= Self.reprobeAfter else { return }
+        reason = .finding
+        misses = 0
+        isClimbing = true
+        current = min(current + 1, cap)
     }
 
     private mutating func backOff(to level: Int, because cause: Reason) {
@@ -136,12 +190,6 @@ public struct UploadParallelism: Equatable, Sendable {
         case .rateLimited: return "\(level) (Google asked to slow down)"
         case .serverTrouble: return "\(level) (Google had trouble keeping up)"
         }
-    }
-
-    public static func == (lhs: UploadParallelism, rhs: UploadParallelism) -> Bool {
-        lhs.cap == rhs.cap && lhs.automatic == rhs.automatic && lhs.current == rhs.current && lhs.isClimbing == rhs.isClimbing && lhs.reason == rhs.reason
-            && lhs.best?.level == rhs.best?.level && lhs.best?.rate == rhs.best?.rate
-            && lhs.pendingBytes == rhs.pendingBytes && lhs.pendingSeconds == rhs.pendingSeconds
     }
 }
 
