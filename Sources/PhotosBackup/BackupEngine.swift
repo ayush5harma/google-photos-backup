@@ -735,6 +735,9 @@ final class BackupEngine {
             if case let .upload(albumID, _, ids) = steps[next] { exports[next] = (ids, albumID == BackupPlanner.pickedAlbumID) }
         }
         ahead.stage(exports.keys.sorted()) { next in
+            // Held since it was queued: nothing now; the step exports it all
+            // on its turn, after its wait.
+            if self.phase == .waiting || self.holdingCondition() != nil { return StagedBatch(directories: [], ids: []) }
             let export = exports[next, default: ([], false)]
             return await self.stage(export.ids, includingHidden: export.hidden, ahead: true)
         }

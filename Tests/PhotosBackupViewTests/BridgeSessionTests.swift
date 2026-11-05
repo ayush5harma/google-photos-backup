@@ -80,6 +80,22 @@ final class BridgeSessionTests: XCTestCase {
         XCTAssertEqual(next, 0)
     }
 
+    /// Stop between requests: nobody would read the bridge's last "stopped",
+    /// so the next request must get a new bridge, not that line.
+    func testAStopBetweenRequestsLeavesNothingForTheNextOne() async throws {
+        let session = BridgeSession()
+        let first = try await run(session, .version)
+        session.terminate()
+        var events: [BridgeEvent] = []
+        let next = try await run(session, .version) { events.append($0) }
+        session.close()
+
+        XCTAssertEqual([first, next], [0, 0])
+        XCTAssertTrue(session.lastRequestStartedBridge)
+        XCTAssertEqual(events.count, 1)
+        guard case .version = events.first else { return XCTFail("expected the version answer, got \(events)") }
+    }
+
     func testARequestTheBridgeRefusesStillEndsWithItsCode() async throws {
         let session = BridgeSession()
         var fatal: FatalKind?
