@@ -7,27 +7,35 @@
 
 Back up selected photos and videos to Google Photos from **macOS, Windows, or Android**. The apps keep your originals by default and include a **currently working unlimited original-quality mode** through the unofficial gpmc client. [Validation and limits](#upload-mode-and-its-limits).
 
-[Website](https://ayush5harma.github.io/google-photos-backup/) · [Download v0.5.7](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Setup](docs/SETUP.md) · [Reference](docs/REFERENCE.md) · [Credits](ACKNOWLEDGEMENTS.md)
+[Website](https://ayush5harma.github.io/google-photos-backup/) · [Download v0.6.0](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Setup](docs/SETUP.md) · [Reference](docs/REFERENCE.md) · [Credits](ACKNOWLEDGEMENTS.md)
 
 ## Start here
 
-1. Install the current release for your platform below (v0.5.7 on Mac and Windows, v0.5.0 on Android).
+1. Install the current release for your platform below (v0.6.0 on Mac and Windows, v0.5.0 on Android).
 2. Pick a small source and review automatic backup settings (on by default on Mac), then connect Google Photos and run a backup.
 3. Check the uploaded item in Google Photos, including its quality and storage details, before trusting a larger backup.
 
 | Platform | Download |
 | --- | --- |
-| macOS 14+ (v0.5.7) | [Apple silicon DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.7/Photos-Backup-0.5.7-macOS-arm64.dmg) · [Intel DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.7/Photos-Backup-0.5.7-macOS-x86_64.dmg) |
-| Windows 10 1809+ (x64) / Windows 11 (ARM64) (v0.5.7) | [ARM64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.7/Google-Photos-Backup-0.5.7-Windows-arm64-Setup.exe) · [Intel/AMD x64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.7/Google-Photos-Backup-0.5.7-Windows-x64-Setup.exe) |
+| macOS 14+ (v0.6.0) | [Apple silicon DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.0/Photos-Backup-0.6.0-macOS-arm64.dmg) · [Intel DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.0/Photos-Backup-0.6.0-macOS-x86_64.dmg) |
+| Windows 10 1809+ (x64) / Windows 11 (ARM64) (v0.6.0) | [ARM64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.0/Google-Photos-Backup-0.6.0-Windows-arm64-Setup.exe) · [Intel/AMD x64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.0/Google-Photos-Backup-0.6.0-Windows-x64-Setup.exe) |
 | Android 8+ (v0.5.0) | [APK — ARM64 and x86_64](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Photos-Backup-0.5.0-Android.apk) |
 
-`SHA256SUMS.txt` in the [v0.5.7](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.7/SHA256SUMS.txt) and [v0.5.0](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/SHA256SUMS.txt) releases cover their packages. The Mac app is ad-hoc signed and not notarized; Windows installers are unsigned previews.
+`SHA256SUMS.txt` in the [v0.6.0](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.0/SHA256SUMS.txt) and [v0.5.0](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/SHA256SUMS.txt) releases cover their packages. The Mac app is ad-hoc signed and not notarized; Windows installers are unsigned previews.
 
 ## Upload mode and its limits
 
 Photos Backup uses [xob0t's gpmc](https://github.com/xob0t/gpmc), an unofficial Google Photos client. Its Pixel XL profile currently produced **Original quality** uploads that did **not** count against Google account storage in our finite live tests. Google can change authentication, upload behavior, or storage accounting at any time, so this is neither a guarantee nor an entitlement for every account or file.
 
 On 16 October 2026, a photo and video from each supported platform were read back from Google Photos with SHA-256 hashes matching the originals. The tested Mac albums and Windows folders also had their expected names and contents. See the [validation report](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/live-validation.md).
+
+## What’s new in v0.6.0
+
+On the Mac, the same album selection can now go to several Google accounts ([#49](https://github.com/ayush5harma/google-photos-backup/issues/49)). Add them in Settings > Account; each account has its own sign-in and its own backup record, and **Back up to** sends backups to all accounts or only the ones you tick. Back Up Now can also send a one-off backup to one account. Upgrading keeps the existing account's uploads and album links unchanged and keeps a one-time copy of the old record.
+
+Uploads keep the link busier ([#50](https://github.com/ayush5harma/google-photos-backup/issues/50)): the next batch is exported while one uploads, one uploader serves the whole run over kept connections, and parallel uploads adapt between 4 and 16 to the speed the link gives. Original quality still uploads the way that does not count against your storage.
+
+Albums are more careful. Hidden photos never go into a Google album and never go to an account other than the first. An album the app has already created only receives photos newly added to it, and a large batch waits for you to add or skip it, so photos you removed from a Google album by hand are not put back.
 
 ## What’s new in v0.5.7
 
