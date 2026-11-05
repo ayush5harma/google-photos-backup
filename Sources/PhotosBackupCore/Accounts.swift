@@ -295,9 +295,9 @@ public struct AccountLibrary: Equatable, Sendable {
             // for a capital letter would gain nothing.
             known.email = known.email ?? email
             known.removed = false
-            // The only signed-in account takes the backups whatever was
-            // ticked before: there is no other account to choose.
-            if accounts.allSatisfy({ $0.id == known.id }) { known.chosen = true }
+            // Its tick stays as it was, even as the only account: one that was
+            // left out (a work account, say) is not backed up for signing in
+            // again. The status says when no account is included.
             replace(known)
             var state = states[known.id] ?? BackupState()
             if state.accountEmail == nil { state.accountEmail = email }

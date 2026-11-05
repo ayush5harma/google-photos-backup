@@ -388,6 +388,66 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(model.activeAccountID, firstID)
     }
 
+    /// The engine's own planning, the step every run takes before it
+    /// uploads: the album is planned only for an account the run takes it
+    /// to. A primary left out plans its pick and never the album; in a pass,
+    /// the turn decides (a one-off to it takes the album), and unticking an
+    /// account during its turn drops the album from the next pass. Read
+    /// without exporting: exports reach PhotoKit, which this test process
+    /// must never ask for access.
+    func testTheEnginePlansTheAlbumsOnlyForAnAccountTheRunTakesThemTo() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        model.settings.reuploadEdits = false
+        let albumAssets: Set<String> = ["asset-a", "asset-b", "asset-c"]
+        model.useAlbumsForTesting([LibraryAlbum(snapshot: AlbumSnapshot(id: "trip", title: "Trip", kind: .user, assetIDs: albumAssets.sorted()),
+                                                symbol: "rectangle.stack")])
+        model.state.selectedAlbumIDs = ["trip"]
+        func planned() -> Set<String> {
+            Set(model.engine.planPass(settings: model.settings).flatMap { step -> [String] in
+                if case let .upload(_, _, ids) = step { return ids }
+                return []
+            })
+        }
+
+        model.engine.setPickedForTesting(["picked-1"])
+        XCTAssertEqual(planned(), albumAssets.union(["picked-1"]), "an included primary: the pick, then the album")
+        model.setIncluded(firstID, false)
+        XCTAssertEqual(model.activeAccountID, firstID)
+        XCTAssertEqual(planned(), ["picked-1"], "a primary left out: the pick and never the album")
+        // No pick may be left queued: a pass ends by handing held picks to
+        // the engine, whose run would export them.
+        model.engine.setPickedForTesting([])
+
+        model.settings.messagesMedia = true
+        var seen: [String: Set<String>] = [:]
+        model.runner.turn = { turn, _ in seen[turn.account] = planned() }
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(seen[firstID], [], "the primary's Messages-only turn plans no album")
+        XCTAssertEqual(seen[secondID], albumAssets)
+
+        seen = [:]
+        model.startBackupNow(to: .only(firstID))
+        try await settle(model)
+        XCTAssertEqual(seen[firstID], albumAssets, "a one-off to the primary left out takes the album")
+
+        // Unticked during its own turn: the next pass plans no album for it.
+        model.setIncluded(firstID, true)
+        var duringTurn: [Set<String>] = []
+        model.runner.turn = { turn, _ in
+            guard turn.account == secondID else { return }
+            duringTurn.append(planned())
+            model.setIncluded(secondID, false)
+            duringTurn.append(planned())
+        }
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(duringTurn, [albumAssets, []])
+    }
+
     /// With every account left out, nothing runs and the status says why,
     /// instead of "Everything is backed up".
     func testNoAccountIncludedRunsNothingAndSaysSo() async throws {

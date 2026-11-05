@@ -144,7 +144,9 @@ extension AppModel {
         case .waiting: return "Waiting"
         case .attention:
             if !hasAuthData { return "Not signed in" }
-            if isStorageFull || account.isFailed || noAccountIncluded { return "Backups are stopped" }
+            if isStorageFull || account.isFailed { return "Backups are stopped" }
+            // Messages media still goes to the primary when it is on.
+            if noAccountIncluded { return "Photo backups are stopped" }
             return "\(engine.failedCount.formatted()) need another try"
         }
     }

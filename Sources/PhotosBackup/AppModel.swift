@@ -450,8 +450,7 @@ final class AppModel {
     /// takes: picks, Messages media and device imports, for the primary.
     var activeTakesSelection: Bool {
         guard let id = activeAccountID else { return true }
-        if let turn = runner.currentTurn, turn.account == id { return turn.photos }
-        return isIncluded(id)
+        return runner.takesSelection(id) ?? isIncluded(id)
     }
 
     /// The selection against every account a run goes to, summed: with
@@ -461,9 +460,12 @@ final class AppModel {
     var overallSummary: BackupSummary {
         let targets = targetAccounts
         if targets.isEmpty {
-            // Signed out (the primary's record, as with one account), or
-            // nothing included: then nothing is to go anywhere.
-            return noAccountIncluded ? BackupSummary(backedUp: 0, pending: 0, selectedAlbums: summary.selectedAlbums) : summary
+            // Signed out or before sign-in: the active record, as with one
+            // account. Otherwise no run goes anywhere photos-wise (nothing
+            // included, or only accounts not ready), and an account left out
+            // never counts.
+            let shown = accounts.isEmpty || includedAccounts.contains { $0.id == activeAccountID }
+            return shown ? summary : BackupSummary(backedUp: 0, pending: 0, selectedAlbums: summary.selectedAlbums)
         }
         if targets.count == 1, targets[0].id == activeAccountID { return summary }
         let each = targets.map { summary(of: $0.id) }
@@ -1207,6 +1209,13 @@ final class AppModel {
         state = currentRecord()
         runtimeDescription = runtime
         messagesStatus = messages
+    }
+
+    /// Tests only: a library to plan against, keeping the accounts as they
+    /// are (applyFixture replaces them).
+    func useAlbumsForTesting(_ albums: [LibraryAlbum]) {
+        self.albums = albums
+        albumsLoaded = true
     }
     #endif
 

@@ -36,6 +36,7 @@ final class AccountRunner {
     private(set) var currentTurn: Turn?
     var current: String? { currentTurn?.account }
     private(set) var isRunning = false
+    @ObservationIgnored private var destination: Destination = .chosen
 
     @ObservationIgnored private unowned let model: AppModel
     @ObservationIgnored private var task: Task<Void, Never>?
@@ -72,6 +73,7 @@ final class AccountRunner {
         }
         stopped = false
         outcomes = [:]
+        self.destination = destination
         isRunning = true
         task = Task { [weak self] in
             await self?.run(turns, to: destination, trigger: trigger)
@@ -87,6 +89,15 @@ final class AccountRunner {
 
     func finished(_ outcome: RunOutcome?, for id: String) {
         outcomes[id] = outcome
+    }
+
+    /// Whether the turn in progress gives `id` the album selection; nil when
+    /// no turn is on it. A turn of the saved choice stops taking it once the
+    /// account is left out, at the engine's next pass, rather than uploading
+    /// the rest of the selection to an account someone just unticked.
+    func takesSelection(_ id: String) -> Bool? {
+        guard let turn = currentTurn, turn.account == id else { return nil }
+        return turn.photos && (destination != .chosen || model.isIncluded(id))
     }
 
     /// The turns of a pass, in run order. Messages media goes only to the

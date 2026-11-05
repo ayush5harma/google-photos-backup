@@ -84,20 +84,23 @@ import Testing
         #expect(library.included.map(\.id) == ["b@example.com"])
     }
 
-    /// With the others gone, the account left is ticked when it signs in:
-    /// otherwise nothing would back up and, with one account, nothing in
-    /// the window would say why.
-    @Test func theOnlySignedInAccountIsTicked() {
-        var library = library("a@example.com", "b@example.com")
-        library.include("a@example.com", false)
-        library.remove("a@example.com")
-        library.remove("b@example.com")
-        library.adopting(account: "a@example.com")
-        #expect(library.included.map(\.id) == ["a@example.com"])
+    /// A brand-new account with no other signed in is ticked, so a fresh
+    /// start backs up. An account someone left out stays left out, also as
+    /// the only one and also after signing in again: a work account is never
+    /// backed up because the others were removed.
+    @Test func onlyABrandNewSoleAccountIsTickedForItself() {
         var fresh = AccountLibrary()
         fresh.choose(.chosen)
         fresh.adopting(account: "new@example.com")
         #expect(fresh.isIncluded("new@example.com"))
+
+        var library = library("a@example.com", "work@example.com")
+        library.include("work@example.com", false)
+        library.remove("a@example.com")
+        #expect(library.included.isEmpty, "removing the ticked account does not tick the one left out")
+        library.remove("work@example.com")
+        library.adopting(account: "work@example.com")
+        #expect(!library.isIncluded("work@example.com"), "nor does signing in to it again")
     }
 
     @Test func theChoiceSurvivesAWriteAndARead() throws {

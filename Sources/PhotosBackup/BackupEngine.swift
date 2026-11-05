@@ -428,6 +428,12 @@ final class BackupEngine {
         self.waitReason = waitReason
         self.lastError = lastError
     }
+
+    /// Tests only: the pick queue set without starting a run, so planPass
+    /// can be read without exporting anything (exports reach PhotoKit).
+    func setPickedForTesting(_ ids: [String]) {
+        picked = ids
+    }
     #endif
 
     // MARK: - The run
@@ -506,20 +512,7 @@ final class BackupEngine {
             if messagesOnly { break }
             await model.reloadAlbums()
             let settings = model.settings
-            // An account the choice leaves out gets only what it alone takes
-            // (the queues above and the picks), never the selected albums.
-            let albums = model.activeTakesSelection ? model.albums.map(\.snapshot) : []
-            if settings.reuploadEdits { stampEarlierUploads(in: albums) }
-            picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
-            // What this run already confirmed is never planned again in it,
-            // not even as an edit (Photos' analysis or a favourite can move
-            // its date mid-run), so every asset goes to Google at most once
-            // per run and re-uploads cannot keep the passes going.
-            let steps = BackupPlanner.plan(picked: picked, state: model.state, batchSize: settings.batchSize)
-                + BackupPlanner.plan(albums: albums, state: model.state, mirrorAlbums: settings.mirrorAlbums,
-                                     batchSize: settings.batchSize,
-                                     excludingAssets: failedAssets.union(picked).union(tally.confirmedIDs),
-                                     excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits)
+            let steps = planPass(settings: settings)
             guard !steps.isEmpty else { break }
             planned(steps.reduce(0) { total, step in
                 if case let .upload(_, _, ids) = step { total + ids.count } else { total }
@@ -544,6 +537,26 @@ final class BackupEngine {
         }
         if phase == .pausing { phase = .paused }
         return phase == .stopping
+    }
+
+    /// One pass over the Photos library: the picks first, then the selected
+    /// albums. An account the choice leaves out gets only what it alone takes
+    /// (the queues before this and the picks), never the selected albums;
+    /// AppModel.activeTakesSelection says which, and is read every pass, so
+    /// unticking an account mid-run stops its albums at the next pass.
+    func planPass(settings: BackupSettings) -> [PlannedStep] {
+        let albums = model.activeTakesSelection ? model.albums.map(\.snapshot) : []
+        if settings.reuploadEdits { stampEarlierUploads(in: albums) }
+        picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
+        // What this run already confirmed is never planned again in it,
+        // not even as an edit (Photos' analysis or a favourite can move
+        // its date mid-run), so every asset goes to Google at most once
+        // per run and re-uploads cannot keep the passes going.
+        return BackupPlanner.plan(picked: picked, state: model.state, batchSize: settings.batchSize)
+            + BackupPlanner.plan(albums: albums, state: model.state, mirrorAlbums: settings.mirrorAlbums,
+                                 batchSize: settings.batchSize,
+                                 excludingAssets: failedAssets.union(picked).union(tally.confirmedIDs),
+                                 excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits)
     }
 
     /// Drops from the queues what is backed up or failed for this run, and

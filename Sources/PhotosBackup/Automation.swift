@@ -58,7 +58,10 @@ extension AppModel {
     /// address: an address no account has is never taken for another.
     private func linkTarget(_ address: String) -> String? {
         guard let account = accounts.first(where: { $0.id == address }) else {
-            log(.app, "Link named \(address), which is not an account signed in here; nothing was backed up", problem: true)
+            // The sign-in from before accounts has no address until Google
+            // names it at the next check; it cannot be named in a link yet.
+            let unnamed = accounts.contains { $0.email == nil } ? " (an account whose address is not known yet cannot be named until its connection is checked)" : ""
+            log(.app, "Link named \(address), which is not an account signed in here\(unnamed); nothing was backed up", problem: true)
             return nil
         }
         guard runnableAccounts.contains(where: { $0.id == account.id }) else {
