@@ -695,8 +695,12 @@ def s_migrate(h: Harness) -> None:
     version left it and the "gpmc" keychain item. Runs after photos."""
     support = h.sandbox / "Support"
     state_path = support / "state.json"
+    pre_accounts = support / "state.json.pre-accounts"
     h.quit()
-    for leftover in [support / "accounts.json", *support.glob("state-*.json")]:
+    # The copy beside accounts.json too: left in place, the next launch
+    # restores the list from it instead of migrating. And the one-time copy
+    # of state.json, which is written only when none exists.
+    for leftover in [support / "accounts.json", support / "accounts.json.bak", pre_accounts, *support.glob("state-*.json")]:
         leftover.unlink(missing_ok=True)
     before = state_path.read_bytes()
     clear_sandbox_keychain()
@@ -711,6 +715,8 @@ def s_migrate(h: Harness) -> None:
     h.check("state.json is byte for byte what it was", state_path.read_bytes() == before)
     h.check("the album links survive", all(m.get("googleAlbumID") for m in first["mirrors"].values()) and bool(first["mirrors"]))
     h.check("accounts.json is written", (support / "accounts.json").exists())
+    h.check("state.json.pre-accounts is the state.json from before the upgrade",
+            pre_accounts.exists() and pre_accounts.read_bytes() == before)
 
 
 SCENARIOS: dict[str, Callable[[Harness], None]] = {
