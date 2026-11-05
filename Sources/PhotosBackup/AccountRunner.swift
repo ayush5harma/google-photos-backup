@@ -1,13 +1,17 @@
 import Foundation
 import PhotosBackupCore
 
-/// Takes one backup through the accounts one after another. The engine
-/// backs up to one account at a time, with that account's credential and
-/// record, exactly as it always ran for the single account: one bridge
-/// process at a time, the same upload settings and the same Original
-/// quality path, so memory and the upload thread budget stay what they were.
-/// A failure on one account (an expired sign-in, a full account) moves on
-/// to the next; Stop ends the whole pass, Pause holds it.
+/// Takes one backup to the accounts it goes to, all at the same time (issue
+/// #66). Through 0.6.1 it went through them one after another; measured
+/// 2026-11-05, Google takes about 4 to 6 upload commits at once from one
+/// account (at 16, 58 of 100 photos failed with 500/503) while the uplink had
+/// room for several times that, and each account has its own limit. The
+/// engine runs one part per account (AccountLane): its own bridge process,
+/// upload parallelism, retries, album work and record, with each photo
+/// exported from Photos once for all of them. Original quality is the same
+/// path for each. A failure on one account (an expired sign-in, a full
+/// account) ends that account's part and the others carry on; Stop ends the
+/// whole pass, Pause holds it.
 @MainActor
 @Observable
 final class AccountRunner {
@@ -28,26 +32,20 @@ final class AccountRunner {
         let account: String
         /// The album selection goes to it.
         let photos: Bool
-        /// Messages media goes along: the primary's turn only.
+        /// Messages media goes along: the primary's part only.
         let messages: Bool
     }
 
-    /// The turn in progress, and so the account the pass is backing up to.
-    private(set) var currentTurn: Turn?
-    var current: String? { currentTurn?.account }
     private(set) var isRunning = false
-    @ObservationIgnored private var destination: Destination = .chosen
 
     @ObservationIgnored private unowned let model: AppModel
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var stopped = false
-    /// How each account's last run in this pass ended.
-    @ObservationIgnored private var outcomes: [String: RunOutcome] = [:]
-    /// What one account's turn hands the engine, once that account is
-    /// active; nil is the app's own (Messages media to the primary account,
-    /// then the selected albums). The integration test, which has no Photos
-    /// library, hands it files instead.
-    @ObservationIgnored var turn: ((_ turn: Turn, _ trigger: RunTrigger) -> Void)?
+    /// What a pass hands the engine once it knows where the pass goes; nil
+    /// is the app's own (Messages media to the primary account, then the
+    /// selected albums to every account of the pass). The integration test,
+    /// which has no Photos library, hands it files instead.
+    @ObservationIgnored var turn: ((_ turns: [Turn], _ trigger: RunTrigger) -> Void)?
 
     /// The engine reports a phase change at most this late to the pass.
     private static let pollInterval: Duration = .milliseconds(250)
@@ -72,38 +70,24 @@ final class AccountRunner {
             return
         }
         stopped = false
-        outcomes = [:]
-        self.destination = destination
         isRunning = true
         task = Task { [weak self] in
-            await self?.run(turns, to: destination, trigger: trigger)
+            await self?.run(messages: messages, to: destination, trigger: trigger)
             self?.task = nil
             self?.isRunning = false
         }
     }
 
-    /// No further account starts; the engine's own Stop ends the current one.
+    /// The pass does not start if it has not yet; the engine's own Stop
+    /// ends a run in progress.
     func stop() {
         stopped = true
     }
 
-    func finished(_ outcome: RunOutcome?, for id: String) {
-        outcomes[id] = outcome
-    }
-
-    /// Whether the turn in progress gives `id` the album selection; nil when
-    /// no turn is on it. A turn of the saved choice stops taking it once the
-    /// account is left out, at the engine's next pass, rather than uploading
-    /// the rest of the selection to an account someone just unticked.
-    func takesSelection(_ id: String) -> Bool? {
-        guard let turn = currentTurn, turn.account == id else { return nil }
-        return turn.photos && (destination != .chosen || model.isIncluded(id))
-    }
-
-    /// The turns of a pass, in run order. Messages media goes only to the
+    /// The parts of a pass, in run order. Messages media goes only to the
     /// primary, and goes there whenever a pass that is not a one-off to
     /// another account takes it along, even if the choice leaves the primary
-    /// out of photo backups: its turn then carries Messages media alone.
+    /// out of photo backups: its part then carries Messages media alone.
     func plan(_ destination: Destination, messages: Bool) -> [Turn] {
         let ready = model.runnableAccounts.map(\.id)
         let photos: Set<String> = switch destination {
@@ -123,39 +107,28 @@ final class AccountRunner {
         }
     }
 
-    private func run(_ turns: [Turn], to destination: Destination, trigger: RunTrigger) async {
-        for planned in turns {
-            await settled()
-            if stopped { break }
-            let id = planned.account
-            // A primary run that halted leaves its picks, Messages media or
-            // device import queued, and any run sends the queue first: it
-            // comes out of the engine before another account's turn.
-            if id != model.primaryAccount?.id, model.engine.hasQueuedPrimaryOnlyWork {
-                model.setAsidePrimaryOnlyWork()
-            }
-            // Removed, signed out or not yet storage-checked meanwhile; for
-            // the saved choice, also left out meanwhile.
-            guard model.runnableAccounts.contains(where: { $0.id == id }) else { continue }
-            let turn = Turn(account: id,
-                            photos: planned.photos && (destination != .chosen || model.isIncluded(id)),
-                            messages: planned.messages && id == model.primaryAccount?.id && model.settings.messagesMedia)
-            guard turn.photos || turn.messages, model.activate(id) else { continue }
-            currentTurn = turn
-            outcomes[id] = nil
-            if let hook = self.turn {
-                hook(turn, trigger)
-            } else if turn.messages {
-                await model.scanMessages(includingPhotos: turn.photos, trigger: trigger)
-            } else if model.library.isAuthorized {
-                model.engine.start(trigger: trigger)
-            }
-            await settled()
-            if case .stopped = outcomes[id] { break }
-        }
-        currentTurn = nil
+    private func run(messages: Bool, to destination: Destination, trigger: RunTrigger) async {
+        // A run already going (picks, a Retry) finishes first.
         await settled()
-        model.activate(model.primaryAccount?.id)
+        guard !stopped else { return }
+        // Planned now, not when asked: an account removed, signed out or
+        // left out meanwhile is not in it.
+        let turns = plan(destination, messages: messages)
+        guard !turns.isEmpty else { return }
+        let plans = turns.map { LanePlan(account: $0.account, photos: $0.photos, followsChoice: destination == .chosen) }
+        let primaryTurn = turns.first { $0.account == model.primaryAccount?.id }
+        model.engine.prepare(plans)
+        if let hook = self.turn {
+            hook(turns, trigger)
+        } else if primaryTurn?.messages == true {
+            await model.scanMessages(includingPhotos: turns.contains(where: \.photos), trigger: trigger)
+        } else if model.library.isAuthorized {
+            model.engine.start(trigger: trigger)
+        }
+        await settled()
+        // Nothing started (no Messages media found and no Photos access):
+        // the next run started by itself goes to the active account again.
+        if !model.engine.isActive, model.engine.phase != .paused { model.engine.prepare(nil) }
         model.releaseHeldPicks()
     }
 

@@ -499,13 +499,14 @@ final class AppModel {
         accountsChoice = accountLibrary.choice
     }
 
-    /// Whether a run on the active account backs up the album selection.
-    /// A pass's turn says so for itself (a one-off names its account);
-    /// otherwise an account the choice leaves out takes only what it alone
-    /// takes: picks, Messages media and device imports, for the primary.
+    /// Whether a run started by itself on the active account backs up the
+    /// album selection. A pass says so per account for itself (a one-off
+    /// names its account); otherwise an account the choice leaves out takes
+    /// only what it alone takes: picks, Messages media and device imports,
+    /// for the primary.
     var activeTakesSelection: Bool {
         guard let id = activeAccountID else { return true }
-        return runner.takesSelection(id) ?? isIncluded(id)
+        return isIncluded(id)
     }
 
     /// The selection against every account a run goes to, summed: with
@@ -970,6 +971,29 @@ final class AppModel {
         }
     }
 
+    /// Changes one account's record in memory, active or not, as a run going
+    /// to several accounts at once does (issue #66); saveRecord(of:) writes
+    /// it. nil when the account has no record.
+    @discardableResult
+    func modifyRecord<T>(of id: String, _ change: (inout BackupState) -> T) -> T? {
+        if id == activeAccountID { return change(&state) }
+        guard let result = accountLibrary.modifyState(for: id, change) else { return nil }
+        accountSummaries[id] = nil
+        heldCache = nil
+        return result
+    }
+
+    /// Writes one account's record, as saveState() writes the active one's.
+    func saveRecord(of id: String) {
+        if id == activeAccountID { return saveState() }
+        guard let account = accountLibrary.account(id), let record = accountLibrary.storedState(for: id) else { return }
+        do {
+            try accountsStore.save(record, file: account.stateFile)
+        } catch {
+            saveFailure = "Could not save the backup history: \(error.localizedDescription)"
+        }
+    }
+
     /// Changes one account's record, active or not, and writes it.
     private func changeRecord(of id: String, _ change: (inout BackupState) -> Void) {
         if id == activeAccountID {
@@ -1121,7 +1145,10 @@ final class AppModel {
     /// stop going to it. The other accounts are not touched, and its record
     /// stays, so signing in to it again carries on where it left off.
     func removeAccount(_ id: String) async {
-        if activeAccountID == id, engine.isActive || engine.phase == .paused {
+        // A run going to it, among others, stops as a whole: its part would
+        // otherwise keep recording into a record being removed.
+        let runGoesToIt = engine.lanes.contains { $0.account == id }
+        if activeAccountID == id || runGoesToIt, engine.isActive || engine.phase == .paused {
             if id == primaryAccount?.id { cancelMessagesScan() }
             runner.stop()
             await engine.stopAndWait()
@@ -1236,9 +1263,13 @@ final class AppModel {
     private func refile(_ id: String, as email: String) {
         // Not while a run uses either account's record: refiling can hand
         // one account's record to the other, and the run would write the
-        // old one back over it.
+        // old one back over it. Any lane's account, not only the active one
+        // (review of PR #68): with the accounts side by side each lane
+        // writes its own record, and a refile under it dropped its
+        // confirmations or filed them in the wrong record.
         let busy = engine.isActive || engine.phase == .paused
-        let involved = activeAccountID == id || activeAccountID.map { GoogleSignIn.sameAccount($0, email) } == true
+        let writing = engine.lanes.map(\.account) + [activeAccountID].compactMap { $0 }
+        let involved = writing.contains { $0 == id || GoogleSignIn.sameAccount($0, email) }
         guard !(busy && involved) else {
             accountStatuses[id] = .connected(email: email)
             return
@@ -1352,11 +1383,12 @@ final class AppModel {
 
     /// Every run ends here: it joins the history, with the account it went
     /// to, and may notify.
-    func runFinished(_ record: RunRecord) {
+    /// - Parameter account: whose run it was; nil for the Messages archive,
+    ///   and for a run that could not start any account (the active one's).
+    func runFinished(_ record: RunRecord, account: String? = nil) {
         var record = record
-        if record.kind != .messagesArchive, let id = activeAccountID {
+        if record.kind != .messagesArchive, let id = account ?? activeAccountID {
             record.account = AccountLibrary.reference(for: id)
-            runner.finished(record.outcome, for: id)
         }
         diagnostics.record(record)
         notifier.runFinished(record, settings: settings)

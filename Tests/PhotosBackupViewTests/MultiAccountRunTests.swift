@@ -63,7 +63,11 @@ final class MultiAccountRunTests: XCTestCase {
     }
 
     /// Files the engine uploads as it would Messages attachments.
-    private func items(_ count: Int, tag: String) throws -> [MessagesMediaItem] {
+    /// `prefix` "photo:" makes them stand in for library photos where a test
+    /// needs failures: BackupEngine.fail records a "messages:" id only for an
+    /// item in its Messages queue, so a stand-in that fails with that prefix
+    /// leaves nothing for Retry.
+    private func items(_ count: Int, tag: String, prefix: String = "messages:") throws -> [MessagesMediaItem] {
         let folder = support.deletingLastPathComponent().appendingPathComponent("files", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return try (0..<count).map { index in
@@ -71,7 +75,7 @@ final class MultiAccountRunTests: XCTestCase {
             let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
             let url = folder.appendingPathComponent("\(tag)-\(index).jpg")
             try bytes.write(to: url)
-            return MessagesMediaItem(id: "messages:\(digest)", path: url.path, filename: "Messages-\(digest.prefix(12)).jpg")
+            return MessagesMediaItem(id: "\(prefix)\(digest)", path: url.path, filename: "Messages-\(digest.prefix(12)).jpg")
         }
     }
 
@@ -86,7 +90,7 @@ final class MultiAccountRunTests: XCTestCase {
         }
     }
 
-    func testSeveralAccountsGetTheSameItemsOneAfterAnother() async throws {
+    func testSeveralAccountsGetTheSameItemsAtTheSameTime() async throws {
         let firstID = GoogleSignIn.normalizedEmail(Self.first)
         let secondID = GoogleSignIn.normalizedEmail(Self.second)
 
@@ -123,24 +127,25 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(keychain.accounts(), [firstID, secondID].sorted())
 
         let batch = try items(3, tag: "same-library")
-        var turns: [String] = []
-        model.runner.turn = { turn, trigger in
-            let id = turn.account
-            turns.append(id)
-            XCTAssertEqual(model.activeAccountID, id, "the engine runs with the account whose turn it is")
-            model.engine.backUp(messages: batch, includingPhotos: false, trigger: trigger)
+        var batchToSend = batch
+        var passes: [[String]] = []
+        model.runner.turn = { turns, trigger in
+            passes.append(turns.map(\.account))
+            XCTAssertEqual(model.activeAccountID, firstID, "the primary stays active: each account's part has its own record")
+            model.engine.standInsForTesting = batchToSend
+            model.engine.start(trigger: trigger)
         }
 
         model.startBackupNow()
         try await settle(model)
-        XCTAssertEqual(turns, [firstID])
+        XCTAssertEqual(passes, [[firstID]])
         XCTAssertEqual(Set(batch.map(\.id)).subtracting(model.record(of: firstID)?.uploaded.keys.map { $0 } ?? []), [])
         XCTAssertEqual(model.record(of: secondID)?.uploaded.count, 0)
 
         // The storage check: the same items, now to the second account too.
         model.confirmStorage(for: secondID)
         try await settle(model)
-        XCTAssertEqual(turns, [firstID, firstID, secondID], "accounts in order, one after another")
+        XCTAssertEqual(passes, [[firstID], [firstID, secondID]], "both accounts in one pass")
         let firstRecord = try XCTUnwrap(model.record(of: firstID))
         let secondRecord = try XCTUnwrap(model.record(of: secondID))
         for item in batch {
@@ -151,37 +156,59 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(secondRecord.mirrors.count, 0)
         XCTAssertEqual(firstRecord.mirrors["album-1"]?.googleAlbumID, "fake-album-legacy", "the first account's album link survives")
         XCTAssertEqual(firstRecord.uploaded["asset-1"]?.mediaKey, "legacy-key")
-        XCTAssertEqual(model.activeAccountID, firstID, "the primary is active again after the pass")
+        XCTAssertEqual(model.activeAccountID, firstID, "the primary is active after the pass")
 
         let sent = try uploads().filter { ($0["status"] as? String) == "uploaded" }
         XCTAssertEqual(sent.filter { ($0["account"] as? String) == Self.first }.count, 3)
         XCTAssertEqual(sent.filter { ($0["account"] as? String) == Self.second }.count, 3)
         XCTAssertTrue(try uploads().allSatisfy { ($0["saver"] as? Bool) == false && ($0["use_quota"] as? Bool) == false },
                       "every account goes up as Original quality: saver and use_quota false (Pixel XL)")
-        let runs = model.diagnostics.runs.filter { $0.kind == .messagesMedia }
+        let runs = model.diagnostics.runs.filter { $0.kind == .photos && $0.uploaded > 0 }
         XCTAssertEqual(runs.compactMap { model.accountTitle(reference: $0.account) }, [Self.second, Self.first],
-                       "each run is recorded with its account (newest first)")
+                       "each account's part is recorded with its account (newest first)")
         let history = try String(contentsOf: support.appendingPathComponent("history.json"), encoding: .utf8)
         XCTAssertFalse(history.contains("example.com"), "history.json names accounts by reference only")
 
-        // Stop ends the whole pass: the second account gets none of these.
+        // Issue #66: new items for both accounts go up at the same time,
+        // each exported once, each account through its own bridge.
+        let both = try items(4, tag: "side-by-side")
+        batchToSend = both
+        let exportsBefore = model.engine.standInExportsForTesting
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(passes.last, [firstID, secondID])
+        XCTAssertTrue(uploaded(both, in: model, firstID) && uploaded(both, in: model, secondID))
+        XCTAssertEqual(model.engine.standInExportsForTesting - exportsBefore, both.count, "each item exported once for both accounts")
+        XCTAssertEqual(model.engine.mostAccountsSendingForTesting, 2, "both accounts had a request in flight at once")
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: model.paths.staging.path).isEmpty,
+                      "the staged files went once both accounts were done with them")
+
+        // Stop ends the whole pass, every account's part at once.
         try scenario(["per_account": true, "delay": 0.4])
         let later = try items(6, tag: "stopped")
-        model.runner.turn = { _, trigger in model.engine.backUp(messages: later, includingPhotos: false, trigger: trigger) }
+        batchToSend = later
+        let runsBefore = model.diagnostics.runs.count
         model.startBackupNow()
         let deadline = Date().addingTimeInterval(30)
-        while !(model.engine.isActive && model.runner.current == firstID), Date() < deadline {
+        // The counter still holds the last pass's 2 until start() resets it.
+        while !model.engine.isActive, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        while model.engine.mostAccountsSendingForTesting < 2, Date() < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
         model.stopBackup()
         try await settle(model)
-        XCTAssertTrue(later.allSatisfy { model.record(of: secondID)?.uploaded[$0.id] == nil }, "no account starts after Stop")
-        XCTAssertEqual(model.diagnostics.runs.first?.outcome, .stopped)
-        XCTAssertEqual(model.accountTitle(reference: model.diagnostics.runs.first?.account), Self.first)
+        XCTAssertFalse(uploaded(later, in: model, firstID) && uploaded(later, in: model, secondID), "Stop ended the pass early")
+        let stoppedRuns = model.diagnostics.runs.prefix(model.diagnostics.runs.count - runsBefore)
+        XCTAssertEqual(stoppedRuns.map(\.outcome), [.stopped, .stopped])
+        XCTAssertEqual(Set(stoppedRuns.compactMap { model.accountTitle(reference: $0.account) }), [Self.first, Self.second])
+        XCTAssertFalse(model.engine.isActive)
         try scenario(["per_account": true])
 
         // Remove signs one account out and touches nothing else.
         let firstBefore = model.record(of: firstID)
+        let secondUploads = try XCTUnwrap(model.record(of: secondID)?.uploaded.count)
         await model.removeAccount(secondID)
         XCTAssertEqual(model.accounts.map(\.id), [firstID])
         XCTAssertEqual(keychain.accounts(), [firstID])
@@ -193,12 +220,12 @@ final class MultiAccountRunTests: XCTestCase {
         await model.connect(pasted: Self.credential(Self.second))
         XCTAssertEqual(model.accounts.map(\.id), [firstID, secondID])
         XCTAssertEqual(model.accounts.last?.storageChecked, true)
-        XCTAssertEqual(model.record(of: secondID)?.uploaded.count, 3)
+        XCTAssertEqual(model.record(of: secondID)?.uploaded.count, secondUploads)
 
         // A relaunch reads the same accounts and records.
         let relaunched = AppModel()
         XCTAssertEqual(relaunched.accounts.map(\.id), [firstID, secondID])
-        XCTAssertEqual(relaunched.record(of: secondID)?.uploaded.count, 3)
+        XCTAssertEqual(relaunched.record(of: secondID)?.uploaded.count, secondUploads)
         XCTAssertEqual(relaunched.record(of: firstID)?.mirrors["album-1"]?.googleAlbumID, "fake-album-legacy")
     }
 
@@ -216,15 +243,19 @@ final class MultiAccountRunTests: XCTestCase {
 
     private static let third = "e2e.third@example.com"
 
-    /// Each turn hands the engine `batch` as stand-ins for the selected
-    /// albums (no Photos library here), and records what the turn was.
+    /// Each pass hands the engine `batch` as stand-ins for the selected
+    /// albums (no Photos library here), planned for every account the pass
+    /// takes the albums to, and records the pass's parts.
     private func recordTurns(_ model: AppModel, batch: @escaping () -> [MessagesMediaItem]) -> () -> [AccountRunner.Turn] {
         var turns: [AccountRunner.Turn] = []
-        model.runner.turn = { turn, trigger in
-            turns.append(turn)
-            XCTAssertEqual(model.activeAccountID, turn.account, "the engine runs with the account whose turn it is")
-            XCTAssertEqual(model.activeTakesSelection, turn.photos, "the engine plans the albums exactly when the turn takes them")
-            model.engine.backUp(messages: batch(), includingPhotos: false, trigger: trigger)
+        model.runner.turn = { passTurns, trigger in
+            turns += passTurns
+            XCTAssertEqual(model.engine.preparedPlansForTesting?.map(\.account), passTurns.map(\.account),
+                           "one run goes to every account of the pass")
+            XCTAssertEqual(model.engine.preparedPlansForTesting?.map(\.photos), passTurns.map(\.photos),
+                           "the engine plans the albums exactly for the parts that take them")
+            model.engine.standInsForTesting = batch()
+            model.engine.start(trigger: trigger)
         }
         return {
             defer { turns = [] }
@@ -374,10 +405,12 @@ final class MultiAccountRunTests: XCTestCase {
         let messages = try items(3, tag: "messages")
         let photos = try items(2, tag: "photos")
         var turns: [Turn] = []
-        model.runner.turn = { turn, trigger in
-            turns.append(turn)
-            XCTAssertEqual(model.activeTakesSelection, turn.photos)
-            model.engine.backUp(messages: turn.messages ? messages : photos, includingPhotos: turn.photos, trigger: trigger)
+        model.runner.turn = { passTurns, trigger in
+            turns += passTurns
+            // The app's own order: Messages media found for the primary
+            // starts the one run, which takes the albums to the second.
+            model.engine.standInsForTesting = photos
+            model.engine.backUp(messages: messages, includingPhotos: passTurns.contains(where: \.photos), trigger: trigger)
         }
         model.startBackupNow()
         try await settle(model)
@@ -424,29 +457,46 @@ final class MultiAccountRunTests: XCTestCase {
 
         model.settings.messagesMedia = true
         var seen: [String: Set<String>] = [:]
-        model.runner.turn = { turn, _ in seen[turn.account] = planned() }
+        model.runner.turn = { _, _ in seen = self.plannedUploads(self.planEachPart(model)) }
         model.startBackupNow()
         try await settle(model)
-        XCTAssertEqual(seen[firstID], [], "the primary's Messages-only turn plans no album")
+        XCTAssertEqual(seen[firstID], [], "the primary's Messages-only part plans no album")
         XCTAssertEqual(seen[secondID], albumAssets)
 
         seen = [:]
         model.startBackupNow(to: .only(firstID))
         try await settle(model)
         XCTAssertEqual(seen[firstID], albumAssets, "a one-off to the primary left out takes the album")
+        XCTAssertNil(seen[secondID])
 
-        // Unticked during its own turn: the next pass plans no album for it.
+        // Unticked during the run: the next pass plans no album for it.
         model.setIncluded(firstID, true)
-        var duringTurn: [Set<String>] = []
-        model.runner.turn = { turn, _ in
-            guard turn.account == secondID else { return }
-            duringTurn.append(planned())
+        var duringRun: [Set<String>] = []
+        model.runner.turn = { _, _ in
+            duringRun.append(self.plannedUploads(self.planEachPart(model))[secondID] ?? [])
             model.setIncluded(secondID, false)
-            duringTurn.append(planned())
+            duringRun.append(self.plannedUploads(self.planEachPart(model))[secondID] ?? [])
         }
         model.startBackupNow()
         try await settle(model)
-        XCTAssertEqual(duringTurn, [albumAssets, []])
+        XCTAssertEqual(duringRun, [albumAssets, []])
+    }
+
+    /// Each account's plan for one pass of the run AccountRunner prepared,
+    /// all planned together as the run plans them, without exporting:
+    /// exports reach PhotoKit, which this test process must never ask for
+    /// access.
+    private func planEachPart(_ model: AppModel) -> [String: [PlannedStep]] {
+        model.engine.planPassForTesting(model.engine.preparedPlansForTesting ?? [], settings: model.settings).steps
+    }
+
+    private func plannedUploads(_ steps: [String: [PlannedStep]]) -> [String: Set<String>] {
+        steps.mapValues { steps in
+            Set(steps.flatMap { step -> [String] in
+                if case let .upload(_, _, ids) = step { return ids }
+                return []
+            })
+        }
     }
 
     /// Guard B (0.6.0): a hidden photo the albums list goes to the primary's
@@ -469,9 +519,20 @@ final class MultiAccountRunTests: XCTestCase {
         model.saveState()
 
         var seen: [String: [PlannedStep]] = [:]
-        model.runner.turn = { turn, _ in seen[turn.account] = model.engine.planPass(settings: model.settings) }
+        var pass: SharedPass?
+        model.runner.turn = { _, _ in
+            let planned = model.engine.planPassForTesting(model.engine.preparedPlansForTesting ?? [], settings: model.settings)
+            seen = planned.steps
+            pass = planned.pass
+        }
         model.startBackupNow()
         try await settle(model)
+        // Both accounts planned for one pass: the batches they share never
+        // give the second account the hidden photo, nor put it in an album.
+        let sends = try XCTUnwrap(pass).batches.flatMap(\.sends)
+        XCTAssertFalse(sends.contains { $0.account == secondID && $0.assetIDs.contains("hidden-h") })
+        XCTAssertFalse(sends.contains { $0.albumTitle != nil && $0.assetIDs.contains("hidden-h") })
+        XCTAssertEqual(try XCTUnwrap(pass).batches.flatMap(\.assetIDs).filter { $0 == "hidden-h" }.count, 1, "exported once")
         XCTAssertEqual(seen[firstID], [
             .upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["asset-a", "asset-b"]),
             .upload(albumID: "trip", albumTitle: nil, assetIDs: ["hidden-h"]),
@@ -507,13 +568,14 @@ final class MultiAccountRunTests: XCTestCase {
         model.saveState()
 
         var seen: [String: [PlannedStep]] = [:]
-        model.runner.turn = { turn, _ in
-            if turn.account == secondID {
-                for id in members { model.state.recordUpload(assetID: id, mediaKey: "second-\(id)", existing: false) }
-                model.state.mirrors["shared"] = AlbumMirror(googleAlbumID: "fake-album-shared", addedAssetIDs: [])
-                model.state.mirrors["emptied"] = AlbumMirror(googleAlbumID: "fake-album-emptied", addedAssetIDs: [])
+        model.runner.turn = { _, _ in
+            model.modifyRecord(of: secondID) { state in
+                for id in members { state.recordUpload(assetID: id, mediaKey: "second-\(id)", existing: false) }
+                state.mirrors["shared"] = AlbumMirror(googleAlbumID: "fake-album-shared", addedAssetIDs: [])
+                state.mirrors["emptied"] = AlbumMirror(googleAlbumID: "fake-album-emptied", addedAssetIDs: [])
             }
-            seen[turn.account] = model.engine.planPass(settings: model.settings)
+            // Both accounts planned together, as one pass of the run plans them.
+            seen = self.planEachPart(model)
         }
         model.startBackupNow()
         try await settle(model)
@@ -557,13 +619,16 @@ final class MultiAccountRunTests: XCTestCase {
         model.saveState()
 
         var seen: [String: [PlannedStep]] = [:]
-        model.runner.turn = { turn, _ in
-            if turn.account == secondID, model.state.mirrors.isEmpty {
-                for id in old + shared + other { model.state.recordUpload(assetID: id, mediaKey: "second-\(id)", existing: false) }
-                model.state.mirrors["shared"] = AlbumMirror(googleAlbumID: "fake-album-shared", addedAssetIDs: Set(old))
-                model.state.mirrors["other"] = AlbumMirror(googleAlbumID: "fake-album-other", addedAssetIDs: Set(old))
+        model.runner.turn = { _, _ in
+            if model.record(of: secondID)?.mirrors.isEmpty == true {
+                model.modifyRecord(of: secondID) { state in
+                    for id in old + shared + other { state.recordUpload(assetID: id, mediaKey: "second-\(id)", existing: false) }
+                    state.mirrors["shared"] = AlbumMirror(googleAlbumID: "fake-album-shared", addedAssetIDs: Set(old))
+                    state.mirrors["other"] = AlbumMirror(googleAlbumID: "fake-album-other", addedAssetIDs: Set(old))
+                }
             }
-            seen[turn.account] = model.engine.planPass(settings: model.settings)
+            // Both accounts planned together, as one pass of the run plans them.
+            seen = self.planEachPart(model)
         }
         model.startBackupNow()
         try await settle(model)
@@ -621,13 +686,15 @@ final class MultiAccountRunTests: XCTestCase {
         model.saveState()
 
         var seen: [[PlannedStep]] = []
-        model.runner.turn = { turn, _ in
-            guard turn.account == secondID else { return }
-            if model.state.mirrors.isEmpty {
-                for id in old + new { model.state.recordUpload(assetID: id, mediaKey: "second-\(id)", existing: false) }
-                model.state.mirrors["shared"] = AlbumMirror(googleAlbumID: "fake-album-shared", addedAssetIDs: Set(old))
+        model.runner.turn = { turns, _ in
+            XCTAssertEqual(turns.map(\.account), [secondID])
+            if model.record(of: secondID)?.mirrors.isEmpty == true {
+                model.modifyRecord(of: secondID) { state in
+                    for id in old + new { state.recordUpload(assetID: id, mediaKey: "second-\(id)", existing: false) }
+                    state.mirrors["shared"] = AlbumMirror(googleAlbumID: "fake-album-shared", addedAssetIDs: Set(old))
+                }
             }
-            seen.append(model.engine.planPass(settings: model.settings))
+            seen.append(self.planEachPart(model)[secondID] ?? [])
         }
         model.startBackupNow(to: .only(secondID))
         try await settle(model)
@@ -661,12 +728,12 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertTrue(model.attention.contains { $0.id == "no-account" })
     }
 
-    /// A primary run that halts (here Google refuses the primary's sign-in)
-    /// leaves its Messages media queued in the engine. Found in review: the
-    /// next account's run sent all of it to the second account. Nothing that
-    /// only the primary takes may reach another account, and the other
-    /// accounts still back up (the second review: holding the queue stopped
-    /// them for as long as the primary failed).
+    /// A primary whose part halts (here Google refuses the primary's
+    /// sign-in) leaves its Messages media queued in the engine. Found in
+    /// review of 0.6.0: the next account's run sent all of it to the second
+    /// account. Nothing that only the primary takes may reach another
+    /// account, and the other accounts still back up, at the same time, while
+    /// the primary fails (issue #66: its part ends, theirs carry on).
     func testWorkLeftQueuedByThePrimaryNeverGoesToAnotherAccount() async throws {
         let firstID = GoogleSignIn.normalizedEmail(Self.first)
         let secondID = GoogleSignIn.normalizedEmail(Self.second)
@@ -675,44 +742,38 @@ final class MultiAccountRunTests: XCTestCase {
 
         try scenario(["per_account": true, "refuse_accounts": [Self.first]])
         let queued = try items(4, tag: "primary-only")
-        // The app's own turns: Messages media to the primary, the photo run
-        // (nothing to plan here, no Photos library) to every account.
-        model.runner.turn = { turn, trigger in
-            let id = turn.account
-            if id == firstID {
-                model.engine.backUp(messages: queued, includingPhotos: true, trigger: trigger)
-            } else {
-                model.engine.start(trigger: trigger)
-            }
+        let photos = try items(2, tag: "albums")
+        // The app's own order: Messages media found for the primary starts
+        // the one run, which takes the albums to every account.
+        model.runner.turn = { _, trigger in
+            model.engine.standInsForTesting = photos
+            model.engine.backUp(messages: queued, includingPhotos: true, trigger: trigger)
         }
         let runsBefore = model.diagnostics.runs.count
         model.startBackupNow()
         try await settle(model)
-        XCTAssertEqual(model.record(of: secondID)?.uploaded.count, 0, "the second account got the primary's Messages media")
-        XCTAssertFalse(try uploads().contains { ($0["account"] as? String) == Self.second })
+        XCTAssertTrue(untouched(queued, in: model, secondID), "the second account got the primary's Messages media")
+        XCTAssertFalse(try uploads().contains { ($0["account"] as? String) == Self.second && queued.map(\.filename).contains($0["filename"] as? String ?? "") })
+        XCTAssertTrue(uploaded(photos, in: model, secondID), "the second account still backed up while the primary failed")
         let newRuns = model.diagnostics.runs.prefix(model.diagnostics.runs.count - runsBefore)
-        XCTAssertTrue(newRuns.contains { model.accountTitle(reference: $0.account) == Self.second },
-                      "the second account still had its run while the primary failed")
-        XCTAssertFalse(model.engine.hasQueuedPrimaryOnlyWork, "the queue came out of the engine before the second account's run")
+        XCTAssertEqual(newRuns.count, 2, "one run, a record per account")
+        XCTAssertTrue(newRuns.contains { model.accountTitle(reference: $0.account) == Self.second && $0.outcome == .completed })
+        XCTAssertTrue(newRuns.contains { run in
+            guard case .failed = run.outcome else { return false }
+            return model.accountTitle(reference: run.account) == Self.first
+        }, "the primary's part ended early")
+        XCTAssertTrue(model.engine.hasQueuedPrimaryOnlyWork, "the queue waits in the engine for the primary's next run")
         XCTAssertEqual(model.activeAccountID, firstID)
 
-        // The primary's sign-in works again; a scan finds the items again,
-        // and they go to the primary, and only there.
+        // The primary's sign-in works again: its next run sends the queue to
+        // the primary, and only there.
         try scenario(["per_account": true])
-        model.runner.turn = { turn, trigger in
-            let id = turn.account
-            if id == firstID {
-                model.engine.backUp(messages: queued, includingPhotos: true, trigger: trigger)
-            } else {
-                model.engine.start(trigger: trigger)
-            }
-        }
         model.startBackupNow()
         try await settle(model)
         let primary = Set(model.record(of: firstID)?.uploaded.keys.map { $0 } ?? [])
         XCTAssertTrue(Set(queued.map(\.id)).isSubset(of: primary))
         XCTAssertFalse(model.engine.hasQueuedPrimaryOnlyWork)
-        XCTAssertEqual(model.record(of: secondID)?.uploaded.count, 0)
+        XCTAssertTrue(untouched(queued, in: model, secondID))
     }
 
     /// Review finding (PR #53, MAJOR 1), the reviewer's own scenario: the
@@ -928,46 +989,154 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(keychain.load(account: firstID), fresh)
     }
 
-    /// Review of PR #53, MINOR 6: after a pass that ended on another
-    /// account, the primary is active again and Retry queued that account's
-    /// failures on the primary. A failure is retried only on the account
-    /// whose run it failed in; the primary's own failures still retry.
-    func testRetryAfterAPassNeverSendsAnotherAccountsFailureToThePrimary() async throws {
+    /// Review of PR #53, MINOR 6: Retry once queued another account's
+    /// failure on the primary. With the accounts side by side (issue #66),
+    /// each failure is that account's row, and Retry sends it to that
+    /// account again and to no other; Retry Failed covers every account.
+    func testRetrySendsEachFailureBackToItsOwnAccountOnly() async throws {
         let firstID = GoogleSignIn.normalizedEmail(Self.first)
         let secondID = GoogleSignIn.normalizedEmail(Self.second)
         try scenario(["per_account": true])
         let model = try await twoAccounts()
-        let shared = try items(1, tag: "shared")
-        let failsOnFirst = try items(1, tag: "fails-on-first")[0]
-        let failsOnSecond = try items(1, tag: "fails-on-second")[0]
+        let shared = try items(1, tag: "shared", prefix: "photo:")
+        let failsOnFirst = try items(1, tag: "fails-on-first", prefix: "photo:")[0]
+        let failsOnSecond = try items(1, tag: "fails-on-second", prefix: "photo:")[0]
+        // Each account already has the other's item, so its plan has only
+        // the shared item and its own.
+        model.modifyRecord(of: firstID) { $0.recordUpload(assetID: failsOnSecond.id, mediaKey: "first-has-it", existing: false) }
+        model.saveRecord(of: firstID)
+        model.modifyRecord(of: secondID) { $0.recordUpload(assetID: failsOnFirst.id, mediaKey: "second-has-it", existing: false) }
+        model.saveRecord(of: secondID)
         let refused = "400 Client Error: Bad Request for url: https://photos.example.invalid/commit"
         try scenario(["per_account": true, "fail": [failsOnFirst.filename: refused, failsOnSecond.filename: refused]])
-        model.runner.turn = { turn, trigger in
-            let own = turn.account == firstID ? failsOnFirst : failsOnSecond
-            model.engine.backUp(messages: shared + [own], includingPhotos: false, trigger: trigger)
+        model.runner.turn = { _, trigger in
+            model.engine.standInsForTesting = shared + [failsOnFirst, failsOnSecond]
+            model.engine.start(trigger: trigger)
         }
         model.startBackupNow()
         try await settle(model)
-        XCTAssertEqual(model.activeAccountID, firstID, "the primary is active again after the pass")
+        XCTAssertEqual(model.activeAccountID, firstID)
         XCTAssertTrue(uploaded(shared, in: model, firstID) && uploaded(shared, in: model, secondID))
-        XCTAssertTrue(model.engine.activity.contains { $0.id == failsOnSecond.id && $0.isFailed })
+        let secondRow = BackupEngine.row(secondID, failsOnSecond.id), firstRow = BackupEngine.row(firstID, failsOnFirst.id)
+        XCTAssertTrue(model.engine.activity.contains { $0.id == secondRow && $0.isFailed && $0.account == secondID })
+        XCTAssertFalse(model.engine.activity.contains { $0.id == BackupEngine.row(firstID, failsOnSecond.id) },
+                       "no row of the second account's item for the primary")
 
-        XCTAssertFalse(model.canRetry(failsOnSecond.id), "Retry offered the second account's failure on the primary")
-        XCTAssertTrue(model.canRetry(failsOnFirst.id), "the primary's own failure still retries")
-        XCTAssertEqual(model.engine.failedCount, 1, "Retry Failed counts only what it would retry here")
+        XCTAssertTrue(model.canRetry(secondRow), "the second account's failure retries, on the second account")
+        XCTAssertTrue(model.canRetry(firstRow))
+        XCTAssertEqual(model.engine.failedCount, 2, "Retry Failed covers every account")
 
         // Uploads succeed again: a Retry that went to the wrong account
-        // would now land the second account's item in the primary's record.
+        // would now land an item in the other account's record.
         try scenario(["per_account": true])
-        model.retry(failsOnSecond.id)
+        model.retry(secondRow)
         model.retryFailed()
         try await settle(model)
-        XCTAssertTrue(uploaded([failsOnFirst], in: model, firstID))
-        XCTAssertTrue(untouched([failsOnSecond], in: model, firstID), "the second account's failure went to the primary")
-        // The ledger lists failed attempts too: the primary never tried it.
-        let triedOnFirst = try uploads().filter { ($0["account"] as? String) == Self.first }.compactMap { $0["filename"] as? String }
-        XCTAssertFalse(triedOnFirst.contains(failsOnSecond.filename), "Google got the second account's item as the primary's")
+        XCTAssertEqual(model.record(of: firstID)?.uploaded[failsOnSecond.id]?.mediaKey, "first-has-it", "the primary's record untouched")
+        XCTAssertNotEqual(model.record(of: secondID)?.uploaded[failsOnSecond.id]?.mediaKey, nil)
+        XCTAssertEqual(model.record(of: secondID)?.uploaded[failsOnFirst.id]?.mediaKey, "second-has-it")
+        XCTAssertNotEqual(model.record(of: firstID)?.uploaded[failsOnFirst.id]?.mediaKey, nil)
+        // The ledger lists failed attempts too: neither account ever tried the other's.
+        let tried = try uploads()
+        func filenames(_ email: String) -> [String] { tried.filter { ($0["account"] as? String) == email }.compactMap { $0["filename"] as? String } }
+        XCTAssertFalse(filenames(Self.first).contains(failsOnSecond.filename), "Google got the second account's item as the primary's")
+        XCTAssertFalse(filenames(Self.second).contains(failsOnFirst.filename))
         XCTAssertEqual(model.diagnostics.runs.first?.trigger, .retry)
-        XCTAssertEqual(model.accountTitle(reference: model.diagnostics.runs.first?.account), Self.first)
+        XCTAssertEqual(model.engine.failedCount, 0)
+    }
+
+    /// Review of PR #68, LOW-MEDIUM 5: Retry of a one-off's failure for an
+    /// account the choice leaves out cleared the failure and queued the
+    /// account, but the run that followed planned the selection only for
+    /// accounts the choice includes: the row ended "Stopped" and the failure
+    /// was gone. Now it stays failed and is not offered for Retry (which
+    /// would otherwise have to send the whole selection to an account that
+    /// was left out); another one-off to that account tries it again.
+    func testRetryKeepsAOneOffsFailureForAnAccountTheChoiceLeavesOut() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        model.setIncluded(secondID, false)
+        XCTAssertEqual(model.targetAccounts.map(\.id), [firstID])
+        let failing = try items(1, tag: "one-off-fails", prefix: "photo:")[0]
+        var batch = [failing]
+        model.runner.turn = { _, trigger in
+            model.engine.standInsForTesting = batch
+            model.engine.start(trigger: trigger)
+        }
+        let refused = "400 Client Error: Bad Request for url: https://photos.example.invalid/commit"
+        try scenario(["per_account": true, "fail": [failing.filename: refused]])
+        model.startBackupNow(to: .only(secondID))
+        try await settle(model)
+        let row = BackupEngine.row(secondID, failing.id)
+        XCTAssertTrue(model.engine.activity.contains { $0.id == row && $0.isFailed })
+
+        try scenario(["per_account": true])
+        XCTAssertFalse(model.canRetry(row), "no pass Retry starts would plan it")
+        XCTAssertEqual(model.engine.failedCount, 0)
+        model.retry(row)
+        model.retryFailed()
+        try await settle(model)
+        XCTAssertTrue(model.engine.activity.contains { $0.id == row && $0.isFailed }, "still failed, not stopped")
+        XCTAssertTrue(untouched([failing], in: model, secondID))
+
+        // A run to the accounts chosen leaves that failure alone too.
+        batch = try items(1, tag: "primary-run")
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertTrue(uploaded(batch, in: model, firstID))
+        XCTAssertTrue(model.engine.activity.contains { $0.id == row && $0.isFailed })
+
+        // Another one-off to it tries it again.
+        batch = [failing]
+        model.startBackupNow(to: .only(secondID))
+        try await settle(model)
+        XCTAssertTrue(uploaded([failing], in: model, secondID))
+        XCTAssertFalse(model.engine.activity.contains { $0.id == row && $0.isFailed })
+        XCTAssertFalse(model.isIncluded(secondID), "Retry and the one-offs leave the choice alone")
+    }
+
+    /// Review of PR #68, MEDIUM 2: Check Connections refiled a sign-in that
+    /// turned out to be another account's whenever it was not the active
+    /// account's, though with the accounts side by side every lane writes
+    /// its own record. A refile under a lane moved that record away and its
+    /// confirmations were dropped or filed in the wrong record.
+    func testCheckConnectionsNeverRefilesAnAccountARunIsWritingTo() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        let thirdID = GoogleSignIn.normalizedEmail(Self.third)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        XCTAssertEqual(model.activeAccountID, firstID)
+        // The second account's sign-in turns out to be the third's.
+        try keychain.save(Self.credential(Self.third), account: secondID)
+        // Slow enough that the run is still writing when the check answers.
+        try scenario(["per_account": true, "delay": 1.0])
+        let batch = try items(16, tag: "refile")
+        model.runner.turn = { _, trigger in
+            model.engine.standInsForTesting = batch
+            model.engine.start(trigger: trigger)
+        }
+        model.startBackupNow()
+        let deadline = Date().addingTimeInterval(30)
+        while !(model.engine.isActive && model.engine.lanes.contains { $0.account == secondID }), Date() < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        await model.checkAccount(secondID)
+        XCTAssertTrue(model.engine.isActive, "the check answered while the run was still going")
+        XCTAssertTrue(model.engine.lanes.contains { $0.account == secondID } && model.activeAccountID != secondID,
+                      "a lane that is not the active account")
+        XCTAssertTrue(model.accounts.contains { $0.id == secondID }, "not refiled while its lane writes its record")
+        XCTAssertFalse(model.accounts.contains { $0.id == thirdID })
+        XCTAssertNotNil(keychain.load(account: secondID))
+        XCTAssertEqual(model.status(of: secondID), .connected(email: Self.third))
+        try await settle(model)
+
+        // The run over, the next check files it under its own account.
+        try scenario(["per_account": true])
+        await model.checkAccount(secondID)
+        XCTAssertTrue(model.accounts.contains { $0.id == thirdID })
+        XCTAssertNil(keychain.load(account: secondID))
     }
 }

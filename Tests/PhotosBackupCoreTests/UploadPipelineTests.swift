@@ -5,8 +5,9 @@ import Testing
 private let megabyte: Int64 = 1_000_000
 
 private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int = 20, rateLimited: Bool = false,
-                    serverFailures: Int = 0) -> UploadSample {
-    UploadSample(bytes: megabytes * megabyte, seconds: seconds, items: items, rateLimited: rateLimited, serverFailures: serverFailures)
+                    serverFailures: Int = 0, requested: Int = 0) -> UploadSample {
+    UploadSample(bytes: megabytes * megabyte, seconds: seconds, items: items, rateLimited: rateLimited, serverFailures: serverFailures,
+                 requested: requested)
 }
 
 @Suite struct UploadParallelismTests {
@@ -169,9 +170,201 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         var parallelism = UploadParallelism(cap: 8, automatic: true)
         parallelism.measured(sample(40, serverFailures: 1))  // one passing 5xx is not pressure
         #expect(parallelism.current == 5)
-        parallelism.measured(sample(60, serverFailures: 2))
+        parallelism.measured(sample(60, items: 10, serverFailures: 2, requested: 12))
         #expect(parallelism.current == 4)
         #expect(parallelism.isClimbing == false)
+    }
+
+    /// Issue #66: two failures in a hundred-photo request are under a tenth
+    /// of it, Google's noise rather than the level.
+    @Test func failuresUnderATenthOfTheRequestAreNoise() {
+        var parallelism = UploadParallelism(cap: 16, automatic: false)
+        parallelism.measured(sample(40, items: 91, serverFailures: 9, requested: 100))
+        #expect(parallelism.current == 16)
+        parallelism.measured(sample(40, items: 90, serverFailures: 10, requested: 100))
+        #expect(parallelism.current == 15, "a tenth of the request takes one off")
+        // Not known how many were sent: the items that went up and the failures.
+        parallelism.measured(sample(40, items: 18, serverFailures: 2))
+        #expect(parallelism.current == 14)
+        parallelism.measured(sample(40, items: 19, serverFailures: 2))
+        #expect(parallelism.current == 14, "2 of 21 is under a tenth")
+    }
+
+    /// The 2026-11-05 run on 0.6.1: 16 at once to one account, 42 of 100
+    /// photos saved. One off per request took 40+ minutes to reach a level
+    /// Google accepts; half or more failing halves it.
+    @Test func halfTheRequestFailingHalvesTheLevel() {
+        var parallelism = UploadParallelism(cap: 16, automatic: false)
+        parallelism.measured(sample(40, items: 42, serverFailures: 58, requested: 100))
+        #expect(parallelism.current == 8)
+        parallelism.measured(sample(40, items: 50, serverFailures: 50, requested: 100))
+        #expect(parallelism.current == 4, "exactly half halves")
+        parallelism.measured(sample(40, items: 51, serverFailures: 49, requested: 100))
+        #expect(parallelism.current == 3, "just under half takes one off")
+        parallelism.measured(sample(4, items: 0, serverFailures: 3, requested: 3))
+        parallelism.measured(sample(4, items: 0, serverFailures: 3, requested: 3))
+        #expect(parallelism.current == 1, "never under one")
+        #expect(parallelism.summary == "1 at a time (Google had trouble keeping up)")
+    }
+
+    /// Review of PR #68, MEDIUM 3: a retry round carries only the items that
+    /// just failed. 9 of 100 failing is noise; 5 of those 9 failing again
+    /// read as 56% and halved the level.
+    @Test func aRetryRoundsShareOfFailuresDoesNotLowerTheLevel() {
+        var parallelism = UploadParallelism(cap: 16, automatic: false)
+        parallelism.measured(sample(40, items: 91, serverFailures: 9, requested: 100))
+        #expect(parallelism.current == 16)
+        var retry = sample(2, items: 4, serverFailures: 5, requested: 9)
+        retry.firstRound = false
+        parallelism.measured(retry)
+        #expect(parallelism.current == 16, "5 of the 9 retried is not half the level failing")
+        // The next batch's first request is judged as before.
+        parallelism.measured(sample(40, items: 42, serverFailures: 58, requested: 100))
+        #expect(parallelism.current == 8)
+        // A 429 in a retry round still halves.
+        var limited = sample(2, items: 0, rateLimited: true, requested: 9)
+        limited.firstRound = false
+        parallelism.measured(limited)
+        #expect(parallelism.current == 4)
+    }
+
+    @Test func aRetryRoundsFailureKeepsTheDecisionFromBeingClean() {
+        var automatic = halvedFromEight()
+        for _ in 1..<UploadParallelism.reprobeAfter { automatic.measured(sample(60)) }
+        var retry = sample(60, items: 1, serverFailures: 3, requested: 4)
+        retry.firstRound = false
+        automatic.measured(retry)
+        #expect(automatic.current == 4, "not lowered, and not a clean decision either")
+        for _ in 1..<UploadParallelism.reprobeAfter { automatic.measured(sample(60)) }
+        automatic.measured(sample(60))
+        #expect(automatic.current == 5, "the count of clean decisions started again")
+    }
+
+    /// Issue #66: automatically, a level lowered for Google's trouble is
+    /// tried one step higher after `reprobeAfter` clean decisions, and climbs
+    /// on from there while each step is faster.
+    @Test func automaticTriesALevelLoweredForTroubleAgainAfterCleanDecisions() {
+        var parallelism = UploadParallelism(cap: 16, automatic: true)
+        for megabytes in [40, 60, 80, 100, 130, 170] as [Int64] { parallelism.measured(sample(megabytes)) }
+        #expect(parallelism.current == 16)
+        parallelism.measured(sample(40, items: 42, serverFailures: 58, requested: 100))
+        #expect(parallelism.current == 8)
+        #expect(parallelism.mayRise)
+        for _ in 1..<UploadParallelism.reprobeAfter { parallelism.measured(sample(60)) }
+        #expect(parallelism.current == 8)
+        parallelism.measured(sample(60))
+        #expect(parallelism.current == 10, "one step up the ladder")
+        #expect(parallelism.isClimbing)
+        parallelism.measured(sample(80))
+        #expect(parallelism.current == 13, "faster, so it climbs on")
+    }
+
+    /// Cap 8, climbed to 8 and halved to 4 for Google's trouble.
+    private func halvedFromEight() -> UploadParallelism {
+        var parallelism = UploadParallelism(cap: 8, automatic: true)
+        for megabytes in [40, 60, 80] as [Int64] { parallelism.measured(sample(megabytes)) }
+        #expect(parallelism.current == 8)
+        parallelism.measured(sample(40, items: 4, serverFailures: 8, requested: 12))
+        #expect(parallelism.current == 4)
+        return parallelism
+    }
+
+    /// A one-off step down leaves no rung under the level Google had
+    /// trouble at. That level is tried again only after `troubleMemory`
+    /// clean decisions in a row: a ceiling kept for the whole run let steps
+    /// down of one stack up over hours (0.6.1 went 4 to 2 in 14 minutes).
+    @Test func aLevelSteppedDownOneIsTriedAgainOnlyAfterALongCleanStretch() {
+        var parallelism = UploadParallelism(cap: 8, automatic: true)
+        parallelism.measured(sample(40, items: 10, serverFailures: 2, requested: 12))
+        #expect(parallelism.current == 3)
+        #expect(parallelism.mayRise, "it measures on, so the timeline does not say for the rest of the backup")
+        #expect(parallelism.summary == "3 at a time (Google had trouble keeping up at 4)")
+        for _ in 0..<(UploadParallelism.troubleMemory - 1) { parallelism.measured(sample(60)) }
+        #expect(parallelism.current == 3)
+        // One failure, too small to lower the level, starts the count again.
+        parallelism.measured(sample(60, serverFailures: 1, requested: 20))
+        for _ in 0..<(UploadParallelism.troubleMemory - 1) { parallelism.measured(sample(60)) }
+        #expect(parallelism.current == 3)
+        parallelism.measured(sample(60))
+        #expect(parallelism.current == 4, "the long clean stretch lifts the ceiling: 4 is tried again")
+        parallelism.measured(sample(60))
+        #expect(parallelism.current == 3, "4 was no faster: back to 3 at once, as a recovery")
+        #expect(parallelism.isClimbing == false)
+    }
+
+    /// From 16 halved to 8, then `reprobeAfter` clean decisions at 8.
+    private func recoveringFromSixteen() -> UploadParallelism {
+        var parallelism = UploadParallelism(cap: 32, automatic: true)
+        for megabytes in [40, 60, 80, 100, 130, 170] as [Int64] { parallelism.measured(sample(megabytes)) }
+        #expect(parallelism.current == 16)
+        parallelism.measured(sample(40, items: 42, serverFailures: 58, requested: 100))
+        #expect(parallelism.current == 8)
+        for _ in 0..<UploadParallelism.reprobeAfter { parallelism.measured(sample(60)) }
+        #expect(parallelism.current == 10)
+        return parallelism
+    }
+
+    /// Review of PR #68, MEDIUM 4: the re-probe after Google's trouble
+    /// re-entered the climb, whose "one miss climbs on" took 8 on to 10 and
+    /// then 13 though 10 was no faster.
+    @Test func aRecoveryProbeThatIsNotFasterSettlesAtOnce() {
+        var parallelism = recoveringFromSixteen()
+        parallelism.measured(sample(60))
+        #expect(parallelism.current == 8, "10 was no faster than 8: back to 8, not on to 13")
+        #expect(parallelism.isClimbing == false)
+        #expect(parallelism.summary == "8 at a time (no faster at 10)")
+    }
+
+    @Test func aRecoveryClimbStopsUnderTheLevelGoogleHadTroubleAt() {
+        var parallelism = recoveringFromSixteen()
+        parallelism.measured(sample(80))
+        #expect(parallelism.current == 13, "faster, so it climbs on")
+        parallelism.measured(sample(100))
+        #expect(parallelism.current == 13, "16 is where Google had trouble")
+        #expect(parallelism.mayRise, "it measures on, so that the ceiling can lift")
+        #expect(parallelism.summary == "13 at a time (Google had trouble keeping up at 16)")
+        // 12 clean decisions since the trouble so far (10 at 8, one each at
+        // 10 and 13): 16 waits for the rest of the long clean stretch.
+        var levels: [Int] = []
+        for _ in 0..<UploadParallelism.troubleMemory {
+            parallelism.measured(sample(400))
+            levels.append(parallelism.current)
+        }
+        #expect(levels.prefix(UploadParallelism.troubleMemory - 14).allSatisfy { $0 == 13 }, "not before the stretch has passed")
+        #expect(levels.contains(16), "then the level Google had trouble at is tried again")
+    }
+
+    @Test func aLaterProbeNeverReachesTheLevelGoogleHadTroubleAt() {
+        var parallelism = recoveringFromSixteen()
+        parallelism.measured(sample(60))
+        #expect(parallelism.current == 8)
+        // Settled at 8 with 11 clean decisions since the trouble: while the
+        // ceiling holds, the next probe climbs as usual, one miss on, but
+        // never to 16.
+        var levels: [Int] = []
+        for _ in 0..<(UploadParallelism.troubleMemory - 12) {
+            parallelism.measured(sample(60))
+            levels.append(parallelism.current)
+        }
+        #expect(levels.contains(10))
+        #expect(levels.allSatisfy { $0 < 16 })
+    }
+
+    @Test func aFailureTooSmallToLowerTheLevelStartsTheCleanCountAgain() {
+        var parallelism = UploadParallelism(cap: 16, automatic: false)
+        var automatic = halvedFromEight()
+        for _ in 1..<UploadParallelism.reprobeAfter { automatic.measured(sample(60)) }
+        automatic.measured(sample(60, items: 99, serverFailures: 1, requested: 100))
+        #expect(automatic.current == 4, "that decision was not clean")
+        for _ in 1..<UploadParallelism.reprobeAfter { automatic.measured(sample(60)) }
+        #expect(automatic.current == 4)
+        automatic.measured(sample(60))
+        #expect(automatic.current == 5)
+        // A chosen number lowered for trouble stays lowered.
+        parallelism.measured(sample(40, items: 42, serverFailures: 58, requested: 100))
+        #expect(parallelism.mayRise == false)
+        for _ in 0..<(3 * UploadParallelism.reprobeAfter) { parallelism.measured(sample(400)) }
+        #expect(parallelism.current == 8)
     }
 
     @Test func aSmallSampleWaitsForMore() {
@@ -236,7 +429,7 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         parallelism.measured(sample(40, rateLimited: true))
         #expect(parallelism.current == 8)
         #expect(parallelism.summary == "8 at a time (Google asked to slow down)")
-        parallelism.measured(sample(40, serverFailures: 2))
+        parallelism.measured(sample(40, items: 10, serverFailures: 2, requested: 12))
         #expect(parallelism.current == 7)
         // It never goes back up within the run.
         for _ in 0..<20 { parallelism.measured(sample(400)) }

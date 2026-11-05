@@ -204,7 +204,7 @@ final class Diagnostics {
         let now = Date()
         snapshot.uploadSpeed = engine.speedLine(at: now)
         snapshot.averageBytesPerSecond = engine.meter.averageBytesPerSecond(at: now)
-        snapshot.parallelUploads = engine.parallelism.summary
+        snapshot.parallelUploads = engine.parallelismSummary
         return snapshot
     }
 

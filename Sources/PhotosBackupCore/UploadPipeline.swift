@@ -13,22 +13,40 @@ public struct UploadSample: Equatable, Sendable {
     /// Items that failed in a way sending again may fix: a 5xx, a 408, a
     /// dropped connection or a timeout.
     public var serverFailures: Int
+    /// Items the request sent, whatever became of them: the share of
+    /// failures is judged against this. 0 when not known, which counts as
+    /// the items that went up plus those that failed.
+    public var requested: Int
     /// The run's first request, whose time includes the bridge's start-up
     /// and sign-in: it counts for pushback, not for speed.
     public var includesStartUp: Bool
+    /// False for a retry round: a request that carries only the items the
+    /// one before it just failed. Its share of failures is not the level's
+    /// (review of PR #68): 9 of 100 failing is noise, but 5 of those 9
+    /// failing again read as 56% and halved the level.
+    public var firstRound: Bool
 
     public init(bytes: Int64, seconds: TimeInterval, items: Int, rateLimited: Bool, serverFailures: Int,
-                includesStartUp: Bool = false) {
+                includesStartUp: Bool = false, requested: Int = 0, firstRound: Bool = true) {
         self.bytes = bytes
         self.seconds = seconds
         self.items = items
         self.rateLimited = rateLimited
         self.serverFailures = serverFailures
         self.includesStartUp = includesStartUp
+        self.requested = requested
+        self.firstRound = firstRound
+    }
+
+    /// The share of the request's items that failed retryably, 0 to 1.
+    var failureShare: Double {
+        let sent = max(requested, items + serverFailures)
+        return sent == 0 ? 0 : Double(serverFailures) / Double(sent)
     }
 }
 
-/// How many uploads go at once, decided between bridge requests (issue #50).
+/// How many uploads go at once, decided between bridge requests (issue #50),
+/// for one account: with several accounts each has its own (issue #66).
 ///
 /// A number chosen in Settings is used from the run's first request. Through
 /// 0.6.0 it was only a ceiling for the climb below. Measured 2026-11-05 on
@@ -46,9 +64,33 @@ public struct UploadSample: Equatable, Sendable {
 /// climbs on, and only a second in a row goes back to the best level. A
 /// settled level is tried one step higher after `reprobeAfter` decisions,
 /// judged against its own latest rate, since the link a run starts on is not
-/// the one it has hours later. In either mode Google pushing back ends the
-/// climb for the run: a 429 halves the level, two or more retryable failures
-/// in one request take one off, and the level only ever goes down after that.
+/// the one it has hours later.
+///
+/// In either mode Google pushing back lowers it. A 429 halves the level and
+/// ends the climb for the run. Retryable failures (5xx, timeouts) lower it in
+/// proportion to how much of the request failed (issue #66): not at all
+/// below two failures or below a tenth of the request's items, one off from
+/// there, and half when half or more failed. Only a batch's first request
+/// is judged this way: a retry round carries only items that just failed,
+/// so its share says nothing about the level. Measured 2026-11-05 on 0.6.1 at
+/// 16 to one account: Google's commit call answered 500/503 about 190 times
+/// in 3.4 minutes across 104 files, and the first 100-photo batch saved 42
+/// (0.2 a second); at about 4 to 8 on 0.6.0 there were 12 such errors in 70
+/// minutes (0.66 a second). Taking one off per request took about 12
+/// batches, over 40 minutes, to come down from 16; halving takes one or two.
+/// What Google limits is the commits one account takes at once, which can
+/// change over hours, so in automatic mode a level lowered this way is tried
+/// one step higher again after `reprobeAfter` clean decisions (no retryable
+/// failure in any request they measured) and climbs from there while each
+/// step is faster. Unlike the first climb, that recovery settles on the
+/// first step that is not faster (review of PR #68: "one miss climbs on"
+/// took 16 halved to 8 on to 10 and then 13 though 10 was no faster), and
+/// no climb or later probe goes back to a level Google had trouble at, or
+/// above it, until `troubleMemory` clean decisions in a row have passed;
+/// then that level is tried again, as a recovery. A ceiling kept for the
+/// whole run let every step down of one stack up over a run of hours (4 to
+/// 3 to 2, never back), the ratchet 0.6.1 showed on 2026-11-05 (4 to 2 in
+/// 14 minutes). A chosen number stays lowered for the run.
 public struct UploadParallelism: Equatable, Sendable {
     /// The bridge's MAX_THREADS, and the most a chosen number may be. A
     /// ceiling for the climb, which reaches it only while each step keeps
@@ -69,15 +111,29 @@ public struct UploadParallelism: Equatable, Sendable {
     public static let decisionSeconds: TimeInterval = 4
     /// One passing 5xx is Google's noise, not pressure.
     public static let serverFailuresThatCount = 2
+    /// Retryable failures under this share of a request's items are noise
+    /// too: a 5xx or two in a hundred-photo batch say little about the level.
+    public static let serverFailureShare = 0.10
+    /// From this share of a request's items failed, the level halves.
+    public static let halvingShare = 0.5
     /// Steps in a row not faster than the best before the climb settles.
     public static let missesToSettle = 2
     /// Decisions at a settled level before it is tried one step higher: about
     /// ten batches of photos, so a probe that is not faster costs a small
     /// share of the run.
     public static let reprobeAfter = 10
+    /// Clean decisions in a row after which a level Google had trouble at may
+    /// be tried again: three re-probe intervals, about 12 minutes at the 1 MB/s
+    /// one account took on 2026-11-05 (a decision is at least 24 MB). Long
+    /// enough that a level Google keeps refusing costs a small share of the
+    /// run; short enough that a passing bad patch does not lower a run of
+    /// hours for good.
+    public static let troubleMemory = 3 * reprobeAfter
 
     private enum Reason: Equatable, Sendable {
         case finding, noFaster(Int), most, chosen, rateLimited, serverTrouble
+        /// The next rung is at or above a level Google had trouble at.
+        case underTrouble(Int)
     }
 
     private struct Rate: Equatable, Sendable {
@@ -94,10 +150,22 @@ public struct UploadParallelism: Equatable, Sendable {
     private var best: Rate?
     /// Steps in a row, since the best, that were not faster than it.
     private var misses = 0
-    /// Decisions measured since the level settled.
+    /// Decisions measured since the level settled, or clean ones since
+    /// Google's trouble lowered it.
     private var settledDecisions = 0
     private var pendingBytes: Int64 = 0
     private var pendingSeconds: TimeInterval = 0
+    /// A request measured since the last decision had a retryable failure,
+    /// so that decision is not a clean one.
+    private var troubleSinceDecision = false
+    /// The lowest level Google's trouble lowered, until `troubleMemory`
+    /// clean decisions in a row: no rung at or above it is tried meanwhile.
+    private var troubledAt: Int?
+    /// Clean decisions in a row since Google's trouble last lowered the level.
+    private var cleanSinceTrouble = 0
+    /// Climbing back up after Google's trouble: the first step that is not
+    /// faster settles it.
+    private var recovering = false
 
     public init(cap: Int, automatic: Bool) {
         self.cap = min(max(1, cap), Self.automaticCap)
@@ -118,23 +186,50 @@ public struct UploadParallelism: Equatable, Sendable {
             backOff(to: current / 2, because: .rateLimited)
             return
         }
-        if sample.serverFailures >= Self.serverFailuresThatCount {
-            backOff(to: current - 1, because: .serverTrouble)
+        // A retry round's failures still keep the decision from being clean
+        // (below); only a first round's share says how the level fares.
+        if sample.firstRound, sample.serverFailures >= Self.serverFailuresThatCount, sample.failureShare >= Self.serverFailureShare {
+            backOff(to: sample.failureShare >= Self.halvingShare ? current / 2 : current - 1, because: .serverTrouble)
             return
         }
-        // Only a climbing or a settled level measures; a chosen number, the
-        // cap reached and a level Google pushed back stay where they are.
-        guard isClimbing || isSettled, sample.items > 0, !sample.includesStartUp else { return }
+        if sample.serverFailures > 0 { troubleSinceDecision = true }
+        // Only a climbing, a settled or (automatically) a level Google's
+        // trouble lowered measures; a chosen number, the cap reached and a
+        // level a 429 lowered stay where they are.
+        guard mayRise, sample.items > 0, !sample.includesStartUp else { return }
         pendingBytes += sample.bytes
         pendingSeconds += sample.seconds
         guard pendingBytes >= Self.decisionBytes, pendingSeconds >= Self.decisionSeconds else { return }
         let rate = Rate(level: current, bytesPerSecond: Double(pendingBytes) / pendingSeconds)
+        let clean = !troubleSinceDecision
         pendingBytes = 0
         pendingSeconds = 0
+        troubleSinceDecision = false
+        if troubledAt != nil { forgetTrouble(afterClean: clean) }
         if isClimbing {
             climb(rate)
+        } else if isRecovering, !clean {
+            // A failure too small to lower it still says Google is not keeping
+            // up: the count of clean decisions starts again.
+            best = rate
+            settledDecisions = 0
         } else {
             reprobe(rate)
+        }
+    }
+
+    /// Lifts the ceiling Google's trouble set once `troubleMemory` decisions
+    /// in a row were clean. A level that had no rung left under the ceiling
+    /// then recovers from the decision that lifted it: the next rung is tried
+    /// at once, and the first step that is not faster settles it.
+    private mutating func forgetTrouble(afterClean clean: Bool) {
+        cleanSinceTrouble = clean ? cleanSinceTrouble + 1 : 0
+        guard cleanSinceTrouble >= Self.troubleMemory else { return }
+        troubledAt = nil
+        cleanSinceTrouble = 0
+        if case .underTrouble = reason {
+            reason = .serverTrouble
+            settledDecisions = Self.reprobeAfter - 1
         }
     }
 
@@ -143,27 +238,45 @@ public struct UploadParallelism: Equatable, Sendable {
         return false
     }
 
+    /// Lowered for Google's trouble in automatic mode: tried one step higher
+    /// after `reprobeAfter` clean decisions.
+    private var isRecovering: Bool { automatic && reason == .serverTrouble }
+
+    /// Under the ceiling Google's trouble set, with no rung left below it:
+    /// it measures on, so that the ceiling can lift (automatic mode only).
+    private var isUnderTrouble: Bool {
+        if case .underTrouble = reason { return automatic }
+        return false
+    }
+
+    /// Whether the level may still rise in this run: false at a chosen
+    /// number, at the cap, and once a 429 (or, for a chosen number, Google's
+    /// trouble) lowered it.
+    public var mayRise: Bool { isClimbing || isSettled || isRecovering || isUnderTrouble }
+
     private mutating func climb(_ rate: Rate) {
         if let best, rate.bytesPerSecond < best.bytesPerSecond * (1 + Self.improvement) {
             misses += 1
-            if misses >= Self.missesToSettle {
+            if misses >= Self.missesToSettle || recovering {
                 reason = .noFaster(current)
                 current = best.level
                 isClimbing = false
+                recovering = false
                 settledDecisions = 0
             } else {
                 // At the cap this measures the same level once more.
-                current = step(above: current)
+                current = step(above: current) ?? current
             }
             return
         }
         best = rate
         misses = 0
-        if current < cap {
-            current = step(above: current)
+        if let next = step(above: current) {
+            current = next
         } else {
-            reason = .most
+            reason = troubledAt.map { current < cap ? .underTrouble($0) : .most } ?? .most
             isClimbing = false
+            recovering = false
         }
     }
 
@@ -173,24 +286,47 @@ public struct UploadParallelism: Equatable, Sendable {
         best = rate
         settledDecisions += 1
         guard settledDecisions >= Self.reprobeAfter else { return }
+        guard let next = step(above: current) else {
+            // Nothing to try under the level Google had trouble at: it stays
+            // here for the run. (A level settled at the cap measures on.)
+            if let troubledAt, current < cap { reason = .underTrouble(troubledAt) }
+            settledDecisions = 0
+            return
+        }
+        recovering = isRecovering
         reason = .finding
         misses = 0
         isClimbing = true
-        current = step(above: current)
+        current = next
     }
 
-    /// The next rung of the ladder above `level`, never past the cap; the cap
-    /// itself when there is none.
-    private func step(above level: Int) -> Int {
-        min(cap, Self.ladder.first { $0 > level } ?? cap)
+    /// The next rung of the ladder above `level`, never past the cap (the
+    /// cap itself when the ladder has none above it) and never at or above
+    /// a level Google had trouble at this run; nil when there is none.
+    private func step(above level: Int) -> Int? {
+        let rung = min(cap, Self.ladder.first { $0 > level } ?? cap)
+        guard rung > level, rung < troubledAt ?? .max else { return nil }
+        return rung
     }
 
     private mutating func backOff(to level: Int, because cause: Reason) {
+        if cause == .serverTrouble {
+            troubledAt = min(troubledAt ?? current, current)
+            cleanSinceTrouble = 0
+        }
         current = max(1, level)
         isClimbing = false
+        recovering = false
         reason = cause
+        // No rung left under the level Google had trouble at (a step down of
+        // one, from a rung): there is nothing to try again, which the
+        // timeline line says.
+        if automatic, cause == .serverTrouble, let troubledAt, step(above: current) == nil { reason = .underTrouble(troubledAt) }
         pendingBytes = 0
         pendingSeconds = 0
+        settledDecisions = 0
+        troubleSinceDecision = false
+        misses = 0
     }
 
     /// For Diagnostics: where it is and why.
@@ -203,6 +339,7 @@ public struct UploadParallelism: Equatable, Sendable {
         case .chosen: return "\(level) (as chosen in Settings)"
         case .rateLimited: return "\(level) (Google asked to slow down)"
         case .serverTrouble: return "\(level) (Google had trouble keeping up)"
+        case let .underTrouble(troubled): return "\(level) (Google had trouble keeping up at \(troubled))"
         }
     }
 }
