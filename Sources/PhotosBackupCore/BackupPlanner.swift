@@ -96,6 +96,9 @@ public enum BackupPlanner {
     ///   - excludingAlbums: albums whose album call failed in this run.
     ///   - reuploadEdits: also plan assets changed since their backup,
     ///     after everything new.
+    ///   - uploadsHidden: the account is the primary, whose library may take
+    ///     a hidden photo a snapshot lists (never an album). Any other
+    ///     account is never sent one, new or edited.
     public static func plan(
         albums: [AlbumSnapshot],
         state: BackupState,
@@ -107,9 +110,9 @@ public enum BackupPlanner {
         uploadsHidden: Bool = false
     ) -> [PlannedStep] {
         let steps = planNew(albums: albums, state: state, mirrorAlbums: mirrorAlbums, batchSize: batchSize,
-                            excludingAssets: excludingAssets, excludingAlbums: excludingAlbums)
+                            excludingAssets: excludingAssets, excludingAlbums: excludingAlbums, uploadsHidden: uploadsHidden)
         guard reuploadEdits else { return steps }
-        let changed = changedAssets(albums: albums, state: state, excluding: excludingAssets)
+        let changed = changedAssets(albums: albums, state: state, excluding: excludingAssets, includingHidden: uploadsHidden)
         return steps + changed.chunked(max(1, batchSize)).map { .reupload(assetIDs: $0) }
     }
 
@@ -155,11 +158,12 @@ public enum BackupPlanner {
     /// each, in album order. Whole seconds only: state.json keeps no
     /// fractions, so a stamp read back can be up to a second earlier than
     /// the date it was made from.
-    static func changedAssets(albums: [AlbumSnapshot], state: BackupState, excluding: Set<String>) -> [String] {
+    static func changedAssets(albums: [AlbumSnapshot], state: BackupState, excluding: Set<String>,
+                              includingHidden: Bool) -> [String] {
         var seen = excluding
         var changed: [String] = []
         for album in order(albums) where state.selectedAlbumIDs.contains(album.id) {
-            for id in album.assetIDs where !seen.contains(id) && !isMessagesItem(id) {
+            for id in members(of: album, includingHidden: includingHidden) where !seen.contains(id) && !isMessagesItem(id) {
                 guard let stamp = state.uploaded[id]?.editStamp, let current = album.modified[id] else { continue }
                 seen.insert(id)
                 if wholeSeconds(current) > wholeSeconds(stamp.modified) { changed.append(id) }
@@ -176,13 +180,20 @@ public enum BackupPlanner {
         id.hasPrefix("messages:")
     }
 
+    /// The members an account may be sent and is counted against: every
+    /// one for the primary, the visible ones for any other account.
+    private static func members(of album: AlbumSnapshot, includingHidden: Bool) -> [String] {
+        includingHidden ? album.assetIDs : album.visibleAssetIDs
+    }
+
     private static func planNew(
         albums: [AlbumSnapshot],
         state: BackupState,
         mirrorAlbums: Bool,
         batchSize: Int,
         excludingAssets: Set<String>,
-        excludingAlbums: Set<String>
+        excludingAlbums: Set<String>,
+        uploadsHidden: Bool
     ) -> [PlannedStep] {
         let batchSize = max(1, batchSize)
         var planned = excludingAssets
@@ -190,7 +201,7 @@ public enum BackupPlanner {
 
         for album in order(albums) where state.selectedAlbumIDs.contains(album.id) {
             let mirrored = mirrorAlbums && album.kind == .user && !excludingAlbums.contains(album.id)
-            let toUpload = album.assetIDs.filter { state.uploaded[$0] == nil && !planned.contains($0) }
+            let toUpload = members(of: album, includingHidden: uploadsHidden).filter { state.uploaded[$0] == nil && !planned.contains($0) }
             planned.formUnion(toUpload)
             // A hidden member goes to the library only, never into the album.
             let intoAlbum = mirrored ? toUpload.filter { !album.hiddenAssetIDs.contains($0) } : []
@@ -224,14 +235,18 @@ public enum BackupPlanner {
         return toUpload.chunked(max(1, batchSize)).map { .upload(albumID: pickedAlbumID, albumTitle: nil, assetIDs: $0) }
     }
 
-    public static func progress(of album: AlbumSnapshot, state: BackupState) -> AlbumProgress {
-        AlbumProgress(total: album.assetIDs.count, backedUp: album.assetIDs.reduce(0) { $0 + (state.uploaded[$1] == nil ? 0 : 1) })
+    /// - Parameter includingHidden: the primary's count; any other account
+    ///   is never sent a hidden photo, so it never counts one.
+    public static func progress(of album: AlbumSnapshot, state: BackupState, includingHidden: Bool = false) -> AlbumProgress {
+        let members = members(of: album, includingHidden: includingHidden)
+        return AlbumProgress(total: members.count, backedUp: members.reduce(0) { $0 + (state.uploaded[$1] == nil ? 0 : 1) })
     }
 
-    public static func summary(albums: [AlbumSnapshot], state: BackupState) -> BackupSummary {
+    /// - Parameter includingHidden: as for `progress(of:state:includingHidden:)`.
+    public static func summary(albums: [AlbumSnapshot], state: BackupState, includingHidden: Bool = false) -> BackupSummary {
         let selected = albums.filter { state.selectedAlbumIDs.contains($0.id) }
         var assets = Set<String>()
-        for album in selected { assets.formUnion(album.assetIDs) }
+        for album in selected { assets.formUnion(members(of: album, includingHidden: includingHidden)) }
         let backedUp = assets.reduce(0) { $0 + (state.uploaded[$1] == nil ? 0 : 1) }
         return BackupSummary(backedUp: backedUp, pending: assets.count - backedUp, selectedAlbums: selected.count)
     }

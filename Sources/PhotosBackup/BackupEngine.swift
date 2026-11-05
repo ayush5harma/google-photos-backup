@@ -573,6 +573,8 @@ final class BackupEngine {
     /// (the queues before this and the picks), never the selected albums;
     /// AppModel.activeTakesSelection says which, and is read every pass, so
     /// unticking an account mid-run stops its albums at the next pass.
+    /// Only the primary may be sent a hidden photo the albums list (and
+    /// never into an album): another account never gets one.
     func planPass(settings: BackupSettings) -> [PlannedStep] {
         let albums = model.activeTakesSelection ? model.albums.map(\.snapshot) : []
         if settings.reuploadEdits { stampEarlierUploads(in: albums) }
@@ -585,7 +587,8 @@ final class BackupEngine {
             + BackupPlanner.plan(albums: albums, state: model.state, mirrorAlbums: settings.mirrorAlbums,
                                  batchSize: settings.batchSize,
                                  excludingAssets: failedAssets.union(picked).union(tally.confirmedIDs),
-                                 excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits)
+                                 excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits,
+                                 uploadsHidden: model.isPrimaryActive)
     }
 
     /// Drops from the queues what is backed up or failed for this run, and

@@ -449,6 +449,45 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(duringTurn, [albumAssets, []])
     }
 
+    /// Guard B (0.6.0): a hidden photo the albums list goes to the primary's
+    /// library (never an album) and to no other account, which never counts
+    /// it as still to back up either. Planned per turn without exporting.
+    func testAHiddenPhotoNeverGoesToAnAccountButThePrimary() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        model.settings.reuploadEdits = false
+        model.useAlbumsForTesting([
+            LibraryAlbum(snapshot: AlbumSnapshot(id: "trip", title: "Trip", kind: .user, assetIDs: ["asset-a", "hidden-h", "asset-b"],
+                                                 hiddenAssetIDs: ["hidden-h"]), symbol: "rectangle.stack"),
+            LibraryAlbum(snapshot: AlbumSnapshot(id: PhotoLibrary.allPhotosID, title: "All Photos", kind: .allPhotos,
+                                                 assetIDs: ["asset-a", "hidden-h", "asset-b", "asset-c"], hiddenAssetIDs: ["hidden-h"]),
+                         symbol: "photo"),
+        ])
+        model.state.selectedAlbumIDs = ["trip", PhotoLibrary.allPhotosID]
+        model.saveState()
+
+        var seen: [String: [PlannedStep]] = [:]
+        model.runner.turn = { turn, _ in seen[turn.account] = model.engine.planPass(settings: model.settings) }
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(seen[firstID], [
+            .upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["asset-a", "asset-b"]),
+            .upload(albumID: "trip", albumTitle: nil, assetIDs: ["hidden-h"]),
+            .upload(albumID: PhotoLibrary.allPhotosID, albumTitle: nil, assetIDs: ["asset-c"]),
+        ], "the primary: the hidden photo to its library only")
+        XCTAssertEqual(seen[secondID], [
+            .upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["asset-a", "asset-b"]),
+            .upload(albumID: PhotoLibrary.allPhotosID, albumTitle: nil, assetIDs: ["asset-c"]),
+        ], "another account is never sent the hidden photo")
+
+        XCTAssertEqual(model.activeAccountID, firstID)
+        XCTAssertEqual(model.summary(of: firstID).pending, 4)
+        XCTAssertEqual(model.summary(of: secondID).pending, 3, "another account never counts a hidden photo as to back up")
+        XCTAssertEqual(model.overallSummary.pending, 7)
+    }
+
     /// With every account left out, nothing runs and the status says why,
     /// instead of "Everything is backed up".
     func testNoAccountIncludedRunsNothingAndSaysSo() async throws {

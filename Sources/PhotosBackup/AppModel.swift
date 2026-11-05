@@ -225,7 +225,7 @@ final class AppModel {
     /// The account the legacy keychain item belongs to when moving it
     /// failed this launch: it is read where it is until the next launch.
     @ObservationIgnored private var unmovedLegacyCredential: String?
-    @ObservationIgnored private var accountSummaries: [String: (selection: Set<String>, summary: BackupSummary)] = [:]
+    @ObservationIgnored private var accountSummaries: [String: (selection: Set<String>, primary: Bool, summary: BackupSummary)] = [:]
     /// Picks made while a pass was on another account (see backUp(picked:)).
     @ObservationIgnored private var heldPicks: (ids: [String], files: [String: URL]) = ([], [:])
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
@@ -425,14 +425,15 @@ final class AppModel {
     }
 
     /// The selection against one account's record: "backed up" per account.
+    /// Hidden photos count for the primary only: no other account is sent one.
     func summary(of id: String) -> BackupSummary {
         if id == activeAccountID { return summary }
-        let albums = albums, selection = state.selectedAlbumIDs
-        if let cached = accountSummaries[id], cached.selection == selection { return cached.summary }
+        let albums = albums, selection = state.selectedAlbumIDs, primary = id == primaryAccount?.id
+        if let cached = accountSummaries[id], cached.selection == selection, cached.primary == primary { return cached.summary }
         var record = accountLibrary.state(for: id) ?? BackupState()
         record.selectedAlbumIDs = selection
-        let summary = BackupPlanner.summary(albums: albums.map(\.snapshot), state: record)
-        accountSummaries[id] = (selection, summary)
+        let summary = BackupPlanner.summary(albums: albums.map(\.snapshot), state: record, includingHidden: primary)
+        accountSummaries[id] = (selection, primary, summary)
         return summary
     }
 
@@ -594,7 +595,7 @@ final class AppModel {
         // observes the changes that invalidate it.
         let albums = albums, state = state
         if let summaryCache { return summaryCache }
-        let summary = BackupPlanner.summary(albums: albums.map(\.snapshot), state: state)
+        let summary = BackupPlanner.summary(albums: albums.map(\.snapshot), state: state, includingHidden: isPrimaryActive)
         summaryCache = summary
         return summary
     }
@@ -604,7 +605,9 @@ final class AppModel {
 
     var selectedAlbums: [LibraryAlbum] { albums.filter { state.selectedAlbumIDs.contains($0.id) } }
 
-    func progress(of album: LibraryAlbum) -> AlbumProgress { BackupPlanner.progress(of: album.snapshot, state: state) }
+    func progress(of album: LibraryAlbum) -> AlbumProgress {
+        BackupPlanner.progress(of: album.snapshot, state: state, includingHidden: isPrimaryActive)
+    }
 
     // MARK: - Lifecycle
 
