@@ -923,6 +923,29 @@ class OneGoogleClientTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(factory_calls, [])
 
+    def test_quiet_logging_lets_failure_reasons_in_and_nothing_out(self):
+        # In a child process: quiet_logging() changes the process's logging.
+        import subprocess
+        code = """
+import logging, sys
+sys.path.insert(0, sys.argv[1])
+import icloud_bridge, gpmc_bridge
+icloud_bridge.quiet_logging()
+failures = gpmc_bridge.FailureLog()
+logging.getLogger().addHandler(failures)
+logging.basicConfig(level="INFO", handlers=[logging.StreamHandler(sys.stderr)])  # what gpmc does
+log = logging.getLogger("rich")
+log.info("Token=private-info")
+log.warning("Token=private-warning")
+log.error("Error uploading file /stage/a.jpg: 429 Client Error: Too Many Requests Token=private-error")
+print(failures.reasons["/stage/a.jpg"][:15], end="")
+"""
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(Path(icloud_bridge.__file__).parent)],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "429 Client Erro")
+        self.assertEqual(result.stderr, "")
+
     def test_every_upload_is_built_by_gpmc_bridge_at_original_quality(self):
         source = Path(icloud_bridge.__file__).read_text()
         self.assertNotIn("client.upload(", source)
