@@ -276,6 +276,30 @@ final class ExportAheadTests: XCTestCase {
         _ = ahead.discard()
     }
 
+    /// Review of the fix: the partial batch need not be the next step's. With
+    /// step 3 stopped part-way two steps ahead, step 2's turn staged again and
+    /// started step 4, which then ran beside step 3's own export of the rest.
+    func testAPartialBatchFurtherAheadAlsoHoldsTheNext() async throws {
+        let ahead = ExportAhead<Int>(bytes: { _ in 1 }, isComplete: { $0 != 3 })
+        var started: [Int] = []
+        let export: (Int) async -> Int = { index in
+            started.append(index)
+            return index
+        }
+        ahead.stage([2, 3, 4], export: export)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(started, [2, 3])
+        _ = await ahead.take(2)
+        ahead.stage([3, 4], export: export)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(started, [2, 3], "step 4 waits until step 3 has taken its partial batch")
+        _ = await ahead.take(3)
+        ahead.stage([4], export: export)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(started, [2, 3, 4])
+        _ = ahead.discard()
+    }
+
     /// A step taken before its export began is the caller's to export; it
     /// is never exported again behind its back.
     func testATakenStepIsNotExportedLater() async throws {

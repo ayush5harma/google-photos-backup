@@ -43,8 +43,8 @@ final class ExportAhead<Batch> {
 
     /// - Parameters:
     ///   - isComplete: false for a batch whose export stopped part-way; its
-    ///     step exports the rest on its turn, so the next export waits until
-    ///     then (stage() is called again).
+    ///     step exports the rest on its turn, so no export starts while it
+    ///     waits to be taken.
     ///   - abandoned: a discarded export's batch, once its last item is
     ///     written; nobody takes it, so its files go.
     init(bytes: @escaping (Batch) -> Int64, isComplete: @escaping (Batch) -> Bool = { _ in true },
@@ -109,7 +109,12 @@ final class ExportAhead<Batch> {
     }
 
     private func pump() {
+        // A batch that stopped part-way (a hold, the cap, low disk) is
+        // finished by its step's own export, so nothing starts until that
+        // step has taken it, wherever it is in the window: two steps ahead,
+        // its step's turn comes while the next export would still run.
         guard running == nil, let export, let next = queue.first,
+              !ready.values.contains(where: { !isComplete($0) }),
               StagingWindow.mayStage(batchesReady: ready.count, bytesReady: bytesReady) else { return }
         queue.removeFirst()
         let task = Task { @MainActor in
@@ -129,9 +134,7 @@ final class ExportAhead<Batch> {
             bytesReady += bytes(batch)
         }
         release()
-        // A batch that stopped part-way (a hold, the cap, low disk) is
-        // finished by its step's own export; the queue goes on after that.
-        if discarded || isComplete(batch) { pump() }
+        pump()
     }
 
     private func release() {

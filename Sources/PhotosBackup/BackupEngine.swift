@@ -769,6 +769,9 @@ final class BackupEngine {
         }
         aheadSteps = exports
         ahead.stage(exports.keys.sorted()) { next in
+            // Discarded before it began: discardStagedAhead has already taken
+            // its items out of flight, and stage() would put them back.
+            if Task.isCancelled { return StagedBatch(directories: [], ids: [], complete: false) }
             // Held since it was queued: nothing now; the step exports it all
             // on its turn, after its wait.
             if self.phase == .waiting || self.holdingCondition() != nil { return StagedBatch(directories: [], ids: [], complete: false) }
