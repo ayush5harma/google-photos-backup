@@ -45,7 +45,7 @@ class GpmcSurfaceTests(unittest.TestCase):
         for name in gpmc_bridge.GPMC_SURFACE["Client"]:
             self.assertTrue(hasattr(client, name), f"FakeClient.{name}")
         for name in gpmc_bridge.GPMC_SURFACE["Api"]:
-            if name not in ("get_download_urls", "_new_session"):  # verify-original tests stub these per case
+            if name != "_new_session":  # verify-original tests stub it per case; album read-back needs get_download_urls
                 self.assertTrue(hasattr(type(client.api), name), f"FakeApi.{name}")
 
     def test_end_to_end_fake_provides_the_declared_surface(self):
@@ -56,8 +56,8 @@ class GpmcSurfaceTests(unittest.TestCase):
         finally:
             sys.path.pop(0)
             sys.modules.pop("gpmc", None)
-        # The end-to-end fake never runs verify-original.
-        self.assertEqual([m for m in missing if m not in ("Api.get_download_urls", "Api._new_session")], [])
+        # The end-to-end fake never runs verify-original; it does read keys back for albums.
+        self.assertEqual([m for m in missing if m != "Api._new_session"], [])
 
     @unittest.skipUnless(os.environ.get("GPMC_SITE_PACKAGES"), "set GPMC_SITE_PACKAGES to a real gpmc install")
     def test_real_gpmc_has_the_declared_surface(self):
