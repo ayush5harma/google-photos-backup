@@ -29,7 +29,8 @@ Requests (every field not marked optional is required):
   instead of failing the whole call (see _add_splitting_missing).
 
 Events all carry "type" and "v" (PROTOCOL_VERSION): version, auth, progress,
-item, item_failed, album, missing_media, album_failed, done, stopped, fatal.
+item, item_failed, album, missing_media, album_failed, done, stopped, fatal,
+and served in a serve session.
 Each item is reported as soon as Google confirms it. A fatal or stopped event
 is always the last line and the exit status names its kind (EXIT_*).
 
@@ -49,6 +50,18 @@ is always the last line and the exit status names its kind (EXIT_*).
 SIGTERM stops the run: files still uploading are abandoned (the next run finds
 any Google did commit through gpmc's hash check), except that an album call in
 progress is allowed to finish and report first.
+
+Serve session (the Mac app, one per backup run): a first stdin line
+{"command": "serve"} keeps the bridge reading one request per line, each on a
+single line, until stdin closes (exit 0). Every request is answered with the
+events it gets one-shot, then
+
+  served {"code"}   the exit status a one-shot bridge would have had
+
+so a reader waits for served instead of end of file. The client, gpmc's bearer
+token and the kept connections last for the session; a stop ends it (stopped,
+exit 5). The flags each upload sends to gpmc are the same in both modes
+(upload_flags).
 """
 
 from __future__ import annotations
@@ -89,6 +102,20 @@ MAX_THREADS = 8
 # gpmc reports at commit: Pixel XL (original, free), Pixel 2 (storage saver),
 # Pixel 8 (original, counted against the account's storage).
 QUALITIES = {"original": (False, False), "saver": (True, False), "quota": (False, True)}
+
+
+def upload_flags(quality: str) -> dict[str, bool]:
+    """The gpmc keyword arguments a quality sends; the only place they are made.
+
+    gpmc 0.9.0's Client._upload_file picks the model it commits from these two
+    flags and nothing else (Pixel XL when both are False). Every upload the
+    bridge makes passes exactly these, so one long-lived bridge, more threads
+    or kept connections cannot move an Original-quality item onto the
+    account's storage. tests/test_bridge.py QualityGuardTests hold every path
+    to it.
+    """
+    saver, use_quota = QUALITIES[quality]
+    return {"saver": saver, "use_quota": use_quota}
 
 Event = dict[str, Any]
 Emit = Callable[[Event], None]
@@ -400,6 +427,120 @@ def _connect(request: Event, factory: ClientFactory) -> Any:
     return client
 
 
+# gpmc 0.9.0 makes every call through `with self._new_session() as session:`,
+# a new requests.Session each time, so every call opens its own TCP and TLS
+# connection and closes it: four per uploaded file (hash check, upload token,
+# upload, commit), each a handshake away from Google before any byte moves.
+# While an upload or album step runs, Api._new_session hands out sessions from
+# a pool instead and `with` gives them back, so later calls reuse the open
+# connection. Each session is made by gpmc's own _new_session (same retry
+# adapter, proxies and TLS settings) and is used by one call at a time; the
+# headers and bodies are gpmc's own, per call, as before. Verification is left
+# on fresh sessions: verify_original clears a session's headers, cookies and
+# retries for its signed downloads.
+MAX_IDLE_SESSIONS = MAX_THREADS + 2
+_POOL_ATTRIBUTE = "_photos_backup_sessions"
+
+
+class SessionPool:
+    """requests sessions kept open between gpmc calls, one call at a time each."""
+
+    def __init__(self, make: Callable[[], Any]) -> None:
+        self._make = make
+        self._idle: list[Any] = []
+        self._lock = threading.Lock()
+        self._closed = False
+        self.made = 0
+
+    def checkout(self) -> Any:
+        with self._lock:
+            session = self._idle.pop() if self._idle else None
+        if session is None:
+            session = self._make()
+            # `with session:` ends in close(): give it back instead.
+            session.close = functools.partial(self._checkin, session)
+            with self._lock:
+                self.made += 1
+        # A fresh gpmc session carries no cookies; neither does a kept one.
+        session.cookies.clear()
+        return session
+
+    def _checkin(self, session: Any) -> None:
+        with self._lock:
+            if not self._closed and len(self._idle) < MAX_IDLE_SESSIONS:
+                self._idle.append(session)
+                return
+        type(session).close(session)
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            idle, self._idle = self._idle, []
+        for session in idle:
+            type(session).close(session)
+
+
+_MISSING = object()
+
+
+@contextlib.contextmanager
+def _kept_sessions(client: Any) -> Iterator[None]:
+    """Route the client's gpmc calls through its session pool meanwhile."""
+    api = getattr(client, "api", None)
+    previous = getattr(api, "__dict__", {}).get("_new_session", _MISSING)
+    pool = getattr(client, _POOL_ATTRIBUTE, None)
+    if pool is None:
+        make = getattr(api, "_new_session", None)
+        if make is None:
+            yield
+            return
+        pool = SessionPool(make)
+        setattr(client, _POOL_ATTRIBUTE, pool)
+    api._new_session = pool.checkout
+    try:
+        yield
+    finally:
+        if previous is _MISSING:
+            del api._new_session
+        else:
+            api._new_session = previous
+
+
+def _close_sessions(client: Any) -> None:
+    pool = getattr(client, _POOL_ATTRIBUTE, None)
+    if pool is not None:
+        pool.close()
+
+
+class ClientCache:
+    """The client factory of a serve session: the client, and with it gpmc's
+    cached bearer token and the kept connections, lasts for the session.
+
+    One credential at a time: a request with another credential (or timeout)
+    replaces the client, so a session never holds two accounts' clients.
+    """
+
+    keeps_clients = True
+
+    def __init__(self, factory: ClientFactory) -> None:
+        self._factory = factory
+        self._key: tuple[str, int] | None = None
+        self._client: Any = None
+
+    def __call__(self, auth_data: str, timeout: int) -> Any:
+        key = (auth_data, timeout)
+        if self._key != key:
+            self.close()
+            self._client = self._factory(auth_data, timeout)
+            self._key = key
+        return self._client
+
+    def close(self) -> None:
+        if self._client is not None:
+            _close_sessions(self._client)
+        self._key, self._client = None, None
+
+
 # Refused album calls a request may spend telling dead keys from live ones.
 # An isolated dead key costs about nine refusals (a 500-key batch halves nine
 # times), so this settles about 14 per request; measured 2026-10-27 with the
@@ -610,7 +751,7 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
     quality = request.get("quality", "original")
     if quality not in QUALITIES:
         raise RequestError(f"`quality` must be one of {sorted(QUALITIES)}")
-    saver, use_quota = QUALITIES[quality]
+    flags = upload_flags(quality)
     threads = request.get("threads", 1)
     if not isinstance(threads, int) or not 1 <= threads <= MAX_THREADS:
         raise RequestError(f"`threads` must be 1-{MAX_THREADS}")
@@ -634,8 +775,7 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
         # in flight, never a whole batch's results.
         return client.upload(
             target={Path(_filesystem_path(item["path"])): {"hash": None, "filename": item["filename"]}},
-            use_quota=use_quota,
-            saver=saver,
+            **flags,
             threads=1,
             # Per item: a photo whose earlier key Google lost goes up again
             # without the hash check, which could hand that key back.
@@ -643,6 +783,26 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
             progress_callback=on_progress,
         )
 
+    with _kept_sessions(client):
+        counts, confirmed = _upload_all(items, upload_one, threads, emit, failures, skipped)
+        if album and confirmed:
+            # A stop must not land between Google creating the album and the app
+            # hearing its id, or the next run would create a second one.
+            with stop.critical():
+                try:
+                    _album_step(client, confirmed, album, emit, stop)
+                except Exception as error:
+                    logging.getLogger(__name__).exception("adding to album failed")
+                    emit(_event("album_failed", message=str(error)))
+
+    emit(_event("done", **counts))
+    return EXIT_OK
+
+
+def _upload_all(items: list[Event], upload_one: Callable[[Event], dict[str, str]], threads: int, emit: Emit,
+                failures: FailureLog, skipped: set[str]) -> tuple[dict[str, int], list[str]]:
+    """Send every item, `threads` at a time in the order given, reporting each
+    as Google confirms it; returns the counts and the confirmed media keys."""
     counts = {"uploaded": 0, "existing": 0, "failed": 0}
     confirmed: list[str] = []
     escaped_retryable: set[str] = set()
@@ -681,20 +841,7 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
         # On any way out (a stop, the app gone and stdout broken), files not
         # yet started must not upload behind the app's back.
         executor.shutdown(wait=False, cancel_futures=True)
-
-    if album and confirmed:
-        # A stop must not land between Google creating the album and the app
-        # hearing its id, or the next run would create a second one.
-        with stop.critical():
-            try:
-                _album_step(client, confirmed, album, emit, stop)
-            except Exception as error:
-                logging.getLogger(__name__).exception("adding to album failed")
-                emit(_event("album_failed", message=str(error)))
-
-    emit(_event("done", **counts))
-    return EXIT_OK
-
+    return counts, confirmed
 
 
 def _verification_items(request: Event) -> list[Event]:
@@ -830,6 +977,7 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
     stop = stop or StopSignal()
     failures = FailureLog()
     logging.getLogger().addHandler(failures)
+    client = None
     try:
         if not isinstance(request, dict):
             raise RequestError("the request must be a JSON object")
@@ -875,7 +1023,7 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
             emit(_event("auth", email=_email(request["auth_data"])))
             return EXIT_OK
         if command == "add-to-album":
-            with stop.critical():
+            with _kept_sessions(client), stop.critical():
                 _album_step(client, request["media_keys"], request["album"], emit, stop)
             return EXIT_OK
         return _upload(request, client, emit, failures, stop)
@@ -900,6 +1048,10 @@ def run(request: Any, emit: Emit, client_factory: ClientFactory = default_client
         return code
     finally:
         logging.getLogger().removeHandler(failures)
+        # A client made for this request alone takes its connections with it;
+        # a serve session's ClientCache keeps them for the next request.
+        if client is not None and not getattr(client_factory, "keeps_clients", False):
+            _close_sessions(client)
 
 
 @contextlib.contextmanager
@@ -926,39 +1078,121 @@ def protocol_stdout() -> Iterator[TextIO]:
             real.close()
 
 
+TERMINAL_EVENTS = ("done", "stopped", "fatal")
+
+
+class _Gate:
+    """One request's way out: nothing after its terminal event or once it is
+    closed, so a worker thread a stop abandoned cannot speak afterwards (in a
+    serve session, into the next request's answer)."""
+
+    def __init__(self, write: Emit) -> None:
+        self._write = write
+        self._open = True
+        self._lock = threading.Lock()
+
+    def emit(self, event: Event) -> None:
+        with self._lock:
+            # 2026-10-15: A worker can finish after SIGTERM interrupts
+            # the main thread; the process protocol must end at stopped.
+            if not self._open:
+                return
+            self._write(event)
+            if event["type"] in TERMINAL_EVENTS:
+                self._open = False
+
+    def close(self) -> None:
+        with self._lock:
+            self._open = False
+
+
+def _is_serve(line: str) -> bool:
+    try:
+        request = json.loads(line)
+    except ValueError:
+        return False
+    return isinstance(request, dict) and request.get("command") == "serve"
+
+
+def serve(lines: TextIO, write: Emit, stop: StopSignal, client_factory: ClientFactory = default_client_factory) -> int:
+    """Answer one request per line until `lines` ends (the Mac app's run).
+
+    Each request gets exactly the events a one-shot bridge would emit for it,
+    then {"type": "served", "code": <that bridge's exit status>}. The client
+    is kept (ClientCache), so later requests skip the start-up, the sign-in
+    and new connections. A stop ends the session as it ends a one-shot run.
+    """
+    clients = ClientCache(client_factory)
+    try:
+        for line in iter(lines.readline, ""):
+            if not line.strip():
+                continue
+            gate = _Gate(write)
+            code = _serve_one(line, gate.emit, clients, stop)
+            gate.close()
+            write(_event("served", code=code))
+            if code == EXIT_STOPPED:
+                return EXIT_STOPPED
+        return EXIT_OK
+    except StopRequested:
+        # Between requests: nothing in flight, nothing more to report.
+        write(_event("stopped"))
+        return EXIT_STOPPED
+    except BrokenPipeError:
+        return EXIT_STOPPED
+    finally:
+        clients.close()
+
+
+def _serve_one(line: str, emit: Emit, clients: ClientCache, stop: StopSignal) -> int:
+    try:
+        request = json.loads(line)
+    except ValueError as error:
+        emit(_event("fatal", kind="request", message=f"request line is not JSON: {error}"))
+        return EXIT_REQUEST
+    if isinstance(request, dict) and request.get("command") == "serve":
+        emit(_event("fatal", kind="request", message="already serving"))
+        return EXIT_REQUEST
+    return run(request, emit, client_factory=clients, stop=stop)
+
+
+def _stop_on_signals(stop: StopSignal) -> None:
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.request())
+    # 2026-10-15: Windows console clients send CTRL_BREAK_EVENT; unlike
+    # terminate(), it lets the bridge report its confirmed work first.
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, lambda _signum, _frame: stop.request())
+
+
 def main() -> int:
     # Configure the root logger before gpmc does: its basicConfig() is then a
     # no-op, so its records reach stderr as plain lines instead of rich markup.
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     with protocol_stdout() as out:
         lock = threading.Lock()
-        terminal = False
 
-        def emit(event: Event) -> None:
-            nonlocal terminal
+        def write(event: Event) -> None:
             line = json.dumps(event, separators=(",", ":"))
             with lock:
-                # 2026-10-15: A worker can finish after SIGTERM interrupts
-                # the main thread; the process protocol must end at stopped.
-                if terminal:
-                    return
                 out.write(line + "\n")
                 out.flush()
-                if event["type"] in ("done", "stopped", "fatal"):
-                    terminal = True
 
-        try:
-            request = json.loads(sys.stdin.read())
-        except ValueError as error:
-            emit(_event("fatal", kind="request", message=f"stdin is not JSON: {error}"))
-            return EXIT_REQUEST
         stop = StopSignal()
-        signal.signal(signal.SIGTERM, lambda _signum, _frame: stop.request())
-        # 2026-10-15: Windows console clients send CTRL_BREAK_EVENT; unlike
-        # terminate(), it lets the bridge report its confirmed work first.
-        if hasattr(signal, "SIGBREAK"):
-            signal.signal(signal.SIGBREAK, lambda _signum, _frame: stop.request())
-        code = run(request, emit, stop=stop)
+        # One request is one JSON object read to EOF (the Windows app, older
+        # Mac builds); a first line {"command": "serve"} opens a session.
+        first = sys.stdin.readline()
+        if _is_serve(first):
+            _stop_on_signals(stop)
+            code = serve(sys.stdin, write, stop)
+        else:
+            gate = _Gate(write)
+            try:
+                request = json.loads(first + sys.stdin.read())
+            except ValueError as error:
+                gate.emit(_event("fatal", kind="request", message=f"stdin is not JSON: {error}"))
+                return EXIT_REQUEST
+            _stop_on_signals(stop)
+            code = run(request, gate.emit, stop=stop)
     if code == EXIT_STOPPED:
         # Abandoned uploads are still running in worker threads, and normal
         # interpreter exit would wait for every one of them.

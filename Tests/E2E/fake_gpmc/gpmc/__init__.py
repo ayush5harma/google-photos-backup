@@ -28,12 +28,32 @@ Scenario keys (all optional):
                                  answers 404, as Google does for a key it
                                  no longer has
   "delay": 0.2                   seconds each file takes (to test Stop)
+  "network": {...}               a simulated link, for measuring throughput;
+                                 every key optional, seconds and MB/s:
+      "startup"      importing gpmc (once per bridge process)
+      "auth"         Google's answer to a sign-in (once per client, cached
+                     like gpmc's bearer token)
+      "rtt"          every call's round trip
+      "handshake"    opening a connection (TCP + TLS), paid by every call
+                     made on a session that has not connected yet
+      "commit"       Google's extra time to commit an upload
+      "link_mb_s"    the uplink, shared by every upload in the process
+      "stream_mb_s"  the most one connection carries
+
+Like gpmc 0.9.0, every call goes through `with self.api._new_session() as s:`
+and a session's close() ends its connection, so the bridge's kept sessions
+change what a run costs here exactly as they would against Google.
 
 Ledger (JSON, written under an exclusive file lock):
   {"media": {"<sha1 hex>": "<media key>"},
    "counters": {"uploads": n, "auth": n, "<file name>": attempts},
-   "uploads": [{"filename", "sha1", "status": "uploaded" | "existing" | "failed", "message"?}],
+   "uploads": [{"filename", "sha1", "status": "uploaded" | "existing" | "failed", "message"?,
+                "saver", "use_quota", "quality", "model", "pid", "connections"}],
    "albums": {"<album id>": {"name", "media_keys": [...]}}}
+  An uploaded entry carries what gpmc 0.9.0 would commit: the flags the bridge
+  passed, and the quality and device model Client._upload_file derives from
+  them ("original" / "Pixel XL" is the free path). "connections" counts the
+  connections the process had opened by then.
 """
 
 from __future__ import annotations
@@ -50,9 +70,11 @@ from pathlib import Path
 from typing import Any
 
 SCENARIO_ENV = "FAKE_GPMC_SCENARIO"
+AUTH_URL = "https://android.googleapis.com/auth"
 UPLOAD_URL = "https://photos.googleapis.com/data/upload/uploadmedia/interactive"
 COMMIT_URL = "https://photosdata-pa.googleapis.com/6439526531001121323/16538846908252377752"
 ALBUM_URL = "https://photosdata-pa.googleapis.com/6439526531001121323/484917746253879292"
+MB = 1024 * 1024
 
 _logger = logging.getLogger("gpmc")
 _lock = threading.Lock()
@@ -88,6 +110,10 @@ def _scenario() -> dict[str, Any]:
         return json.loads(path.read_text())
     except FileNotFoundError:
         return {}
+
+
+def _network() -> dict[str, float]:
+    return _scenario().get("network") or {}
 
 
 def _ledger_path(scenario: dict[str, Any]) -> Path:
@@ -153,37 +179,159 @@ def _error(kind: str, url: str) -> Exception:
     return HTTPError(status, reasons.get(status, "Error"), url)
 
 
+class _Link:
+    """The uplink every upload in this process shares, first come first
+    served in 256 KB slices, each connection held to its own top speed."""
+
+    SLICE = 256 * 1024
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._free_at = 0.0
+
+    def send(self, size: int, link_rate: float, stream_rate: float) -> None:
+        left = size
+        while left > 0:
+            part = min(self.SLICE, left)
+            now = time.monotonic()
+            with self._lock:
+                start = max(now, self._free_at)
+                self._free_at = start + part / link_rate
+                link_done = self._free_at
+            done = max(link_done, now + part / stream_rate)
+            time.sleep(max(0.0, done - time.monotonic()))
+            left -= part
+
+
+_LINK = _Link()
+_connections = [0]
+# Not _lock: the ledger holds that one, and an upload's entry reads this.
+_connections_lock = threading.Lock()
+
+
+def _opened() -> int:
+    with _connections_lock:
+        _connections[0] += 1
+        return _connections[0]
+
+
+def _connections_so_far() -> int:
+    with _connections_lock:
+        return _connections[0]
+
+
+class Session:
+    """Shaped like the requests.Session gpmc's Api._new_session returns."""
+
+    def __init__(self) -> None:
+        self.cookies: dict[str, str] = {}
+        self.headers: dict[str, str] = {}
+        self.adapters: dict[str, Any] = {}
+        self.verify = True
+        self.trust_env = True
+        self.connected = False
+
+    def __enter__(self) -> "Session":
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        self.close()
+        return False
+
+    def close(self) -> None:
+        self.connected = False
+
+    def call(self, upload_bytes: int = 0, server: float = 0.0) -> None:
+        """One request on this session's connection, timed by the scenario."""
+        net = _network()
+        if not self.connected:
+            _opened()
+            self.connected = True
+            time.sleep(float(net.get("handshake", 0)))
+        time.sleep(float(net.get("rtt", 0)) + server)
+        if upload_bytes and net.get("link_mb_s"):
+            link = float(net["link_mb_s"]) * MB
+            _LINK.send(upload_bytes, link, float(net.get("stream_mb_s", net["link_mb_s"])) * MB)
+
+
+if _network().get("startup"):
+    # What importing gpmc, requests, rich and blackboxprotobuf costs.
+    time.sleep(float(_network()["startup"]))
+
+
 class Api:
     def __init__(self, auth_data: str) -> None:
         self.auth_data = auth_data
+        self.model = "Pixel XL"
+        self.make = "Google"
+        self._token: str | None = None
+
+    def _new_session(self) -> Session:
+        return Session()
 
     @property
     def bearer_token(self) -> str:
+        # gpmc keeps the token until it expires, so a client signs in once.
+        if self._token:
+            return self._token
         scenario = _scenario()
         auth = scenario.get("auth", "ok")
         with _ledger(scenario) as data:
             attempt = _count(data, "auth")
+        with self._new_session() as session:
+            session.call(server=float(_network().get("auth", 0)))
         if attempt <= scenario.get("auth_rate_limit_first", 0) or auth == "rate_limit":
-            raise _error("429", "https://android.googleapis.com/auth")
+            raise _error("429", AUTH_URL)
         if auth == "refuse":
-            raise _error("403", "https://android.googleapis.com/auth")
+            raise _error("403", AUTH_URL)
         if auth == "network":
             raise ConnectionError("HTTPSConnectionPool(host='android.googleapis.com', port=443): Max retries exceeded")
         if auth == "no_token":
             raise RuntimeError("Auth response does not contain bearer token")
-        return "fake-bearer"
+        self._token = "fake-bearer"
+        return self._token
 
     def add_media_to_album(self, album_media_key: str, media_keys: list[str]) -> dict:
         # gpmc 0.9.0 appends to an existing album here, not on Client.
+        with self._new_session() as session:
+            session.call()
         _album(media_keys, album_id=album_media_key)
         return {}
 
     def create_album(self, album_name: str, media_keys: list[str]) -> str:
+        with self._new_session() as session:
+            session.call()
         return _album(media_keys, name=album_name)
 
     def find_remote_media_by_hash(self, sha1_hash: bytes) -> str | None:
+        with self._new_session() as session:
+            session.call()
         with _ledger(_scenario()) as data:
             return data["media"].get(sha1_hash.hex())
+
+    def get_upload_token(self, sha_hash_b64: str, file_size: int) -> str:
+        with self._new_session() as session:
+            session.call()
+        return f"upload-{sha_hash_b64}"
+
+    def upload_file(self, file: Path, upload_token: str) -> dict:
+        with self._new_session() as session:
+            session.call(upload_bytes=Path(file).stat().st_size)
+        return {"1": upload_token}
+
+    def commit_upload(self, upload_response_decoded: dict, file_name: str, sha1_hash: bytes,
+                      quality: str = "original", model: str | None = None, upload_timestamp: int | None = None) -> str:
+        with self._new_session() as session:
+            session.call(server=float(_network().get("commit", 0)))
+        return f"fake-{sha1_hash.hex()[:24]}"
+
+
+def _sha1(path: Path) -> str:
+    digest = hashlib.sha1()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(MB), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class Client:
@@ -210,7 +358,7 @@ class Client:
             path = Path(path)
             filename = options.get("filename") or path.name
             try:
-                results.update(self._upload_file(path, filename, force_upload, progress_callback))
+                results.update(self._upload_file(path, filename, force_upload, saver, use_quota, progress_callback))
             except Exception as error:
                 # gpmc 0.9.0 reports a failed file only like this: a progress
                 # event with phase "error" and one logged line.
@@ -221,22 +369,24 @@ class Client:
                     data["uploads"].append({"filename": filename, "status": "failed", "message": str(error)})
         return results
 
-    def _upload_file(self, path: Path, filename: str, force: bool, progress: Callable[[dict[str, Any]], None] | None) -> dict[str, str]:
+    def _upload_file(self, path: Path, filename: str, force: bool, saver: bool, use_quota: bool,
+                     progress: Callable[[dict[str, Any]], None] | None) -> dict[str, str]:
         scenario = _scenario()
         report = (lambda phase, done: progress(self._event(phase, path, filename, done))) if progress else (lambda *_: None)
-        content = path.read_bytes()
-        report("hashing", len(content))
-        sha1 = hashlib.sha1(content).hexdigest()
+        size = path.stat().st_size
+        sha1 = _sha1(path)
+        report("hashing", size)
         if scenario.get("delay"):
             time.sleep(float(scenario["delay"]))
 
-        with _ledger(scenario) as data:
-            if not force:
-                report("checking", 0)
-                if sha1 in data["media"]:
+        if not force:
+            report("checking", 0)
+            if key := self.api.find_remote_media_by_hash(bytes.fromhex(sha1)):
+                with _ledger(scenario) as data:
                     data["uploads"].append({"filename": filename, "sha1": sha1, "status": "existing"})
-                    report("skipped", len(content))
-                    return {path.absolute().as_posix(): data["media"][sha1]}
+                report("skipped", size)
+                return {path.absolute().as_posix(): key}
+        with _ledger(scenario) as data:
             if _count(data, "uploads") <= scenario.get("rate_limit_first", 0):
                 raise _error("429", UPLOAD_URL)
             if filename in scenario.get("fail", {}):
@@ -252,13 +402,25 @@ class Client:
             if _count(data, "flaky_first") <= flaky_first.get("times", 0):
                 raise _error(str(flaky_first.get("error", "503")), COMMIT_URL)
 
-        report("uploading", len(content) // 2)
-        report("finalizing", len(content))
-        media_key = f"fake-{sha1[:24]}"
+        token = self.api.get_upload_token(sha1, size)
+        report("uploading", 0)
+        uploaded = self.api.upload_file(path, token)
+        report("uploading", size)
+        report("finalizing", size)
+        # gpmc 0.9.0's Client._upload_file, word for word in effect: these two
+        # flags are all that decide the quality and model of the commit.
+        model, quality = "Pixel XL", "original"
+        if saver:
+            quality, model = "saver", "Pixel 2"
+        if use_quota:
+            model = "Pixel 8"
+        media_key = self.api.commit_upload(uploaded, filename, bytes.fromhex(sha1), quality=quality, model=model)
         with _ledger(scenario) as data:
             data["media"][sha1] = media_key
-            data["uploads"].append({"filename": filename, "sha1": sha1, "status": "uploaded"})
-        report("complete", len(content))
+            data["uploads"].append({"filename": filename, "sha1": sha1, "status": "uploaded", "saver": saver,
+                                    "use_quota": use_quota, "quality": quality, "model": model,
+                                    "pid": os.getpid(), "connections": _connections_so_far()})
+        report("complete", size)
         return {path.absolute().as_posix(): media_key}
 
     @staticmethod
@@ -268,7 +430,7 @@ class Client:
                 "filename": filename, "bytes_completed": done, "bytes_total": total}
 
     def add_to_album(self, media_keys: list[str], album_name: str, show_progress: bool) -> list[str]:
-        return [_album(media_keys, name=album_name)]
+        return [self.api.create_album(album_name, media_keys)]
 
 
 def _album(media_keys: list[str], name: str | None = None, album_id: str | None = None) -> str:
