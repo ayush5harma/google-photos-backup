@@ -48,6 +48,15 @@ public sealed partial class MainWindow : Window
         DevicesList.ItemsSource = _devices;
         DeviceMediaList.ItemsSource = _deviceMedia;
         Navigation.SelectedItem = Navigation.MenuItems[0];
+        ThreadsBox.Minimum = 1;
+        ThreadsBox.Maximum = UploadParallelism.MaximumThreads;
+        BatchSizeBox.Minimum = BackupOptions.MinimumChosenBatchSize;
+        BatchSizeBox.Maximum = BackupOptions.MaximumBatchSize;
+        ParallelUploadsNote.Text = $"Automatically, a backup starts with {UploadParallelism.Initial} uploads at once and adds more "
+            + $"while that is faster, up to {UploadParallelism.MaximumThreads}; when Google asks it to slow down, it uses fewer "
+            + "for the rest of the backup. Otherwise every batch uses exactly the number you choose. Larger batches keep more "
+            + "uploads busy; each batch is one request to the uploader.";
+        ShowUploadSettings(_preferences);
 
         if (smokeTest)
         {
@@ -63,7 +72,7 @@ public sealed partial class MainWindow : Window
             SettingsSignInButton.Visibility = Visibility.Collapsed;
             StatusText.Text = "Backing up sample photos";
             RunProgress.Value = 42;
-            ProgressText.Text = "42 of 100 files · 0 failed";
+            ProgressText.Text = "42 of 100 files · 0 failed · 12.3 MB/s, about 14 min left · 8 at a time, finding the fastest";
             SelectionSummary.Text = "2 folders selected";
             _activity.Add("Today · 48 uploaded · 2 already in Google Photos · 0 failed");
             StartButton.IsEnabled = false;
@@ -83,6 +92,7 @@ public sealed partial class MainWindow : Window
         QualityBox.SelectedIndex = _preferences.Quality switch { "saver" => 1, "quota" => 2, _ => 0 };
         MirrorFoldersToggle.IsOn = _preferences.MirrorFolders;
         _loadingSettings = false;
+        ShowUploadSettings(_preferences);
         Closed += (_, _) => { _runGeneration++; _runCancellation?.Cancel(); _icloudRunCancellation?.Cancel(); ClearICloudPendingSignIn(); _signInWindow?.Close(); };
         InitializeICloud();
         RefreshControls();
@@ -227,16 +237,18 @@ public sealed partial class MainWindow : Window
         _runCancellation = new CancellationTokenSource();
         _paused = false;
         BackupSummary? summary = null;
+        BridgeSessionClient? session = null;
         try
         {
-            var bridge = CreateBridge();
-            _coordinator = new BackupCoordinator(bridge, _store.StateDirectory);
+            // One bridge for the whole run (issue #58); Cancel kills it, the end of the run closes it.
+            session = CreateSessionBridge();
+            _coordinator = new BackupCoordinator(session, _store.StateDirectory);
             _progressSubscription = progress => ProgressChanged(progress, generation);
             _coordinator.ProgressChanged += _progressSubscription;
             RefreshControls();
             StatusText.Text = "Preparing backup";
-            var options = new BackupOptions([.. _folders], _preferences.Quality,
-                _preferences.MirrorFolders, _preferences.Threads);
+            var options = new BackupOptions([.. _folders], _preferences.Quality, _preferences.MirrorFolders,
+                _preferences.Threads, _preferences.ThreadsAutomatic, _preferences.BatchSize);
             summary = await _coordinator.RunAsync(options, _credential, _runCancellation.Token);
             if (!summary.Canceled && summary.Failed == 0)
                 new DeviceMediaStager(_store.DeviceStagingDirectory).ClearCompleted();
@@ -256,6 +268,7 @@ public sealed partial class MainWindow : Window
         finally
         {
             _runGeneration++;
+            if (session is not null) await session.DisposeAsync();
             if (_coordinator is not null && _progressSubscription is not null)
                 _coordinator.ProgressChanged -= _progressSubscription;
             _progressSubscription = null;
@@ -281,9 +294,15 @@ public sealed partial class MainWindow : Window
             if (generation != _runGeneration) return;
             StatusText.Text = progress.Phase;
             RunProgress.Value = progress.Total > 0 ? 100.0 * progress.Completed / progress.Total : 0;
-            ProgressText.Text = progress.Total > 0
-                ? $"{progress.Completed} of {progress.Total} files · {progress.Failed} failed"
-                : progress.Message ?? "Preparing files";
+            if (progress.Total <= 0)
+            {
+                ProgressText.Text = progress.Message ?? "Preparing files";
+                return;
+            }
+            var text = $"{progress.Completed} of {progress.Total} files · {progress.Failed} failed";
+            if (ThroughputMeter.Describe(progress.BytesPerSecond, progress.SecondsLeft) is { } throughput) text += " · " + throughput;
+            if (progress.Parallelism is { } parallelism) text += " · " + parallelism;
+            ProgressText.Text = text;
         });
     }
 
@@ -403,6 +422,45 @@ public sealed partial class MainWindow : Window
         SavePreferences();
     }
 
+    private void ShowUploadSettings(AppPreferences preferences)
+    {
+        var loading = _loadingSettings;
+        _loadingSettings = true;
+        ThreadsAutomaticToggle.IsOn = preferences.ThreadsAutomatic;
+        ThreadsBox.Value = preferences.Threads;
+        BatchSizeBox.Value = preferences.BatchSize;
+        ThreadsBox.IsEnabled = !preferences.ThreadsAutomatic;
+        _loadingSettings = loading;
+    }
+
+    private void ThreadsAutomatic_Toggled(object sender, RoutedEventArgs args)
+    {
+        if (_loadingSettings) return;
+        _preferences.ThreadsAutomatic = ThreadsAutomaticToggle.IsOn;
+        SavePreferences();
+        RefreshControls();
+    }
+
+    private void Threads_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (_loadingSettings) return;
+        // A cleared box is NaN: keep the saved number and show it again.
+        if (double.IsNaN(args.NewValue)) { ShowUploadSettings(_preferences); return; }
+        _preferences.Threads = (int)Math.Clamp(Math.Round(args.NewValue), 1, UploadParallelism.MaximumThreads);
+        SavePreferences();
+        // Typed 2.5: show the 2 that is saved and used.
+        if (args.NewValue != _preferences.Threads) ShowUploadSettings(_preferences);
+    }
+
+    private void BatchSize_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
+    {
+        if (_loadingSettings) return;
+        if (double.IsNaN(args.NewValue)) { ShowUploadSettings(_preferences); return; }
+        _preferences.BatchSize = (int)Math.Clamp(Math.Round(args.NewValue), BackupOptions.MinimumChosenBatchSize, BackupOptions.MaximumBatchSize);
+        SavePreferences();
+        if (args.NewValue != _preferences.BatchSize) ShowUploadSettings(_preferences);
+    }
+
     private void SavePreferences()
     {
         if (_store is null) return;
@@ -440,6 +498,9 @@ public sealed partial class MainWindow : Window
         RemoveFolderButton.IsEnabled = !busy;
         QualityBox.IsEnabled = !busy;
         MirrorFoldersToggle.IsEnabled = !busy;
+        ThreadsAutomaticToggle.IsEnabled = !busy;
+        ThreadsBox.IsEnabled = !busy && !_preferences.ThreadsAutomatic;
+        BatchSizeBox.IsEnabled = !busy;
         SelectionSummary.Text = _folders.Count == 1 ? "1 folder selected" : $"{_folders.Count} folders selected";
         if (!busy && !_hasRunAttempt && _history.Count == 0)
             StatusText.Text = email is null ? "Connect a Google Photos account to get started."
@@ -447,13 +508,26 @@ public sealed partial class MainWindow : Window
         RefreshICloudControls();
     }
 
+    /// <summary>One request, one bridge process: a credential check needs nothing kept.</summary>
     private static IBridgeClient CreateBridge()
+    {
+        var (python, script) = BridgeRuntime();
+        return new BridgeProcessClient(python, script);
+    }
+
+    private static BridgeSessionClient CreateSessionBridge()
+    {
+        var (python, script) = BridgeRuntime();
+        return new BridgeSessionClient(python, script);
+    }
+
+    private static (string Python, string Script) BridgeRuntime()
     {
         var python = Path.Combine(AppContext.BaseDirectory, "runtime", "python", "python.exe");
         var script = Path.Combine(AppContext.BaseDirectory, "runtime", "bridge", "gpmc_bridge.py");
         if (!File.Exists(python) || !File.Exists(script))
             throw new InvalidOperationException("The bundled uploader is missing. Reinstall Google Photos Backup.");
-        return new BridgeProcessClient(python, script);
+        return (python, script);
     }
 
     private void ShowNotice(string message, InfoBarSeverity severity)
