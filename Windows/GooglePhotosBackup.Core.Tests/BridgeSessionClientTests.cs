@@ -42,6 +42,9 @@ public sealed class BridgeSessionClientTests
         await session.DisposeAsync();
         Assert.True(channel.InputClosed);
         Assert.True(channel.Disposed);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => session.ExecuteAsync(
+            new JsonObject { ["command"] = "version", ["n"] = 4 }, _ => { }, CancellationToken.None));
+        Assert.Single(started);
     }
 
     [Fact]

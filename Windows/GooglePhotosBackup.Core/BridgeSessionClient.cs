@@ -34,6 +34,7 @@ public sealed class BridgeSessionClient(Func<IBridgeChannel> start) : IBridgeCli
     private readonly SemaphoreSlim _oneAtATime = new(1, 1);
     private readonly object _gate = new();
     private IBridgeChannel? _channel;
+    private bool _disposed;
 
     public BridgeSessionClient(string pythonPath, string bridgePath)
         : this(() => new ProcessBridgeChannel(pythonPath, bridgePath)) { }
@@ -48,9 +49,13 @@ public sealed class BridgeSessionClient(Func<IBridgeChannel> start) : IBridgeCli
         ArgumentNullException.ThrowIfNull(request);
         ArgumentNullException.ThrowIfNull(onEvent);
         await _oneAtATime.WaitAsync(cancellationToken).ConfigureAwait(false);
-        var answered = false;
+        // Kept only once a served answer other than a stop arrives. Anything else (a stop, a dead bridge, a bad
+        // line, an observer that threw) ends this bridge in the finally, after the cancel registration is gone, so
+        // the rest of this request's events can never be read as the next request's.
+        var keep = false;
         try
         {
+            ObjectDisposedException.ThrowIf(_disposed, this);
             var (channel, started) = await RunningAsync().ConfigureAwait(false);
             LastRequestStartedBridge = started;
             // Stop: kill at once (the read below then ends); the bridge is disposed on the way out.
@@ -70,19 +75,15 @@ public sealed class BridgeSessionClient(Func<IBridgeChannel> start) : IBridgeCli
                     throw new InvalidOperationException("The uploader returned an invalid response.");
                 if (message["type"] is JsonValue type && type.TryGetValue<string>(out var kind) && kind == "served")
                 {
-                    answered = true;
                     var code = message["code"] is JsonValue value && value.TryGetValue<int>(out var number) ? number : 1;
-                    if (code == StoppedStatus) Forget();
+                    keep = code != StoppedStatus;
                     return code;
                 }
                 onEvent(message);
             }
             // Its output ended before the answer did: the bridge died. What it reported is in; the next request
             // starts a new bridge.
-            answered = true;
-            var exit = await channel.WaitForExitAsync(ExitWait).ConfigureAwait(false);
-            Forget();
-            return exit;
+            return await channel.WaitForExitAsync(ExitWait).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -99,29 +100,37 @@ public sealed class BridgeSessionClient(Func<IBridgeChannel> start) : IBridgeCli
         }
         finally
         {
-            // Left mid-answer (a stop, a bad line, an observer that threw): the rest of this request's events
-            // must never be read as the next request's, so this bridge goes.
-            if (!answered) Forget();
+            if (!keep) Forget();
             _oneAtATime.Release();
         }
     }
 
-    /// <summary>The run is over: the bridge reads end of input and exits by itself, closing its connections.</summary>
+    /// <summary>The run is over: the bridge reads end of input and exits by itself, closing its connections.
+    /// Waits for a request in flight; no request runs afterwards.</summary>
     public async ValueTask DisposeAsync()
     {
+        await _oneAtATime.WaitAsync().ConfigureAwait(false);
         IBridgeChannel? channel;
-        lock (_gate) { channel = _channel; _channel = null; }
-        if (channel is null) return;
         try
         {
-            channel.CloseInput();
-            await channel.WaitForExitAsync(ExitWait).ConfigureAwait(false);
+            _disposed = true;
+            lock (_gate) { channel = _channel; _channel = null; }
+            if (channel is null) return;
+            try
+            {
+                channel.CloseInput();
+                await channel.WaitForExitAsync(ExitWait).ConfigureAwait(false);
+            }
+            catch (Exception error) when (error is IOException or InvalidOperationException) { }
+            finally
+            {
+                channel.Kill();
+                channel.Dispose();
+            }
         }
-        catch (Exception error) when (error is IOException or InvalidOperationException) { }
         finally
         {
-            channel.Kill();
-            channel.Dispose();
+            _oneAtATime.Release();
         }
     }
 

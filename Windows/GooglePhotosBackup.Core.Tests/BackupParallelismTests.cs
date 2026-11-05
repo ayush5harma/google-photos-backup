@@ -155,6 +155,34 @@ public sealed class BackupParallelismTests
         foreach (var batch in batches) Assert.Equal(batch.OrderByDescending(size => size), batch);
     }
 
+    /// <summary>The coordinator's feed to the controller: bytes of uploaded items over upload time, items Google
+    /// already had and a request that started the bridge do not count for speed.</summary>
+    [Theory]
+    [InlineData("uploaded", false, 5)]
+    [InlineData("existing", false, 4)]
+    [InlineData("uploaded", true, 4)]
+    public async Task AutomaticClimbsOnlyOnTheSpeedOfUploadedItems(string status, bool startedBridge, int secondThreads)
+    {
+        using var fixture = new TempFolder();
+        var payload = new byte[12_000_000];
+        for (var i = 0; i < 4; i++) File.WriteAllBytes(Path.Combine(fixture.Root, $"v{i}.mp4"), payload);
+        var clock = new ManualClock();
+        var threads = new List<int>();
+        var bridge = new SessionBridge((request, emit) =>
+        {
+            if (Command(request) == "check-auth") { Auth(request, emit); return 0; }
+            threads.Add(request["threads"]!.GetValue<int>());
+            clock.Advance(TimeSpan.FromSeconds(4));
+            foreach (var item in Items(request))
+                emit(new JsonObject { ["type"] = "item", ["id"] = item["id"]!.GetValue<string>(), ["media_key"] = "k", ["status"] = status });
+            return 0;
+        }, startedBridge);
+        await new BackupCoordinator(bridge, fixture.State, clock).RunAsync(
+            new BackupOptions([fixture.Root], MirrorFolders: false, BatchSize: 2), Credential("one@example.com"), CancellationToken.None);
+        // 24 MB over 4 s is one decision's worth: the second batch shows it.
+        Assert.Equal([4, secondThreads], threads);
+    }
+
     [Theory]
     [InlineData(33, 50)]
     [InlineData(4, 0)]
@@ -197,11 +225,20 @@ public sealed class BackupParallelismTests
     });
 
     /// <summary>A bridge that is already running, as a serve session is after the run's check-auth.</summary>
-    private sealed class SessionBridge(Func<JsonObject, Action<JsonObject>, int> run) : IBridgeClient
+    private sealed class SessionBridge(Func<JsonObject, Action<JsonObject>, int> run, bool startedBridge = false) : IBridgeClient
     {
-        public bool LastRequestStartedBridge => false;
+        public bool LastRequestStartedBridge => startedBridge;
         public Task<int> ExecuteAsync(JsonObject request, Action<JsonObject> onEvent, CancellationToken cancellationToken) =>
             Task.FromResult(run(request, onEvent));
+    }
+
+    private sealed class ManualClock : TimeProvider
+    {
+        private long _ticks;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => _ticks;
+        public override DateTimeOffset GetUtcNow() => new DateTimeOffset(2026, 11, 5, 12, 0, 0, TimeSpan.Zero).AddTicks(_ticks);
+        public void Advance(TimeSpan by) => _ticks += by.Ticks;
     }
 
     private sealed class TempFolder : IDisposable

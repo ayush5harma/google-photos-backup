@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -6,8 +5,10 @@ using System.Text.Json.Nodes;
 
 namespace GooglePhotosBackup.Core;
 
-public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirectory)
+/// <param name="timeProvider">The clock upload samples and the throughput meter read; tests pass their own.</param>
+public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirectory, TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider _time = timeProvider ?? TimeProvider.System;
     private static readonly HashSet<string> MediaExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".jpg", ".jpeg", ".png", ".heic", ".heif", ".gif", ".webp", ".tif", ".tiff", ".bmp", ".avif",
@@ -83,7 +84,7 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
             var meter = new ThroughputMeter();
             BackupProgress Uploading(string? file = null, string? message = null)
             {
-                var now = DateTimeOffset.UtcNow;
+                var now = _time.GetUtcNow();
                 return new BackupProgress("Uploading", completed, todo.Count, failed, file, message,
                     meter.BytesPerSecond(now), meter.SecondsLeft(todo.Count - completed, now), parallelism.Summary);
             }
@@ -109,7 +110,7 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                     var sentItems = 0;
                     var serverFailures = 0;
                     var rateLimited = false;
-                    var sentAt = Stopwatch.GetTimestamp();
+                    var sentAt = _time.GetTimestamp();
                     long? lastAnswerAt = null;
                     var request = UploadRequest(authData, options.Quality, parallelism.Current,
                         remaining.Select(item => (item.Key, item.Path)));
@@ -122,7 +123,7 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                         if (type == "progress")
                         {
                             if (Text(message, "phase") == "uploading" && Number(message, "bytes_completed") is { } sent)
-                                meter.Sent(id, sent, DateTimeOffset.UtcNow);
+                                meter.Sent(id, sent, _time.GetUtcNow());
                             Emit(Uploading(Path.GetFileName(item.Path)));
                         }
                         else if (type == "item" && !confirmed.Contains(id))
@@ -143,8 +144,8 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                                 sentBytes += item.Size;
                             }
                             completed++;
-                            lastAnswerAt = Stopwatch.GetTimestamp();
-                            meter.Finished(id, DateTimeOffset.UtcNow);
+                            lastAnswerAt = _time.GetTimestamp();
+                            meter.Finished(id, _time.GetUtcNow());
                             Emit(Uploading(Path.GetFileName(item.Path)));
                         }
                         else if (type == "item_failed" && !confirmed.Contains(id) && failedEvents.Add(id))
@@ -154,14 +155,14 @@ public sealed class BackupCoordinator(IBridgeClient bridge, string stateDirector
                             var failure = FailureClassifier.Classify(Text(message, "message"), bridgeRetryable);
                             rateLimited |= failure == FailureClass.RateLimited;
                             if (failure == FailureClass.Retryable) serverFailures++;
-                            lastAnswerAt = Stopwatch.GetTimestamp();
-                            meter.Finished(id, DateTimeOffset.UtcNow);
+                            lastAnswerAt = _time.GetTimestamp();
+                            meter.Finished(id, _time.GetUtcNow());
                         }
                     }, linked.Token).ConfigureAwait(false);
                     linked.Token.ThrowIfCancellationRequested();
                     // Timed to the last item's answer, as on the Mac: an album step after the uploads is not upload time.
                     parallelism.Measured(new UploadSample(sentBytes,
-                        Stopwatch.GetElapsedTime(sentAt, lastAnswerAt ?? Stopwatch.GetTimestamp()).TotalSeconds, sentItems,
+                        _time.GetElapsedTime(sentAt, lastAnswerAt ?? _time.GetTimestamp()).TotalSeconds, sentItems,
                         rateLimited || fatalKind == "rate_limit" || code == 6, serverFailures, bridge.LastRequestStartedBridge));
 
                     if (fatalKind is "auth" or "request" or "internal" || code is 1 or 2 or 4)

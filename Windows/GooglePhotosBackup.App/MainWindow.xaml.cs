@@ -448,6 +448,8 @@ public sealed partial class MainWindow : Window
         if (double.IsNaN(args.NewValue)) { ShowUploadSettings(_preferences); return; }
         _preferences.Threads = (int)Math.Clamp(Math.Round(args.NewValue), 1, UploadParallelism.MaximumThreads);
         SavePreferences();
+        // Typed 2.5: show the 2 that is saved and used.
+        if (args.NewValue != _preferences.Threads) ShowUploadSettings(_preferences);
     }
 
     private void BatchSize_ValueChanged(NumberBox sender, NumberBoxValueChangedEventArgs args)
@@ -456,6 +458,7 @@ public sealed partial class MainWindow : Window
         if (double.IsNaN(args.NewValue)) { ShowUploadSettings(_preferences); return; }
         _preferences.BatchSize = (int)Math.Clamp(Math.Round(args.NewValue), BackupOptions.MinimumChosenBatchSize, BackupOptions.MaximumBatchSize);
         SavePreferences();
+        if (args.NewValue != _preferences.BatchSize) ShowUploadSettings(_preferences);
     }
 
     private void SavePreferences()
