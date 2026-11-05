@@ -577,6 +577,7 @@ final class BackupEngine {
     /// never into an album): another account never gets one.
     func planPass(settings: BackupSettings) -> [PlannedStep] {
         let albums = model.activeTakesSelection ? model.albums.map(\.snapshot) : []
+        if settings.mirrorAlbums { rebaselineUnknownMirrors(in: albums) }
         if settings.reuploadEdits { stampEarlierUploads(in: albums) }
         picked.removeAll { model.state.uploaded[$0] != nil || failedAssets.contains($0) }
         // What this run already confirmed is never planned again in it,
@@ -589,6 +590,20 @@ final class BackupEngine {
                                  excludingAssets: failedAssets.union(picked).union(tally.confirmedIDs),
                                  excludingAlbums: failedAlbums, reuploadEdits: settings.reuploadEdits,
                                  uploadsHidden: model.isPrimaryActive)
+    }
+
+    /// Guard C (1): a linked album found with no record of its members is
+    /// never refilled, only re-baselined; the timeline says which and how
+    /// many, as a problem, since something reset the record.
+    private func rebaselineUnknownMirrors(in albums: [AlbumSnapshot]) {
+        let rebaselined = model.state.rebaselineUnknownMirrors(in: albums)
+        guard !rebaselined.isEmpty else { return }
+        model.saveState()
+        for album in rebaselined {
+            let photos = "\(album.count.formatted()) photo\(album.count == 1 ? "" : "s")"
+            model.log(.photos, "The Google album for \"\(album.title)\" had no record of what it holds, so nothing was added to it: "
+                      + "its \(photos) are taken as already there, and only photos added to the album from now on go in.", problem: true)
+        }
     }
 
     /// Drops from the queues what is backed up or failed for this run, and

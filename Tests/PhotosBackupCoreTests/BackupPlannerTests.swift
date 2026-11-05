@@ -96,7 +96,10 @@ private let live = AlbumSnapshot(id: "live", title: "Live Photos", kind: .smart,
         #expect(cleared.mirrors == state.mirrors)
     }
 
-    @Test func clearedHistoryRechecksIntoTheSameGoogleAlbum() {
+    /// Guard C: the re-check goes to the library only. "b" is already in
+    /// the Google album, or the owner took it out by hand: either way it is
+    /// never sent to the album again.
+    @Test func clearedHistoryRechecksWithoutRefillingTheGoogleAlbum() {
         var state = BackupState()
         state.selectedAlbumIDs = ["trip"]
         state.recordUpload(assetID: "b", mediaKey: "k", existing: false)
@@ -105,23 +108,35 @@ private let live = AlbumSnapshot(id: "live", title: "Live Photos", kind: .smart,
         let trip = AlbumSnapshot(id: "trip", title: "Trip", kind: .user, assetIDs: ["b"])
 
         #expect(BackupPlanner.plan(albums: [trip], state: cleared, mirrorAlbums: true, batchSize: 10)
-            == [.upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["b"])])
+            == [.upload(albumID: "trip", albumTitle: nil, assetIDs: ["b"])])
         #expect(cleared.albumTarget(for: "trip", title: "Trip").id == "g1")
         cleared.recordUpload(assetID: "b", mediaKey: "k", existing: true)
         #expect(BackupPlanner.plan(albums: [trip], state: cleared, mirrorAlbums: true, batchSize: 10).isEmpty)
     }
 
     @Test func keysGoogleNoLongerHasAreUploadedAgainIntoTheSameAlbum() {
-        var state = state(selected: ["trip"], uploaded: ["b", "d"],
-                          mirrors: ["trip": AlbumMirror(googleAlbumID: "g1", addedAssetIDs: ["b"])])
+        let trip = AlbumSnapshot(id: "trip", title: "Trip", kind: .user, assetIDs: ["a", "b", "d"])
+        var state = state(selected: ["trip"], uploaded: ["a", "b", "d"],
+                          mirrors: ["trip": AlbumMirror(googleAlbumID: "g1", addedAssetIDs: ["a", "b"])])
 
         #expect(state.forgetUploads(withMediaKeys: ["key-b", "key-d", "key-unknown"]) == ["b", "d"])
-        #expect(state.uploaded.isEmpty)
-        #expect(state.mirrors["trip"]?.addedAssetIDs.isEmpty == true)
+        #expect(state.uploaded.keys.sorted() == ["a"])
+        #expect(state.mirrors["trip"]?.addedAssetIDs == ["a"])
         #expect(state.albumTarget(for: "trip", title: "Trip").id == "g1")
         #expect(BackupPlanner.plan(albums: [trip], state: state, mirrorAlbums: true, batchSize: 10)
             == [.upload(albumID: "trip", albumTitle: "Trip", assetIDs: ["b", "d"])])
         #expect(state.forgetUploads(withMediaKeys: []) == [])
+    }
+
+    /// Guard C: when every member the album had went dead, its record is
+    /// empty, and an empty record is re-baselined rather than refilled.
+    @Test func anAlbumWhoseEveryKeyDiedIsNotRefilled() {
+        var state = state(selected: ["trip"], uploaded: ["b", "d"],
+                          mirrors: ["trip": AlbumMirror(googleAlbumID: "g1", addedAssetIDs: ["b"])])
+        state.forgetUploads(withMediaKeys: ["key-b", "key-d"])
+        #expect(state.mirrors["trip"]?.addedAssetIDs.isEmpty == true)
+        #expect(BackupPlanner.plan(albums: [trip], state: state, mirrorAlbums: true, batchSize: 10)
+            == [.upload(albumID: "trip", albumTitle: nil, assetIDs: ["b", "d"])])
     }
 
     @Test func photosGoogleLostGoUpAgainWithoutTheHashCheckOnce() {

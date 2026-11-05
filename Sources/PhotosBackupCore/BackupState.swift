@@ -38,16 +38,55 @@ public struct BackupRecord: Codable, Equatable, Sendable {
 }
 
 /// The Google Photos album standing in for one Photos album.
+///
+/// The app adds to a Google album but never removes from it, and cannot
+/// read what it holds: a photo the owner took out of a (perhaps shared)
+/// album by hand is invisible to it. So once an album is linked, only
+/// photos that joined the Photos album since are ever sent to it; the
+/// members recorded here are never sent again.
 public struct AlbumMirror: Codable, Equatable, Sendable {
     /// Unset until the first batch creates the album.
     public var googleAlbumID: String?
-    /// Assets already added to that album.
+    /// Assets already added to that album. The only members ever offered
+    /// as probes, since the bridge re-adds a probe to the album.
     public var addedAssetIDs: Set<String>
+    /// Members taken as known without being sent: the whole album when its
+    /// record of members was found empty (rebaselineUnknownMirrors). Never
+    /// sent to the album and never a probe. nil when there are none, so a
+    /// record that never needed it is written exactly as before.
+    public var knownAssetIDs: Set<String>?
 
-    public init(googleAlbumID: String? = nil, addedAssetIDs: Set<String> = []) {
+    public init(googleAlbumID: String? = nil, addedAssetIDs: Set<String> = [], knownAssetIDs: Set<String>? = nil) {
         self.googleAlbumID = googleAlbumID
         self.addedAssetIDs = addedAssetIDs
+        self.knownAssetIDs = knownAssetIDs
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case googleAlbumID, addedAssetIDs, knownAssetIDs
+    }
+
+    /// A mirror whose member list is missing (a hand edit, a damaged file)
+    /// still loads, as a linked album with no record of its members, which
+    /// the next run re-baselines instead of refilling; the rest of the
+    /// record loads with it rather than the whole file being refused.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        googleAlbumID = try container.decodeIfPresent(String.self, forKey: .googleAlbumID)
+        addedAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .addedAssetIDs) ?? []
+        knownAssetIDs = try container.decodeIfPresent(Set<String>.self, forKey: .knownAssetIDs)
+    }
+
+    /// Every member this mirror has a record of, sent or only known.
+    public var recordedAssetIDs: Set<String> { addedAssetIDs.union(knownAssetIDs ?? []) }
+}
+
+/// A linked album found with no record of its members, taken as holding
+/// every member it has now.
+public struct RebaselinedAlbum: Equatable, Sendable {
+    public let albumID: String
+    public let title: String
+    public let count: Int
 }
 
 /// Everything the app remembers between launches, keyed by PHAsset and
@@ -118,6 +157,25 @@ public struct BackupState: Codable, Equatable, Sendable {
         mirror.googleAlbumID = googleAlbumID
         mirror.addedAssetIDs.formUnion(assetIDs)
         mirrors[albumID] = mirror
+    }
+
+    /// Guard C: a linked album with no record of what it holds (its members
+    /// cleared by a reset, a damaged file or a hand edit) is never refilled.
+    /// Re-adding every member would put back photos the owner took out of
+    /// the Google album by hand: on 2026-11-05 a cleared state re-added a
+    /// whole Apple album to a shared Google album. Each such selected user
+    /// album instead takes its current members, hidden ones too, as known,
+    /// and only photos that join it later go in. Returns the albums
+    /// re-baselined, for the timeline.
+    public mutating func rebaselineUnknownMirrors(in albums: [AlbumSnapshot]) -> [RebaselinedAlbum] {
+        var rebaselined: [RebaselinedAlbum] = []
+        for album in albums where album.kind == .user && selectedAlbumIDs.contains(album.id) && !album.assetIDs.isEmpty {
+            guard var mirror = mirrors[album.id], mirror.googleAlbumID != nil, mirror.recordedAssetIDs.isEmpty else { continue }
+            mirror.knownAssetIDs = Set(album.assetIDs)
+            mirrors[album.id] = mirror
+            rebaselined.append(RebaselinedAlbum(albumID: album.id, title: album.title, count: album.assetIDs.count))
+        }
+        return rebaselined
     }
 
     /// The same selection and album links with no record of what was

@@ -203,9 +203,11 @@ public enum BackupPlanner {
             let mirrored = mirrorAlbums && album.kind == .user && !excludingAlbums.contains(album.id)
             let toUpload = members(of: album, includingHidden: uploadsHidden).filter { state.uploaded[$0] == nil && !planned.contains($0) }
             planned.formUnion(toUpload)
-            // A hidden member goes to the library only, never into the album.
-            let intoAlbum = mirrored ? toUpload.filter { !album.hiddenAssetIDs.contains($0) } : []
-            let libraryOnly = mirrored ? toUpload.filter { album.hiddenAssetIDs.contains($0) } : toUpload
+            // The rest go to the library only: hidden members, and members
+            // a linked album already had when it was linked.
+            let admitted = mirrored ? admitted(album, state: state) : []
+            let intoAlbum = toUpload.filter { admitted.contains($0) }
+            let libraryOnly = toUpload.filter { !admitted.contains($0) }
             for batch in intoAlbum.chunked(batchSize) {
                 steps.append(.upload(albumID: album.id, albumTitle: album.title, assetIDs: batch))
             }
@@ -215,13 +217,28 @@ public enum BackupPlanner {
 
             guard mirrored else { continue }
             let added = state.mirrors[album.id]?.addedAssetIDs ?? []
-            let toAdd = album.visibleAssetIDs.filter { state.uploaded[$0] != nil && !added.contains($0) }
+            let toAdd = album.visibleAssetIDs.filter { admitted.contains($0) && state.uploaded[$0] != nil && !added.contains($0) }
             for batch in toAdd.chunked(albumBatchSize) {
                 steps.append(.addToAlbum(albumID: album.id, albumTitle: album.title, assetIDs: batch,
                                          mediaKeys: batch.compactMap { state.uploaded[$0]?.mediaKey }))
             }
         }
         return steps
+    }
+
+    /// The members of a mirrored album that may go into its Google album:
+    /// never a hidden one; for an album not created yet, every other one;
+    /// for a linked album, only those that joined the Photos album since
+    /// (the app cannot see what the owner took out of the Google album, so
+    /// what it has a record of is never sent again). A linked album with
+    /// no record at all takes nothing: rebaselineUnknownMirrors gives it
+    /// one before planning, and the planner never refills it meanwhile.
+    static func admitted(_ album: AlbumSnapshot, state: BackupState) -> Set<String> {
+        let visible = album.visibleAssetIDs
+        guard let mirror = state.mirrors[album.id], mirror.googleAlbumID != nil else { return Set(visible) }
+        let recorded = mirror.recordedAssetIDs
+        guard !recorded.isEmpty else { return [] }
+        return Set(visible.filter { !recorded.contains($0) })
     }
 
     /// The album id of a hand-picked upload step: the only steps whose
