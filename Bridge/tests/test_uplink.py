@@ -17,6 +17,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -262,11 +263,34 @@ class KeptSessionTests(unittest.TestCase):
         self.assertNotIn("_new_session", vars(client.api))
         self.assertIsInstance(client.api._new_session(), FakeSession)
 
-    def test_a_one_shot_request_closes_its_sessions(self):
+    def test_a_one_shot_request_keeps_gpmcs_fresh_sessions(self):
+        # PR #52 review: the Windows app and the Android app's run() are one
+        # request each, and they stay as they were: a session per call.
         client = SessionClient()
-        run(upload(["a.jpg", "b.jpg"], threads=2), client)
-        self.assertLessEqual(FakeSession.made, 2)
+        code, _, _ = run(upload(["a.jpg", "b.jpg"], threads=2), client)
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual(FakeSession.made, 8)
+        self.assertEqual(len({id(session) for session in client.api.sessions_seen}), 8)
+        self.assertFalse(hasattr(client, gpmc_bridge._POOL_ATTRIBUTE))
         self.assertTrue(all(session.closed for session in client.api.sessions_seen))
+
+    def test_a_session_idle_too_long_is_closed_not_reused(self):
+        # PR #52 review: a connection Google closed while the app exported
+        # the next batch failed its next POST, which urllib3 does not retry.
+        pool = gpmc_bridge.SessionPool(FakeSession)
+        clock = [1000.0]
+        with mock.patch.object(gpmc_bridge, "_monotonic", lambda: clock[0]):
+            first = pool.checkout()
+            first.close()
+            clock[0] += gpmc_bridge.MAX_IDLE_SECONDS - 1
+            again = pool.checkout()
+            self.assertIs(again, first, "a session idle for less than the limit is reused")
+            again.close()
+            clock[0] += gpmc_bridge.MAX_IDLE_SECONDS + 1
+            fresh = pool.checkout()
+        self.assertIsNot(fresh, first)
+        self.assertTrue(first.closed, "the stale session's connection is closed, not left open")
+        self.assertFalse(fresh.closed)
 
     def test_an_api_without_new_session_still_uploads(self):
         client = FakeClient()
