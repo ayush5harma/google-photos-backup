@@ -96,14 +96,20 @@ enum SnapshotFixture {
             if wanted("accounts") {
                 // Offscreen and never activated, like the iCloud renders: a
                 // capture of the real windows would bring them to the front.
-                applyAccounts(to: model)
                 AppRouter.shared.mainWindow?.orderOut(nil)
-                await render(AccountSettingsTab().environment(model).environment(\.controlActiveState, .active),
-                             size: nil, appearance: appearance,
-                             to: output.appendingPathComponent("settings-accounts-\(name).png"), activateWindow: false)
+                for (scene, file) in [(AccountsScene.choice, "settings-accounts"), (.storageCheck, "settings-accounts-storage")] {
+                    applyAccounts(to: model, scene)
+                    await render(AccountSettingsTab().environment(model).environment(\.controlActiveState, .active),
+                                 size: nil, appearance: appearance,
+                                 to: output.appendingPathComponent("\(file)-\(name).png"), activateWindow: false)
+                }
+                applyAccounts(to: model)
                 await render(HomeView(section: .constant(.home)).environment(model).environment(\.controlActiveState, .active),
                              size: CGSize(width: 900, height: 980), appearance: appearance,
                              to: output.appendingPathComponent("overview-accounts-\(name).png"), activateWindow: false)
+                await render(PanelSnapshot().environment(model).environment(\.controlActiveState, .active),
+                             size: nil, appearance: appearance,
+                             to: output.appendingPathComponent("menubar-accounts-\(name).png"), activateWindow: false)
             }
             if wanted("onboarding") {
                 apply(.upToDate, to: model)
@@ -203,20 +209,42 @@ enum SnapshotFixture {
          item("DSC_0042.JPG", .failed("The file could not be read from Photos"), size: nil, minutesAgo: 31)]
     }
 
-    /// Three made-up accounts (#49): the primary complete, a family account
-    /// still catching up, and one just added, waiting for its storage check.
-    static func applyAccounts(to model: AppModel) {
+    /// Which made-up accounts (#49) a render shows. Settings is a fixed
+    /// 560 points tall and scrolls, so each Settings render shows three.
+    enum AccountsScene {
+        /// All four: the overview and the menu bar panel.
+        case overview
+        /// "Only the accounts I choose", with the work account left out.
+        case choice
+        /// "All accounts", with an added account at its storage check.
+        case storageCheck
+    }
+
+    /// The primary complete, a family account still catching up, one just
+    /// added and waiting for its storage check, and a work account left out
+    /// of backups.
+    static func applyAccounts(to model: AppModel, _ scene: AccountsScene = .overview) {
         apply(.upToDate, to: model)
         let total = Set(albums.filter { selected.contains($0.id) }.flatMap(\.snapshot.assetIDs)).count
         var family = state(missing: total * 6 / 10)
         family.accountEmail = "family.photos@gmail.com"
-        var work = BackupState()
-        work.selectedAlbumIDs = selected
+        var added = BackupState()
+        added.selectedAlbumIDs = selected
+        var work = state(missing: total * 9 / 10)
+        work.accountEmail = "jane.appleseed@work.example.com"
+        let fresh: AppModel.FixtureAccount = .init(email: "jane.archive@gmail.com", status: .connected(email: "jane.archive@gmail.com"),
+                                                   storageChecked: false, record: added)
+        let leftOut: AppModel.FixtureAccount = .init(email: "jane.appleseed@work.example.com",
+                                                     status: .connected(email: "jane.appleseed@work.example.com"), included: false, record: work)
+        let others: [AppModel.FixtureAccount] = switch scene {
+        case .overview: [fresh, leftOut]
+        case .choice: [leftOut]
+        case .storageCheck: [fresh]
+        }
         model.applyFixture(albums: albums, accounts: [
             .init(email: accountEmail, status: .connected(email: accountEmail), record: state(missing: 0)),
             .init(email: "family.photos@gmail.com", status: .connected(email: "family.photos@gmail.com"), record: family),
-            .init(email: "jane.work@example.com", status: .connected(email: "jane.work@example.com"), storageChecked: false, record: work),
-        ], runtime: "gpmc 0.9.0 on Python 3.13.15", messages: .ready(found: 0, skipped: 12, partial: false))
+        ] + others, runtime: "gpmc 0.9.0 on Python 3.13.15", messages: .ready(found: 0, skipped: 12, partial: false))
         model.engine.applyFixture(activity: finishedItems, runTotal: 0, runDone: 0, phase: .idle, lastRun: Date().addingTimeInterval(-6 * 60))
         // The storage check sizes the selection from what was uploaded.
         if model.diagnostics.runs.isEmpty { recordRuns(model) }

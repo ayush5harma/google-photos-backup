@@ -413,6 +413,11 @@ final class AppModel {
     /// Accounts are signed in, and the choice leaves every one of them out.
     var noAccountIncluded: Bool { !accounts.isEmpty && includedAccounts.isEmpty }
 
+    /// "Back up to" and the "Include in backups" ticks are shown with
+    /// several accounts, and with one that is left out (the others were
+    /// removed), so that it can be ticked again.
+    var showsAccountChoice: Bool { accounts.count > 1 || includedAccounts.count < accounts.count }
+
     /// "Back up to: All accounts / Only the accounts I choose".
     func chooseAccounts(_ choice: AccountsChoice) {
         guard choice != accountsChoice else { return }

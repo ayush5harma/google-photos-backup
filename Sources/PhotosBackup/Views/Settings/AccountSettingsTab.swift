@@ -23,6 +23,13 @@ struct AccountSettingsTab: View {
                         Spacer()
                     }
                 } else {
+                    if model.showsAccountChoice {
+                        Picker("Back up to", selection: Binding(get: { model.accountsChoice }, set: { model.chooseAccounts($0) })) {
+                            Text("All accounts").tag(AccountsChoice.all)
+                            Text("Only the accounts I choose").tag(AccountsChoice.chosen)
+                        }
+                        .pickerStyle(.radioGroup)
+                    }
                     ForEach(model.accounts) { account in
                         AccountRow(account: account, remove: { removing = account },
                                    recheck: { rechecking = account }, forget: { forgetting = account })
@@ -39,7 +46,9 @@ struct AccountSettingsTab: View {
             } header: {
                 Text(model.accounts.count > 1 ? "Google accounts" : "Google account")
             } footer: {
-                FormNote("You sign in on Google's own page. Google hands back a token for a new Android device, the kind Google Photos for Android uses. It stays in your login keychain; the sign-in page's session is discarded. Every account gets the same albums, one account after another, each with its own record, so adding or removing one never touches the others.")
+                FormNote(model.showsAccountChoice
+                         ? "Back Up Now and automatic backups go to the accounts above, one after another, with the same albums and a record of their own; Back Up Now's arrow backs up to one account once. Messages media, chosen photos, device imports and iCloud go to the primary account whether or not it is included. Your sign-in stays in your login keychain."
+                         : "You sign in on Google's own page. Google hands back a token for a new Android device, the kind Google Photos for Android uses. It stays in your login keychain; the sign-in page's session is discarded. Every account gets the same albums, one account after another, each with its own record, so adding or removing one never touches the others.")
             }
 
             Section {
@@ -150,6 +159,15 @@ struct AccountRow: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .monospacedDigit()
+                    if model.showsAccountChoice {
+                        Toggle("Include in backups", isOn: Binding(get: { model.isIncluded(account.id) },
+                                                                   set: { model.setIncluded(account.id, $0) }))
+                            .toggleStyle(.checkbox)
+                            .help(model.accountsChoice == .all
+                                  ? "Backups go to every account. Untick this to back up only to the accounts you choose."
+                                  : "Back Up Now and automatic backups go to the ticked accounts.")
+                            .padding(.top, 2)
+                    }
                 }
                 Spacer(minLength: 0)
                 Menu {
@@ -195,12 +213,15 @@ struct AccountStatusLine: View {
                     Text("Checking with Google…").foregroundStyle(.secondary)
                 }
             case .connected:
-                if account.storageChecked {
-                    Label("Connected to Google Photos", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                } else {
+                if !account.storageChecked {
                     Label("Connected; waiting for the storage check below", systemImage: "clock")
                         .foregroundStyle(.secondary)
+                } else if !model.isIncluded(account.id) {
+                    Label("Connected; not included in backups", systemImage: "minus.circle")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label("Connected to Google Photos", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
                 }
             case let .failed(message):
                 Text(message)
@@ -319,7 +340,7 @@ struct AccountMenu: View {
         Menu {
             if model.hasAuthData {
                 ForEach(model.accounts) { account in
-                    Text(account.title)
+                    Text(model.isIncluded(account.id) ? account.title : "\(account.title) (not included)")
                 }
                 Button(model.accounts.count > 1 ? "Check Connections" : "Check Connection") { Task { await model.checkAccounts() } }
                 Button("Add Account…") { model.perform(.signIn) }

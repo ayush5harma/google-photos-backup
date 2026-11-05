@@ -180,6 +180,28 @@ imports and iCloud go to the first (primary) account only. One keychain item per
 account: the app's service with the account's address as the account name; the
 single item from before (account name `gpmc`) moves to its account at launch.
 
+**Back up to** (Settings > Account, shown with more than one account) decides
+where Back Up Now, automatic backups and `photosbackup://backup` go:
+
+- **All accounts**: every signed-in account, an account added later included.
+  This is the default, and what an upgrade from one account or from an earlier
+  multi-account build starts with.
+- **Only the accounts I choose**: the accounts whose **Include in backups** is
+  ticked (in Settings and as a switch on the Overview's Google accounts card).
+  Choosing starts with every account ticked; unticking an account while backups
+  go to all of them switches to choosing, with the others kept. An account added
+  later is not ticked until its storage check's **Start Backing Up**, or a tick.
+
+An account left out reads "Not included", and the ring, "To back up" and the
+status count only the accounts a run goes to; with every account left out the
+status says so. The arrow next to **Back Up Now** (also the menu bar panel's
+accounts button and **Backup > Back Up To**) backs up once to all accounts or to
+one, whatever the choice, without changing it. The primary account keeps taking
+Messages media, chosen photos, device imports and iCloud even when it is left
+out of photo backups: then its turn in a backup carries Messages media alone,
+and a pick or device import uploads only what was picked, never the selected
+albums. The choice is stored in `accounts.json` next to the shared selection.
+
 If the in-app page will not work, **Other ways to connect** accepts the
 `oauth_token` cookie copied from Safari's Web Inspector, or a whole `auth_data`
 line from gpmc's own methods: [ReVanced (no root)](https://github.com/xob0t/gpmc#option-1---revanced-no-root-required)
@@ -362,7 +384,7 @@ folder.
 |---|---|---|
 | `state.json` | the first account's media keys, album links, edit stamps | none |
 | `state-<hash>.json` | the same for each added account | none |
-| `accounts.json` | the accounts in run order, the shared album selection, storage checks | none |
+| `accounts.json` | the accounts in run order, the shared album selection, "Back up to" and each account's tick, storage checks | none |
 | `history.json` | run history: trigger, counts, bytes, outcome, conditions | 40 runs |
 | `events.json` | event timeline | 400 events, none older than 14 days |
 | `messages-archive.json` | summary of the last archive run | one |
@@ -391,7 +413,15 @@ folder.
 See the table in the README. A link runs the same code as the matching button.
 `photosbackup://open/home` still works and means `overview`. Backing up needs a
 signed-in account; `backup/photos` also needs Photos access; `archive` needs the
-archive turned on. A link that cannot run is recorded in the timeline. Every run
+archive turned on. `backup` and `backup/photos` go where **Back up to** says;
+`?account=<address>` (for example `photosbackup://backup?account=me@example.com`)
+sends either one to that account only, once, without changing the choice, and
+compares the address as Google does (case, and Gmail's dots and
+`googlemail.com`, do not matter). A link whose `account` is empty, is not one
+address, is given twice, or is on `backup/messages-media` (only the primary takes
+Messages media) is not followed; an address no signed-in account has is logged
+and ignored, never matched to another account. A link that cannot run is
+recorded in the timeline. Every run
 a link starts is recorded with the trigger "Shortcut or link". The table lives in
 `Sources/PhotosBackupCore/AutomationCommand.swift` and the actions in
 `Sources/PhotosBackup/Automation.swift`.

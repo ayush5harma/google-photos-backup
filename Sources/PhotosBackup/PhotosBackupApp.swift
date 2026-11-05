@@ -339,7 +339,7 @@ struct MainToolbar: ToolbarContent {
                     .help("Pause after the current uploads")
                     .disabled(engine.phase != .running)
             }
-            Button { model.startBackupNow() } label: { Label("Back Up Now", systemImage: "arrow.up") }
+            BackUpNowButton()
                 .help("Back up everything selected now (Command-B)")
                 .disabled(model.isBackingUp || !model.hasAuthData)
         }
@@ -359,6 +359,11 @@ struct BackupCommands: Commands {
             Button("Back Up Now") { model.startBackupNow() }
                 .keyboardShortcut("b")
                 .disabled(model.isBackingUp || !model.hasAuthData)
+            if model.accounts.count > 1 {
+                // One-offs: the choice in Settings > Account stays as it is.
+                Menu("Back Up To") { BackUpDestinations(model: model) }
+                    .disabled(model.isBackingUp || !model.hasAuthData)
+            }
             if model.engine.phase == .paused || model.engine.phase == .pausing {
                 Button("Resume") { model.engine.resume() }
                     .keyboardShortcut("p", modifiers: [.command, .shift])

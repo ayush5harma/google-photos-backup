@@ -30,7 +30,7 @@ struct HomeView: View {
         let summary = model.summary
         let failed = model.engine.failedCount
         return HStack(spacing: 12) {
-            StatTile(value: summary.backedUp.formatted(), label: "Backed up", symbol: "checkmark.icloud", tint: .green)
+            StatTile(value: model.leadingSummary.backedUp.formatted(), label: "Backed up", symbol: "checkmark.icloud", tint: .green)
             StatTile(value: model.overallSummary.pending.formatted(), label: "To back up", symbol: "arrow.up.circle", tint: .accentColor)
             StatTile(value: summary.selectedAlbums.formatted(), label: summary.selectedAlbums == 1 ? "Album" : "Albums",
                      symbol: "rectangle.stack", tint: .orange)
@@ -168,8 +168,7 @@ private struct OverviewHero: View {
                     .disabled(engine.phase == .stopping)
             case .idle:
                 if model.hasAuthData {
-                    Button { model.startBackupNow() } label: { Label("Back Up Now", systemImage: "arrow.up") }
-                        .buttonStyle(.borderedProminent)
+                    BackUpNowButton(prominent: true)
                         .disabled(!model.canReadPhotos && !model.settings.messagesMedia)
                 } else {
                     Button { model.beginSignIn() } label: { Label("Sign In with Google…", systemImage: "person.crop.circle") }
@@ -197,9 +196,15 @@ private struct OverviewHero: View {
         let engine = model.engine
         switch status.kind {
         case .upToDate:
-            let accounts = model.runnableAccounts.count
-            if accounts > 1 { return "\(summary.backedUp.formatted()) photos and videos are in each of your \(accounts) Google accounts." }
-            return "\(summary.backedUp.formatted()) photos and videos are in Google Photos."
+            let targets = model.targetAccounts
+            let count = model.leadingSummary.backedUp.formatted()
+            if targets.count > 1 {
+                return targets.count == model.accounts.count
+                    ? "\(count) photos and videos are in each of your \(targets.count) Google accounts."
+                    : "\(count) photos and videos are in each of the \(targets.count) accounts you back up to."
+            }
+            if model.accounts.count > 1, let only = targets.first { return "\(count) photos and videos are in \(only.title)." }
+            return "\(count) photos and videos are in Google Photos."
         case .backingUp:
             if engine.isActive {
                 return engine.remaining > 0 ? "\(engine.remaining.formatted()) items left in this backup." : "Looking for new photos and videos…"
@@ -216,6 +221,9 @@ private struct OverviewHero: View {
             return [reason?.title, reason?.resumeHint ?? "Uploads continue by themselves."].compactMap { $0 }.joined(separator: ". ")
         case .attention:
             if !model.hasAuthData { return "Connect your Google account to back up \(summary.total.formatted()) items." }
+            if model.noAccountIncluded, !model.isStorageFull, !model.account.isFailed {
+                return "Every account is left out. Include one in Settings > Account, or back up to all accounts."
+            }
             if model.isStorageFull || model.account.isFailed {
                 return "\(summary.backedUp.formatted()) of \(summary.total.formatted()) items are in Google Photos; the rest wait until this is fixed."
             }
@@ -244,26 +252,40 @@ private struct AccountsOverview: View {
     private func row(_ account: BackupAccount) -> some View {
         let summary = model.summary(of: account.id)
         let fraction = summary.total == 0 ? 0 : Double(summary.backedUp) / Double(summary.total)
+        let included = model.isIncluded(account.id)
         return HStack(spacing: 12) {
-            AccountAvatar(size: 26, email: account.email ?? "")
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    Text(account.title).lineLimit(1).truncationMode(.middle)
-                    Spacer()
-                    Text(state(account, summary: summary))
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .monospacedDigit()
+            HStack(spacing: 12) {
+                AccountAvatar(size: 26, email: account.email ?? "")
+                    .opacity(included ? 1 : 0.5)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(account.title).lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Text(state(account, summary: summary))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                    ProgressView(value: fraction)
+                        .progressViewStyle(.linear)
+                        .tint(included ? .accentColor : .secondary)
+                        .opacity(included ? 1 : 0.5)
                 }
-                ProgressView(value: fraction).progressViewStyle(.linear)
             }
+            .accessibilityElement(children: .combine)
+            Toggle("Include \(account.title) in backups", isOn: Binding(get: { model.isIncluded(account.id) },
+                                                                        set: { model.setIncluded(account.id, $0) }))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .help(included ? "Included in backups" : "Not included: Back Up Now and automatic backups skip this account")
         }
-        .accessibilityElement(children: .combine)
     }
 
     private func state(_ account: BackupAccount, summary: BackupSummary) -> String {
         if model.runner.current == account.id, model.engine.isActive { return "Backing up now" }
         if !account.storageChecked { return "Waiting for its storage check" }
+        if !model.isIncluded(account.id) { return "Not included" }
         switch model.status(of: account.id) {
         case .missing: return "Signed out"
         case .failed: return "Needs attention"
