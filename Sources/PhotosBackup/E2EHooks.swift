@@ -179,7 +179,7 @@ enum E2EHooks {
             "lastError": engine.lastError,
             "lastRun": engine.lastRun?.ISO8601Format(),
             "activity": engine.activity.prefix(200).map { item in
-                ["id": item.id, "status": item.status.label, "finished": item.status.isFinished,
+                ["id": item.assetID, "account": item.account as Any, "status": item.status.label, "finished": item.status.isFinished,
                  "failed": { if case .failed = item.status { true } else { false } }(), "detail": item.detail as Any]
             },
             "summary": ["backedUp": summary.backedUp, "pending": summary.pending, "selectedAlbums": summary.selectedAlbums],
@@ -193,7 +193,8 @@ enum E2EHooks {
             "account": "\(model.account)",
             "hasAuthData": model.hasAuthData,
             "activeAccount": model.activeAccountID,
-            "runningAccount": model.runner.current,
+            "runningAccount": model.engine.accountsBackingUp.first as Any,
+            "runningAccounts": model.engine.accountsBackingUp,
             "passRunning": model.runner.isRunning,
             "backUpTo": model.accountsChoice.rawValue,
             "accounts": model.accounts.map { account in

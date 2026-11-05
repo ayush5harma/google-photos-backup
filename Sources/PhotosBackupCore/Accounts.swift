@@ -200,6 +200,19 @@ public struct AccountLibrary: Equatable, Sendable {
     /// The record as last kept, selection included, for writing it back.
     public func storedState(for id: String) -> BackupState? { states[id] }
 
+    /// Changes one account's record in place: a run records each upload as
+    /// it is confirmed, and a copy per change of a record the size of the
+    /// owner's (about 27,700 uploads) would cost a copy of all of them.
+    /// nil when the account has no record. The record takes the shared
+    /// selection first, as state(for:) hands it out and as an active
+    /// account's record is written back: a change such as a re-baseline
+    /// reads the selection.
+    public mutating func modifyState<T>(for id: String, _ change: (inout BackupState) -> T) -> T? {
+        guard states[id] != nil else { return nil }
+        if states[id]!.selectedAlbumIDs != index.selectedAlbumIDs { states[id]!.selectedAlbumIDs = index.selectedAlbumIDs }
+        return change(&states[id]!)
+    }
+
     // MARK: - Migration
 
     /// The library for a Mac that has only the single-account record and
