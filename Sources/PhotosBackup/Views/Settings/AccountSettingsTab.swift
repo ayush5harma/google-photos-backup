@@ -200,9 +200,10 @@ struct AccountStatusLine: View {
     let account: BackupAccount
 
     var body: some View {
-        if model.engine.isBackingUp(to: account.id) {
-            Label("Backing up now", systemImage: "arrow.up.circle.fill")
+        if let line = model.engine.backingUpLine(for: account.id) {
+            Label(line, systemImage: "arrow.up.circle.fill")
                 .foregroundStyle(.tint)
+                .monospacedDigit()
         } else {
             switch model.status(of: account.id) {
             case .missing:

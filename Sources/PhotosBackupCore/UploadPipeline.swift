@@ -448,6 +448,13 @@ public enum StagingWindow {
     /// uploading is exported whatever the window says, and macOS needs room
     /// of its own; 5 GB is a margin chosen for both, not a measured limit.
     public static let freeSpaceFloor: Int64 = 5_000_000_000
+    /// What every batch staged for a pass may hold on disk together, the
+    /// batches a slower account has still to send included (issue #70):
+    /// past it, an account that is ahead waits before exporting another
+    /// batch rather than the slower one exporting its batches again. A
+    /// margin chosen, not measured: about 20 batches of 100 photos of 3 MB,
+    /// over an hour of lead at Google's measured 0.5 photos a second.
+    public static let bytesHeld: Int64 = 6_000_000_000
 
     public static func mayStage(batchesReady: Int, bytesReady: Int64) -> Bool {
         batchesReady < batchesAhead && bytesReady < bytesAhead

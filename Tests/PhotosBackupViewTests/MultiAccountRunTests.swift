@@ -776,6 +776,36 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertTrue(untouched(queued, in: model, secondID))
     }
 
+    /// Issue #70: each account walks the pass at its own pace. On 0.6.2 a
+    /// batch began only once the slowest account had finished the one
+    /// before, so the fast account here could have sent at most its first
+    /// batch (2 items) before the slow one finished a file.
+    func testASlowAccountDoesNotHoldBackAFastOne() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        model.settings.batchSize = 2
+        let photos = try items(6, tag: "own-pace")
+        let turns = recordTurns(model) { photos }
+
+        try scenario(["per_account": true, "account_delay": [Self.second: 4.0]])
+        let exportsBefore = model.engine.standInExportsForTesting
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(turns().map(\.account), [firstID, secondID], "one pass to both accounts")
+        XCTAssertTrue(uploaded(photos, in: model, firstID) && uploaded(photos, in: model, secondID))
+
+        let sent = try uploads().filter { ($0["status"] as? String) == "uploaded" }
+        let firstOfSlow = try XCTUnwrap(sent.firstIndex { ($0["account"] as? String) == Self.second })
+        let fastBefore = sent[..<firstOfSlow].filter { ($0["account"] as? String) == Self.first }.count
+        XCTAssertEqual(fastBefore, photos.count, "the fast account sent all three batches while the slow one was on its first")
+        XCTAssertEqual(model.engine.standInExportsForTesting - exportsBefore, photos.count, "each item still exported once")
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: model.paths.staging.path).isEmpty,
+                      "the staged files went once both accounts were done with them")
+        XCTAssertTrue(try uploads().allSatisfy { ($0["saver"] as? Bool) == false && ($0["use_quota"] as? Bool) == false })
+    }
+
     /// Review finding (PR #53, MAJOR 1), the reviewer's own scenario: the
     /// primary zed.primary@gmail.com, a work account a.work@corp.example.com
     /// left out, then accounts.json unreadable. The index was rebuilt from

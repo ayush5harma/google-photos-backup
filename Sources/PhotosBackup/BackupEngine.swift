@@ -123,6 +123,22 @@ private struct StagedBatch {
     }
 }
 
+/// One batch of a pass that an account has reached (issue #70): exported
+/// once, and its files kept until every account in `users` is done with it,
+/// so each account walks the pass at its own pace.
+@MainActor
+private final class SharedSlot {
+    /// nil while it exports.
+    var staged: StagedBatch?
+    var loading: Task<StagedBatch?, Never>?
+    /// The accounts still to send from it, or to give it up.
+    var users: Set<String>
+
+    init(users: Set<String>) {
+        self.users = users
+    }
+}
+
 /// Runs backups: plans from the selected albums for each account the run
 /// goes to, exports each batch from Photos once, uploads it through one
 /// bridge per account, all accounts at the same time, and records what
@@ -180,6 +196,15 @@ final class BackupEngine {
     /// What each batch of the current pass exports ahead, by batch index, so
     /// a discard can stop the rows of the one still exporting.
     @ObservationIgnored private var aheadSteps: [Int: (ids: [String], rows: [String])] = [:]
+    /// The pass the lanes are walking, and its batches some lane has
+    /// reached, by batch index, until every lane is done with each.
+    @ObservationIgnored private var walkingPass: SharedPass?
+    @ObservationIgnored private var slots: [Int: SharedSlot] = [:]
+    /// Every batch index some lane has reached in this pass, let go or not,
+    /// so the export ahead never exports one again.
+    @ObservationIgnored private var reached = Set<Int>()
+    /// The run's first planned work has gone in the timeline.
+    @ObservationIgnored private var announced = false
     /// Verification belongs to the run just like upload: Stop terminates it,
     /// and no orphan child can later make a deletion decision.
     @ObservationIgnored private let verifier = BridgeProcess()
@@ -282,6 +307,13 @@ final class BackupEngine {
 
     /// Whether the run in progress goes to `id`.
     func isBackingUp(to id: String) -> Bool { isActive && lanes.contains { $0.account == id && !$0.halted } }
+
+    /// "Backing up · 400 of 27,639" for an account the run goes to, with its
+    /// own count once it has one; nil when it is not backing up.
+    func backingUpLine(for id: String) -> String? {
+        guard isBackingUp(to: id) else { return nil }
+        return lane(id)?.countLine.map { "Backing up · \($0)" } ?? "Backing up now"
+    }
 
     /// The accounts the run in progress is backing up to, in run order.
     var accountsBackingUp: [String] { isActive ? lanes.filter { !$0.halted }.map(\.account) : [] }
@@ -710,34 +742,28 @@ final class BackupEngine {
             allowSleep()
         }
 
-        var announced = false
+        announced = false
         // Passes repeat because one pass can make work for the next: an asset
         // uploaded for All Photos may also belong to a mirrored album.
         while !shouldHalt, lanes.contains(where: { !$0.halted }) {
             retryRequested = false
-            if let primary = primaryLane, !primary.halted {
-                switch await sendPrimaryQueues(primary, trigger: trigger, announced: &announced) {
-                case .progressed: continue
-                case .halt:
-                    if phase == .stopping { return .halted }
-                    continue
-                case .nothing: break
-                }
-            }
+            let primary = primaryLane.flatMap { $0.halted ? nil : $0 }
+            let queued = primary != nil && (!messages.isEmpty || !deviceItems.isEmpty)
             // Messages media alone (a Messages-only run, or the primary's
             // part of a pass whose photos go nowhere): no pass over the albums.
-            if !lanes.contains(where: { !$0.halted && takesAlbums($0) }), picked.isEmpty { break }
-            await model.reloadAlbums()
-            let settings = model.settings
-            let working = lanes.filter { !$0.halted && (takesAlbums($0) || (isPrimary($0) && !picked.isEmpty)) }
-            let pass = sharedPass(working, settings: settings)
-            guard !pass.isEmpty else { break }
-            for lane in working { planned(lane, pass.uploads[lane.account] ?? 0) }
-            announce(&announced, trigger: trigger)
+            let albums = lanes.contains { !$0.halted && takesAlbums($0) } || !picked.isEmpty
+            guard albums || queued else { break }
+            var pass = SharedPass(plans: [], batchSize: 1)
+            if albums {
+                await model.reloadAlbums()
+                let working = lanes.filter { !$0.halted && (takesAlbums($0) || (isPrimary($0) && !picked.isEmpty)) }
+                pass = sharedPass(working, settings: model.settings)
+                for lane in working { planned(lane, pass.uploads[lane.account] ?? 0) }
+                announce(trigger: trigger)
+            }
+            guard !pass.isEmpty || queued else { break }
 
-            let progressed = await execute(pass, settings: settings)
-            // Pause, Stop or a halt can leave later batches exported and unsent.
-            discardStagedAhead()
+            let progressed = await execute(pass, queues: queued ? primary : nil, trigger: trigger, settings: model.settings)
             if phase == .stopping { return .halted }
             if !progressed, !retryRequested { break }
         }
@@ -749,9 +775,10 @@ final class BackupEngine {
         return .ranOut
     }
 
-    /// The device import, then Messages media: the primary's part alone,
-    /// before the passes over the albums.
-    private func sendPrimaryQueues(_ lane: AccountLane, trigger: RunTrigger, announced: inout Bool) async -> Outcome {
+    /// One batch of the device import, else of Messages media: the primary's
+    /// alone, in its own lane ahead of its share of the pass, while the other
+    /// lanes walk theirs (issue #70).
+    private func sendPrimaryQueues(_ lane: AccountLane, trigger: RunTrigger) async -> Outcome {
         guard let runtime else { return .halt }
         deviceItems.removeAll { record(lane).uploaded[$0.id] != nil || lane.failedAssets.contains($0.id) }
         if !deviceItems.isEmpty {
@@ -763,7 +790,7 @@ final class BackupEngine {
                 ? deviceSource.batchKeepingPairsTogether(deviceItems, limit: model.settings.batchSize)
                 : Array(deviceItems.prefix(model.settings.batchSize))
             planned(lane, batch.count)
-            announce(&announced, trigger: trigger)
+            announce(trigger: trigger)
             let album = deviceAlbumName.map { (id: "device-album:\($0)", title: $0) }
             if await upload(device: batch, source: deviceSource, album: album, lane: lane,
                             accountEmail: record(lane).accountEmail, reclaimGeneration: reclaimGeneration, runtime: runtime,
@@ -774,7 +801,7 @@ final class BackupEngine {
         if !messages.isEmpty {
             let batch = Array(messages.prefix(model.settings.batchSize))
             planned(lane, batch.count)
-            announce(&announced, trigger: trigger)
+            announce(trigger: trigger)
             // Every item of a batch ends uploaded or failed (or the run
             // halts), so the next batch is always different.
             if await upload(messages: batch, lane: lane, settings: model.settings) == .halt { return endPart(lane) }
@@ -942,7 +969,7 @@ final class BackupEngine {
         lane.record.bytes = lane.tally.bytes
     }
 
-    private func announce(_ announced: inout Bool, trigger: RunTrigger) {
+    private func announce(trigger: RunTrigger) {
         guard !announced, runTotal > 0 else { return }
         announced = true
         let accounts = lanes.count > 1 ? " to \(lanes.count) accounts at the same time" : ""
@@ -1020,34 +1047,239 @@ final class BackupEngine {
 
     private enum Outcome { case progressed, nothing, halt }
 
-    /// One pass: the shared batches, every account sending its part of each
-    /// at the same time, then each account's own album adds and edits.
-    private func execute(_ pass: SharedPass, settings: BackupSettings) async -> Bool {
+    /// One pass: every lane walks it at the same time, each at its own pace
+    /// (issue #70): the primary's queues first when `queues` is it, then its
+    /// share of the shared batches, then its own album adds and edits.
+    ///
+    /// Measured 2026-11-05 on 0.6.2, which moved the accounts in lockstep (a
+    /// batch began only when the slowest account had finished the one
+    /// before): Google takes about 0.5 photos a second from each account,
+    /// and three accounts gained exactly 100 photos at a time together, 1.5
+    /// a second, about 80 of the link's 177 Mbit/s. A lane now waits for
+    /// another only when the staging budget is full (mustWaitForStaging).
+    private func execute(_ pass: SharedPass, queues primary: AccountLane?, trigger: RunTrigger,
+                         settings: BackupSettings) async -> Bool {
+        walkingPass = pass
+        // Pause, Stop or a halt can leave batches exported and unsent.
+        defer { endPass() }
+        let walking = lanes.filter { lane in
+            !lane.halted && (lane === primary || pass.batches.contains { !$0.sends(for: lane.account).isEmpty }
+                || !(pass.rest[lane.account] ?? []).isEmpty)
+        }
+        let outcomes = await sideBySide(walking) { lane in
+            await self.walk(pass, lane: lane, queues: lane === primary, trigger: trigger, settings: settings)
+        }
+        return outcomes.contains(.progressed)
+    }
+
+    /// One lane's part of a pass. Whatever ends it, the batches it still had
+    /// a claim on are given up, so a lane that halts (a refused sign-in, a
+    /// full account) or is held never keeps another's files on disk.
+    private func walk(_ pass: SharedPass, lane: AccountLane, queues: Bool, trigger: RunTrigger,
+                      settings: BackupSettings) async -> Outcome {
+        defer { dropClaims(of: lane) }
         var progressed = false
-        for (index, batch) in pass.batches.enumerated() {
-            if shouldHalt { break }
-            switch await send(batch, at: index, of: pass, settings: settings) {
+        while queues, !shouldHalt, !lane.halted {
+            let outcome = await sendPrimaryQueues(lane, trigger: trigger)
+            if outcome == .nothing { break }
+            if outcome == .halt { return .halt }
+            progressed = true
+        }
+        for index in pass.batches.indices where !pass.batches[index].sends(for: lane.account).isEmpty {
+            if shouldHalt || lane.halted { break }
+            // This account's own hold (a 429, a condition) before it claims
+            // the batch; the export waits only once every lane is held.
+            if let outcome = await clearance(retryAt: nil, holding: [], category: .photos, waiter: lane.account) {
+                if outcome == .halt { return endPart(lane) }
+                break
+            }
+            guard let staged = await acquire(index, of: pass, lane: lane), phase != .stopping else { break }
+            let outcome = await send(pass.batches[index], staged: staged, lane: lane, settings: settings)
+            done(index, lane: lane)
+            switch outcome {
             case .progressed: progressed = true
             case .nothing: break
-            case .halt: if phase == .stopping { return progressed }
+            case .halt: return endPart(lane)
             }
-            if !lanes.contains(where: { !$0.halted }) { return progressed }
         }
-        guard !shouldHalt else { return progressed }
-        let rest = lanes.filter { !$0.halted && !(pass.rest[$0.account] ?? []).isEmpty }
-        let outcomes = await sideBySide(rest) { lane in
-            var progressed = false
-            for step in pass.rest[lane.account] ?? [] {
-                if self.shouldHalt || lane.halted { break }
-                switch await self.execute(step, lane: lane, settings: settings) {
-                case .progressed: progressed = true
-                case .nothing: break
-                case .halt: return self.endPart(lane)
+        for step in pass.rest[lane.account] ?? [] {
+            if shouldHalt || lane.halted { break }
+            switch await execute(step, lane: lane, settings: settings) {
+            case .progressed: progressed = true
+            case .nothing: break
+            case .halt: return endPart(lane)
+            }
+        }
+        return progressed ? .progressed : .nothing
+    }
+
+    /// This lane's sends from one shared batch, through its own bridge.
+    private func send(_ batch: SharedPass.Batch, staged: StagedBatch, lane: AccountLane, settings: BackupSettings) async -> Outcome {
+        let byID = Dictionary(staged.items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var progressed = false
+        for part in batch.sends(for: lane.account) {
+            if shouldHalt || lane.halted { break }
+            let items = part.assetIDs.compactMap { byID[$0] }.filter { !lane.failedAssets.contains($0.id) }
+            guard !items.isEmpty else { continue }
+            // An album call that failed may still have created the album on
+            // Google's side (a lost response), so the rest of this run leaves
+            // the album alone rather than create it again.
+            let title = lane.failedAlbums.contains(part.albumID) ? nil : part.albumTitle
+            switch await send(items, lane: lane, album: title.map { (part.albumID, $0) }, category: .photos, settings: settings) {
+            case .progressed: progressed = true
+            case .nothing: break
+            case .halt: return .halt
+            }
+        }
+        return progressed ? .progressed : .nothing
+    }
+
+    /// Batch `index`'s staged files for `lane`: exported by the first lane to
+    /// reach it (or taken from the export ahead), shared with the others.
+    /// nil when its export was stopped or held off; the lane ends its walk.
+    private func acquire(_ index: Int, of pass: SharedPass, lane: AccountLane) async -> StagedBatch? {
+        if slots[index] == nil {
+            while mustWaitForStaging(below: index) {
+                if shouldHalt || lane.halted { return nil }
+                try? await Task.sleep(for: .milliseconds(200))
+            }
+            // Another lane may have reached it while this one waited.
+            if slots[index] == nil {
+                let users = pass.batches[index].accounts.filter { self.lane($0).map { !$0.halted } ?? false }
+                let slot = SharedSlot(users: Set(users))
+                slots[index] = slot
+                reached.insert(index)
+                slot.loading = Task { @MainActor in
+                    let staged = await self.load(index, of: pass)
+                    self.loaded(index, staged)
+                    return staged
                 }
             }
-            return progressed ? .progressed : .nothing
         }
-        return progressed || outcomes.contains(.progressed)
+        guard let slot = slots[index] else { return nil }
+        if let staged = slot.staged { return staged }
+        return await slot.loading?.value
+    }
+
+    /// Lanes wait for each other only here: with the staging budget full (or
+    /// the disk at its floor), a lane reaching a batch nobody has exported
+    /// waits for the slower lanes to give up older ones. Only while an older
+    /// batch is held, which some other lane is still to send: the lane
+    /// furthest behind never waits, so they cannot all wait at once.
+    ///
+    /// Issue #70 allowed instead a lagging lane re-exporting a batch already
+    /// let go. Waiting is no more code, keeps each photo exported once (an
+    /// iCloud original downloads once), and keeps the disk within bytesHeld
+    /// however far apart the accounts drift.
+    private func mustWaitForStaging(below index: Int) -> Bool {
+        guard slots.keys.contains(where: { $0 < index }) else { return false }
+        if heldBytes >= StagingWindow.bytesHeld { return true }
+        return stagingFreeSpace().map { $0 < StagingWindow.freeSpaceFloor } ?? false
+    }
+
+    /// Bytes on disk for this pass: batches lanes hold, and exports ahead not
+    /// yet reached.
+    private var heldBytes: Int64 {
+        slots.values.reduce(ahead.bytesReady) { $0 + ($1.staged?.bytes ?? 0) }
+    }
+
+    private func stagingFreeSpace() -> Int64? {
+        let values = try? model.paths.staging.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
+        return values?.volumeAvailableCapacityForImportantUsage
+    }
+
+    /// Which accounts each asset of `batch` goes to, among lanes still going.
+    private func liveOwners(_ batch: SharedPass.Batch) -> [String: [String]] {
+        Self.owners(of: batch.sends.filter { send in lane(send.account).map { !$0.halted } ?? false })
+    }
+
+    /// Exports batch `index` once for every lane that planned some of it.
+    private func load(_ index: Int, of pass: SharedPass) async -> StagedBatch? {
+        let batch = pass.batches[index]
+        let owners = liveOwners(batch)
+        let ids = batch.assetIDs.filter { owners[$0] != nil }
+        var staged = await ahead.take(index) ?? StagedBatch(directories: [], ids: [])
+        // Not exported yet: the whole batch, or what an export ahead left
+        // when a hold stopped it part-way (it neither exported nor failed those).
+        let exported = Set(staged.items.map(\.id))
+        let missing = ids.filter { id in
+            !exported.contains(id) && (owners[id] ?? []).contains { lane($0).map { !$0.failedAssets.contains(id) } ?? false }
+        }
+        if !missing.isEmpty {
+            // iCloud originals download during the export, so it waits for the
+            // network like the upload does.
+            if let outcome = await clearance(retryAt: nil, holding: [], category: .photos, waiter: Self.exportWaiter) {
+                if outcome == .halt, phase != .stopping { haltEveryLane(lastError ?? "The run ended early.") }
+                markUnfinishedStopped(staged.rows)
+                release(staged)
+                return nil
+            }
+            staged.append(await stage(missing, includingHidden: batch.includingHidden, owners: owners, ahead: false))
+        }
+        stageAhead()
+        return staged
+    }
+
+    /// A slot's export ended: kept for its lanes, or let go when none is
+    /// left (each gave up meanwhile). Nobody has sent from it yet, so rows of
+    /// an account no longer among its users are left unsent.
+    private func loaded(_ index: Int, _ staged: StagedBatch?) {
+        guard let slot = slots[index] else {
+            if let staged { release(staged) }
+            return
+        }
+        slot.loading = nil
+        guard let staged else {
+            slots[index] = nil
+            return
+        }
+        slot.staged = staged
+        markUnfinishedStopped(staged.rows.filter { Self.account(ofRow: $0).map { !slot.users.contains($0) } ?? false })
+        if slot.users.isEmpty { letGo(index) }
+    }
+
+    /// `lane` is done with batch `index`; its files go once every lane is.
+    private func done(_ index: Int, lane: AccountLane) {
+        guard let slot = slots[index] else { return }
+        slot.users.remove(lane.account)
+        if slot.users.isEmpty, slot.staged != nil { letGo(index) }
+    }
+
+    private func letGo(_ index: Int) {
+        guard let staged = slots.removeValue(forKey: index)?.staged else { return }
+        release(staged)
+        // Room on disk again: the export ahead may go on.
+        stageAhead()
+    }
+
+    /// A lane's walk ended: the batches it had not sent from are given up,
+    /// and its rows in them left unsent rather than shown as in progress.
+    private func dropClaims(of lane: AccountLane) {
+        for (index, slot) in slots where slot.users.contains(lane.account) {
+            if let staged = slot.staged {
+                markUnfinishedStopped(staged.rows.filter { Self.account(ofRow: $0) == lane.account })
+            }
+            done(index, lane: lane)
+        }
+    }
+
+    /// The pass is over (every lane's walk returned): what is still staged
+    /// for it goes.
+    private func endPass() {
+        discardStagedAhead()
+        for slot in slots.values {
+            slot.loading?.cancel()
+            guard let staged = slot.staged else { continue }
+            markUnfinishedStopped(staged.rows)
+            release(staged)
+        }
+        slots = [:]
+        reached = []
+        walkingPass = nil
+    }
+
+    private func markUnfinishedStopped(_ rows: [String]) {
+        for row in rows { update(row) { if !$0.status.isFinished { $0.status = .stopped } } }
     }
 
     /// Runs `part` for each lane at the same time and waits for all of them;
@@ -1072,72 +1304,6 @@ final class BackupEngine {
         workers = 1
         showWaits()
         return outcomes
-    }
-
-    /// One shared batch: exported once (or taken from the export ahead),
-    /// then every account that planned some of it sends its part at the
-    /// same time through its own bridge. The staged files go once every
-    /// account is done with them.
-    ///
-    /// The accounts move in lockstep: the next batch starts only once the
-    /// slowest account is done with this one (a retry backoff or a 429 hold
-    /// included), so a fast account waits for a slow one at every batch. In
-    /// total this is never slower than one account at a time, but it caps
-    /// the gain at the slowest account's pace. The follow-up (review of
-    /// PR #68) is per-lane batch pulling: each lane takes the next batch
-    /// when it is ready, with a per-batch count of the lanes still using its
-    /// files, which are removed when that count reaches zero.
-    private func send(_ batch: SharedPass.Batch, at index: Int, of pass: SharedPass, settings: BackupSettings) async -> Outcome {
-        let sending = batch.accounts.compactMap(lane).filter { !$0.halted }
-        let sends = batch.sends.filter { send in sending.contains { $0.account == send.account } }
-        let owners = Self.owners(of: sends)
-        let ids = batch.assetIDs.filter { owners[$0] != nil }
-        guard !ids.isEmpty else { return .nothing }
-        var staged = await ahead.take(index) ?? StagedBatch(directories: [], ids: [])
-        defer { release(staged) }
-        // Not exported yet: the whole batch, or what an export ahead left
-        // when a hold stopped it part-way (it neither exported nor failed those).
-        let exported = Set(staged.items.map(\.id))
-        let missing = ids.filter { id in
-            !exported.contains(id) && (owners[id] ?? []).contains { lane($0).map { !$0.failedAssets.contains(id) } ?? false }
-        }
-        if !missing.isEmpty {
-            // iCloud originals download during the export, so it waits for the
-            // network like the upload does.
-            if let outcome = await clearance(retryAt: nil, holding: [], category: .photos, waiter: Self.exportWaiter) {
-                markStopped(staged.rows)
-                if outcome == .halt, phase != .stopping { haltEveryLane(lastError ?? "The run ended early.") }
-                return outcome
-            }
-            staged.append(await stage(missing, includingHidden: batch.includingHidden, owners: owners, ahead: false))
-        }
-        if phase == .stopping {
-            markStopped(staged.rows)
-            return .halt
-        }
-        guard !staged.items.isEmpty else { return .nothing }
-        stageAhead(pass, after: index)
-        let byID = Dictionary(staged.items.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let outcomes = await sideBySide(sending) { lane in
-            var progressed = false
-            for send in sends where send.account == lane.account {
-                if self.shouldHalt || lane.halted { break }
-                let items = send.assetIDs.compactMap { byID[$0] }.filter { !lane.failedAssets.contains($0.id) }
-                guard !items.isEmpty else { continue }
-                // An album call that failed may still have created the album
-                // on Google's side (a lost response), so the rest of this run
-                // leaves the album alone rather than create it again.
-                let title = lane.failedAlbums.contains(send.albumID) ? nil : send.albumTitle
-                switch await self.send(items, lane: lane, album: title.map { (send.albumID, $0) }, category: .photos, settings: settings) {
-                case .progressed: progressed = true
-                case .nothing: break
-                case .halt: return self.endPart(lane)
-                }
-            }
-            return progressed ? .progressed : .nothing
-        }
-        if phase == .stopping { return .halt }
-        return outcomes.contains(.progressed) ? .progressed : .nothing
     }
 
     /// Which accounts each asset of a batch goes to.
@@ -1293,14 +1459,14 @@ final class BackupEngine {
     /// the run waits or a condition would hold it (offline, a metered
     /// network...), so it never downloads iCloud originals the settings say
     /// to hold; and when the item would take what waits on disk past
-    /// StagingWindow's cap or the disk below its floor. Its batch exports the
-    /// rest on its turn.
+    /// StagingWindow's cap, what the pass holds past bytesHeld, or the disk
+    /// below its floor. Its batch exports the rest on its turn.
     private func stopsExport(ahead isAhead: Bool, exported: Int64, upcoming: Int64?) -> Bool {
         if phase == .stopping { return true }
         guard isAhead else { return false }
         if Task.isCancelled || shouldHalt || phase == .waiting || holdingCondition() != nil { return true }
-        let free = try? model.paths.staging.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return !ahead.mayExport(upcoming, after: exported, freeSpace: free?.volumeAvailableCapacityForImportantUsage)
+        if heldBytes + exported + (upcoming ?? 0) > StagingWindow.bytesHeld { return true }
+        return !ahead.mayExport(upcoming, after: exported, freeSpace: stagingFreeSpace())
     }
 
     /// The batch is sent or given up by every account: its files go, and
@@ -1310,18 +1476,23 @@ final class BackupEngine {
         batch.removeFiles()
     }
 
-    /// While batch `index` uploads, exports the next batches of the pass,
-    /// one at a time in order, as far as StagingWindow allows. Not while the
-    /// run is held: iCloud originals download during an export, and the
-    /// batch exports with its own wait once it is its turn. One account in a
+    /// While the lanes upload, exports the batches of the pass no lane has
+    /// reached yet, one at a time in order (so the one furthest behind
+    /// comes first), as far as StagingWindow allows. Not while the run is
+    /// held: iCloud originals download during an export, and the batch
+    /// exports with its own wait once a lane reaches it. One account in a
     /// 429 hold does not hold the run while another still sends.
-    private func stageAhead(_ pass: SharedPass, after index: Int) {
-        guard !shouldHalt, holdingCondition() == nil, everyLaneRateHeld(at: Date()) == nil else { return }
+    ///
+    /// A lane that reaches a batch this has not exported exports it itself
+    /// (load), which may run beside the export ahead of another batch: each
+    /// writes its own folder.
+    private func stageAhead() {
+        guard let pass = walkingPass, !shouldHalt, holdingCondition() == nil, everyLaneRateHeld(at: Date()) == nil,
+              heldBytes < StagingWindow.bytesHeld else { return }
         var exports: [Int: (ids: [String], hidden: Bool, owners: [String: [String]])] = [:]
-        for next in pass.batches.indices where next > index {
+        for next in pass.batches.indices where !reached.contains(next) {
             let batch = pass.batches[next]
-            let sends = batch.sends.filter { send in lane(send.account).map { !$0.halted } ?? false }
-            let owners = Self.owners(of: sends)
+            let owners = liveOwners(batch)
             let ids = batch.assetIDs.filter { owners[$0] != nil }
             if !ids.isEmpty { exports[next] = (ids, batch.includingHidden, owners) }
         }

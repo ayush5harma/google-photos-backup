@@ -65,9 +65,16 @@ final class AccountLane {
 
     var remaining: Int { max(0, tally.total - tally.done) }
 
+    /// "400 of 27,639": this account's own count in the run, nil before it
+    /// has planned anything. Each lane moves at its own pace (issue #70), so
+    /// the account rows show it beside the library's bar, which barely moves
+    /// for an account that has just started.
+    var countLine: String? {
+        tally.total > 0 ? "\(tally.done.formatted()) of \(tally.total.formatted())" : nil
+    }
+
     /// "12 of 100, 8 at a time" for the run view.
     var progressLine: String {
-        let counts = tally.total > 0 ? "\(tally.done.formatted()) of \(tally.total.formatted())" : "Looking for new items"
-        return "\(counts), \(parallelism.current) at a time"
+        "\(countLine ?? "Looking for new items"), \(parallelism.current) at a time"
     }
 }

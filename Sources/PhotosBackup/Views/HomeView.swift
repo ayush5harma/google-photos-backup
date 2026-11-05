@@ -284,7 +284,7 @@ private struct AccountsOverview: View {
     }
 
     private func state(_ account: BackupAccount, summary: BackupSummary) -> String {
-        if model.engine.isBackingUp(to: account.id) { return "Backing up now" }
+        if let line = model.engine.backingUpLine(for: account.id) { return line }
         if !account.storageChecked { return "Waiting for its storage check" }
         if !model.isIncluded(account.id) { return "Not included" }
         switch model.status(of: account.id) {
