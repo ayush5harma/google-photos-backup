@@ -1,9 +1,10 @@
 import Foundation
 
 /// accounts.json and each account's record file, side by side in the
-/// support directory. Loading never writes: the caller saves the index once
-/// the credential it files is safely in the keychain, so a crash between
-/// the two only makes the next launch file it again.
+/// support directory. Loading never writes the index or a record: the caller
+/// saves the index once the credential it files is safely in the keychain,
+/// so a crash between the two only makes the next launch file it again.
+/// (It does move an unreadable file aside, never to be read back.)
 public struct AccountsStore: Sendable {
     public let directory: URL
 
@@ -11,7 +12,15 @@ public struct AccountsStore: Sendable {
         self.directory = directory
     }
 
-    public var indexURL: URL { directory.appendingPathComponent("accounts.json") }
+    public static let indexFile = "accounts.json"
+    /// The index as last written in full, beside it. Rebuilding a lost index
+    /// from state.json cannot know which accounts backups went to or which
+    /// passed their storage check (PR #53 review), so a damaged or missing
+    /// accounts.json is read from here first.
+    public static let indexCopyFile = "accounts.json.bak"
+
+    public var indexURL: URL { directory.appendingPathComponent(Self.indexFile) }
+    public var indexCopyURL: URL { directory.appendingPathComponent(Self.indexCopyFile) }
 
     public func url(of file: String) -> URL { directory.appendingPathComponent(file) }
 
@@ -27,9 +36,26 @@ public struct AccountsStore: Sendable {
         /// Accounts whose record file (state.json) turned out to hold another
         /// account's history; they carry on in a file of their own.
         public var reassigned: [String] = []
+        /// accounts.json could not be used and its copy was: nothing about
+        /// the accounts was lost.
+        public var indexRestored = false
+        /// accounts.json was there and could not be used, nor could its
+        /// copy: the library was rebuilt from state.json, so nothing says
+        /// which accounts backups went to or which passed their storage check.
+        public var indexLost = false
 
         /// Whether the index has to be written.
-        public var indexChanged: Bool { migrated || legacyCredentialAccount != nil || !unreadable.isEmpty || !reassigned.isEmpty }
+        public var indexChanged: Bool {
+            migrated || legacyCredentialAccount != nil || !unreadable.isEmpty || !reassigned.isEmpty || indexRestored
+        }
+
+        /// Whether the accounts whose credentials the keychain holds were
+        /// listed in an index that is gone: it could not be read, or there is
+        /// none while the keychain holds items of accounts (a Mac upgrading
+        /// from one account has only the legacy item).
+        public func indexWasLost(keychainHasAccountItems: Bool) -> Bool {
+            indexLost || (migrated && keychainHasAccountItems)
+        }
     }
 
     /// - Parameters:
@@ -40,7 +66,9 @@ public struct AccountsStore: Sendable {
         var library: AccountLibrary
         var migrated = false
         var reassigned: [String] = []
-        if var index = readIndex(&unreadable) {
+        var indexRestored = false
+        var indexLost = false
+        if var index = readIndex(&unreadable, restored: &indexRestored, lost: &indexLost, now: now) {
             var states: [String: BackupState] = [:]
             var unclaimed: BackupState?
             for position in index.accounts.indices {
@@ -76,12 +104,16 @@ public struct AccountsStore: Sendable {
                 : library.fileLegacyCredential(email: legacyCredential.email, now: now, stored: { readState($0) })
         }
         return Loaded(library: library, migrated: migrated, legacyCredentialAccount: legacyAccount, unreadable: unreadable,
-                      reassigned: reassigned)
+                      reassigned: reassigned, indexRestored: indexRestored, indexLost: indexLost)
     }
 
     public func save(_ index: AccountsIndex) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Self.encoder.encode(index).write(to: indexURL, options: .atomic)
+        let data = try Self.encoder.encode(index)
+        try data.write(to: indexURL, options: .atomic)
+        // Only after the index itself, so the copy is always an index that
+        // was written in full.
+        try data.write(to: indexCopyURL, options: .atomic)
     }
 
     /// Written exactly as BackupStore always wrote state.json.
@@ -108,20 +140,44 @@ public struct AccountsStore: Sendable {
         }
     }
 
-    private func readIndex(_ unreadable: inout [String: String]) -> AccountsIndex? {
-        guard FileManager.default.fileExists(atPath: indexURL.path) else { return nil }
-        do {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            return try decoder.decode(AccountsIndex.self, from: Data(contentsOf: indexURL))
-        } catch {
-            // Rebuilt from state.json; every other account's record file
-            // stays on disk under its id's name and is found again when that
-            // account signs in.
-            unreadable[indexURL.lastPathComponent] = error.localizedDescription
-            setAside(indexURL)
+    /// accounts.json, else its copy. With neither usable the library is
+    /// rebuilt from state.json; every other account's record file stays on
+    /// disk under its id's name and is found again when that account signs in.
+    private func readIndex(_ unreadable: inout [String: String], restored: inout Bool, lost: inout Bool,
+                           now: Date) -> AccountsIndex? {
+        let fileManager = FileManager.default
+        var damaged = false
+        if fileManager.fileExists(atPath: indexURL.path) {
+            do {
+                return try Self.decodeIndex(at: indexURL)
+            } catch {
+                unreadable[Self.indexFile] = error.localizedDescription
+                setAside(indexURL)
+                damaged = true
+            }
+        }
+        guard fileManager.fileExists(atPath: indexCopyURL.path) else {
+            lost = damaged
             return nil
         }
+        do {
+            let index = try Self.decodeIndex(at: indexCopyURL)
+            // Set aside, but nothing is lost: not reported as unreadable.
+            unreadable[Self.indexFile] = nil
+            restored = true
+            return index
+        } catch {
+            unreadable[Self.indexCopyFile] = error.localizedDescription
+            setAside(indexCopyURL)
+            lost = true
+            return nil
+        }
+    }
+
+    private static func decodeIndex(at url: URL) throws -> AccountsIndex {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(AccountsIndex.self, from: Data(contentsOf: url))
     }
 
     private func setAside(_ url: URL) {

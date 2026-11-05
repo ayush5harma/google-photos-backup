@@ -334,6 +334,30 @@ public struct AccountLibrary: Equatable, Sendable {
         return Adoption(account: account, state: self.state(for: id) ?? state, isNew: true)
     }
 
+    /// Signs in again the accounts whose credentials the keychain holds but
+    /// the index does not show signed in: the index was written before the
+    /// keychain (a crash between the two), or it was lost. Each takes its
+    /// record back from disk if one is there (`stored`).
+    ///
+    /// - Parameter indexLost: the index that listed them is gone, so nothing
+    ///   says which of them backups went to or which passed its storage
+    ///   check. Backups then go only to the account state.json belongs to,
+    ///   which this Mac was backing up to before there were accounts; every
+    ///   other account waits for a tick and its storage check, as an added
+    ///   one does. Taking "All accounts" and keychain order instead backed up
+    ///   the library to a work account that had been left out, without a
+    ///   storage check (PR #53 review).
+    public mutating func adoptingStrays(_ emails: [String], indexLost: Bool, now: Date = Date(),
+                                        stored: (String) -> BackupState? = { _ in nil }) {
+        let owner = index.accounts.first { $0.stateFile == Self.legacyStateFile }?.id
+        for email in emails {
+            adopting(account: email, now: now, storageChecked: indexLost ? false : nil, stored: stored)
+        }
+        guard indexLost else { return }
+        index.backUpTo = .chosen
+        for account in index.accounts { setChosen(account.id, account.id == owner) }
+    }
+
     /// Signs the account out of the run order. Its record stays.
     public mutating func remove(_ id: String) {
         setRemoved(id, true)

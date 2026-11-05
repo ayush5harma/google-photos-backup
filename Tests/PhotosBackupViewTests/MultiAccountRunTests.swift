@@ -522,4 +522,66 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertFalse(model.engine.hasQueuedPrimaryOnlyWork)
         XCTAssertEqual(model.record(of: secondID)?.uploaded.count, 0)
     }
+
+    /// Review finding (PR #53, MAJOR 1), the reviewer's own scenario: the
+    /// primary zed.primary@gmail.com, a work account a.work@corp.example.com
+    /// left out, then accounts.json unreadable. The index was rebuilt from
+    /// state.json and each keychain item signed in again in keychain order,
+    /// so the work account (sorting first) came back included, under "All
+    /// accounts", and past its storage check. Now the copy kept beside the
+    /// index restores it as it was; with the copy unreadable too, backups go
+    /// only to the account state.json belongs to.
+    func testALostAccountsListNeverIncludesAnAccountThatWasLeftOut() async throws {
+        let primary = "zed.primary@gmail.com", work = "a.work@corp.example.com"
+        let primaryID = GoogleSignIn.normalizedEmail(primary), workID = GoogleSignIn.normalizedEmail(work)
+        try scenario(["per_account": true])
+        let model = AppModel()
+        model.settings.automatic = false
+        await model.connect(pasted: Self.credential(primary))
+        await model.connect(pasted: Self.credential(work))
+        model.confirmStorage(for: workID)
+        try await settle(model)
+        model.setIncluded(workID, false)
+        XCTAssertEqual(model.accountsChoice, .chosen)
+        XCTAssertEqual(model.primaryAccount?.stateFile, "state.json")
+        XCTAssertEqual(keychain.accounts(), [workID, primaryID], "the work account's item sorts before the primary's")
+        let batch = try items(2, tag: "before-loss")
+        let turns = recordTurns(model) { batch }
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(turns().map(\.account), [primaryID])
+        XCTAssertTrue(uploaded(batch, in: model, primaryID))
+
+        let index = support.appendingPathComponent("accounts.json")
+        try Data("{broken".utf8).write(to: index)
+        let restored = AppModel()
+        restored.settings.automatic = false
+        XCTAssertEqual(restored.accountsChoice, .chosen, "the choice was forgotten")
+        XCTAssertEqual(restored.accounts.map(\.id), [primaryID, workID])
+        XCTAssertFalse(restored.isIncluded(workID), "the work account left out came back included")
+        XCTAssertEqual(restored.targetAccounts.map(\.id), [primaryID])
+        XCTAssertEqual(restored.accounts.last?.storageChecked, true, "restored exactly as it was")
+        XCTAssertTrue(uploaded(batch, in: restored, primaryID))
+
+        // The list and its copy both unreadable: rebuilt from state.json.
+        try Data("{broken".utf8).write(to: index)
+        try Data("{broken".utf8).write(to: support.appendingPathComponent("accounts.json.bak"))
+        let rebuilt = AppModel()
+        rebuilt.settings.automatic = false
+        XCTAssertEqual(rebuilt.primaryAccount?.id, primaryID)
+        XCTAssertEqual(Set(rebuilt.accounts.map(\.id)), [primaryID, workID], "both are signed in again from the keychain")
+        XCTAssertEqual(rebuilt.accountsChoice, .chosen)
+        XCTAssertFalse(rebuilt.isIncluded(workID), "a rebuilt list included the work account")
+        XCTAssertEqual(rebuilt.accounts.first { $0.id == workID }?.storageChecked, false, "it waits for its storage check again")
+        XCTAssertEqual(rebuilt.targetAccounts.map(\.id), [primaryID])
+        XCTAssertTrue(uploaded(batch, in: rebuilt, primaryID), "the primary's record is state.json, untouched")
+        XCTAssertTrue(untouched(batch, in: rebuilt, workID))
+        XCTAssertNotNil(rebuilt.stateError, "the rebuild is reported")
+
+        // What the rebuild decided is saved: a further launch keeps it.
+        let after = AppModel()
+        XCTAssertEqual(after.accountsChoice, .chosen)
+        XCTAssertEqual(after.targetAccounts.map(\.id), [primaryID])
+        XCTAssertNil(after.stateError)
+    }
 }

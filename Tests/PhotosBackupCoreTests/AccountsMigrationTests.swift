@@ -243,6 +243,8 @@ enum LegacyStateFixture {
         }
         try store.save(library.index)
         try FileManager.default.removeItem(at: store.indexURL)
+        // Its copy too: otherwise the index is simply read from the copy.
+        try FileManager.default.removeItem(at: store.indexCopyURL)
 
         var rebuilt = store.load(legacyCredential: (exists: false, email: nil)).library
         let again = rebuilt.adopting(account: "b@example.com", stored: { store.readState($0) })
