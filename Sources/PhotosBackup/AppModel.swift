@@ -598,6 +598,36 @@ final class AppModel {
         engine.backUp(picked: held.ids, files: held.files)
     }
 
+    /// Picks that will not go anywhere (Stop, the primary removed), with the
+    /// files copied out of the picker for them.
+    private func discardHeldPicks() {
+        guard !heldPicks.ids.isEmpty else { return }
+        let count = heldPicks.ids.count
+        heldPicks.files.values.forEach(PickedFile.discard)
+        heldPicks = ([], [:])
+        log(.photos, "\(count) chosen item\(count == 1 ? "" : "s") waiting for the primary account \(count == 1 ? "was" : "were") dropped; choose \(count == 1 ? "it" : "them") again to back up.")
+    }
+
+    /// Before another account's run: what a halted primary run left queued
+    /// comes out of the engine, which would send it first. Picks wait here
+    /// for the primary; Messages media and a device import are let go (the
+    /// Messages scan finds them again later). Holding the queue instead
+    /// would keep every other account from backing up for as long as the
+    /// primary fails, which is when a second account matters most.
+    func setAsidePrimaryOnlyWork() {
+        let aside = engine.setAsidePrimaryOnlyWork()
+        heldPicks.ids.append(contentsOf: aside.picked.filter { !heldPicks.ids.contains($0) })
+        heldPicks.files.merge(aside.files) { _, new in new }
+        let primary = primaryAccount?.title ?? "the primary account"
+        if !aside.picked.isEmpty {
+            log(.photos, "\(aside.picked.count) chosen item\(aside.picked.count == 1 ? "" : "s") wait for \(primary), whose backup stopped early.")
+        }
+        if aside.dropped > 0 {
+            log(.photos, "\(aside.dropped) Messages or device item\(aside.dropped == 1 ? "" : "s") for \(primary) were set aside after its backup stopped "
+                + "early: Messages media is found again by a later scan; a device import has to be started again.", problem: true)
+        }
+    }
+
     /// Retry queues failed items on the active account. The failures of the
     /// primary's run include picks and Messages media, which must not go to
     /// another account, so Retry waits while a pass is on one.
@@ -704,6 +734,7 @@ final class AppModel {
         cancelMessagesScan()
         runner.stop()
         engine.stop()
+        discardHeldPicks()
     }
 
     // MARK: - State
@@ -926,10 +957,15 @@ final class AppModel {
         if settings.messagesMedia {
             settings.messagesMedia = false
             messagesStatus = .off
-            log(.messages, "Messages media is off: it went to the account that was removed. Turn it on in Settings to send it to \(primary.title).")
+            log(.messages, "Messages media is off: the primary account is now \(primary.title), and Messages media goes only where it was "
+                + "turned on. Turn it on again in Settings to send it there.")
         }
+        // Nothing the old primary was to take carries over: not the queue,
+        // not its failures (Retry would send them to the new primary), not
+        // picks waiting for it.
         if !engine.isActive, engine.hasQueuedPrimaryOnlyWork { engine.stop() }
-        heldPicks = ([], [:])
+        engine.forgetPrimaryOnlyFailures()
+        discardHeldPicks()
     }
 
     /// Settings, history rows and the timeline name an account by address;
@@ -978,7 +1014,12 @@ final class AppModel {
     /// an address learns it, or a credential that was filed under the wrong
     /// account moves to its own. Never while a run uses it.
     private func refile(_ id: String, as email: String) {
-        guard activeAccountID != id || (!engine.isActive && engine.phase != .paused) else {
+        // Not while a run uses either account's record: refiling can hand
+        // one account's record to the other, and the run would write the
+        // old one back over it.
+        let busy = engine.isActive || engine.phase == .paused
+        let involved = activeAccountID == id || activeAccountID.map { GoogleSignIn.sameAccount($0, email) } == true
+        guard !(busy && involved) else {
             accountStatuses[id] = .connected(email: email)
             return
         }
@@ -1003,7 +1044,7 @@ final class AppModel {
         accounts = accountLibrary.accounts
         accountStatuses[id] = nil
         accountStatuses[target] = .connected(email: email)
-        if activeAccountID == id {
+        if activeAccountID == id || activeAccountID == target {
             activeAccountID = target
             state = currentRecord()
         }

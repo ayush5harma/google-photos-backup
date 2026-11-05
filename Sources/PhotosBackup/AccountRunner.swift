@@ -65,13 +65,10 @@ final class AccountRunner {
             await settled()
             if stopped { break }
             // A primary run that halted leaves its picks, Messages media or
-            // device import queued, and any run sends the queue first: the
-            // other accounts wait until the primary has taken it.
+            // device import queued, and any run sends the queue first: it
+            // comes out of the engine before another account's turn.
             if id != model.primaryAccount?.id, model.engine.hasQueuedPrimaryOnlyWork {
-                let primary = model.primaryAccount?.title ?? "the primary account"
-                model.log(.run, "Backups to the other accounts wait: items for \(primary) are still queued after its backup stopped early.",
-                          problem: true)
-                break
+                model.setAsidePrimaryOnlyWork()
             }
             // Removed, signed out or not yet storage-checked meanwhile.
             guard model.runnableAccounts.contains(where: { $0.id == id }), model.activate(id) else { continue }

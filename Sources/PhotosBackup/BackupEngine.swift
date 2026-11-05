@@ -159,6 +159,35 @@ final class BackupEngine {
     /// primary account takes these, so AccountRunner starts no other
     /// account's run while any are queued: that run would send them first.
     var hasQueuedPrimaryOnlyWork: Bool { !picked.isEmpty || !messages.isEmpty || !deviceItems.isEmpty }
+
+    /// Takes the primary-only work out of the queues before another
+    /// account's run, which would send it first. Picks go back to the app
+    /// with their picker files, to wait for the primary; Messages media and
+    /// a device import are let go (a later scan finds those Messages items
+    /// again; the device keeps its files). Only while no run is going.
+    /// - Returns: the picks, their files, and how many items were let go.
+    func setAsidePrimaryOnlyWork() -> (picked: [String], files: [String: URL], dropped: Int) {
+        guard task == nil else { return ([], [:], 0) }
+        let held = picked
+        let files = pickedFiles.filter { held.contains($0.key) }
+        for id in held { pickedFiles[id] = nil }
+        picked = []
+        let dropped = messages.count + deviceItems.count
+        messages = []
+        deviceItems = []
+        deviceSource?.releaseSelectedDeviceAfterImport()
+        deviceSource = nil
+        deviceAlbumName = nil
+        deviceReclaimRequested = false
+        return (held, files, dropped)
+    }
+
+    /// Forgets failed picks, Messages media and device items, so that Retry
+    /// cannot send what the old primary account was to take to a new one.
+    func forgetPrimaryOnlyFailures() {
+        failures = failures.filter { if case .asset = $0.value { true } else { false } }
+        discardPickedFiles()
+    }
     /// Google's words for each failed row, for the diagnostic report.
     var failureMessages: [String] { activity.compactMap { $0.isFailed ? ($0.detail ?? $0.status.label) : nil } }
 
