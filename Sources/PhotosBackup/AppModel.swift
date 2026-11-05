@@ -383,6 +383,28 @@ final class AppModel {
         return summary
     }
 
+    /// The selection against every account a run goes to, summed: with
+    /// several accounts the selection is backed up only once each holds it,
+    /// so the status, the ring and the percentage count every copy. With one
+    /// account it is `summary`.
+    var overallSummary: BackupSummary {
+        let runnable = runnableAccounts
+        guard accounts.count > 1, !runnable.isEmpty else { return summary }
+        let each = runnable.map { summary(of: $0.id) }
+        return BackupSummary(backedUp: each.reduce(0) { $0 + $1.backedUp }, pending: each.reduce(0) { $0 + $1.pending },
+                             selectedAlbums: summary.selectedAlbums)
+    }
+
+    /// With several accounts, what is left in words that do not count an
+    /// item twice: "1,234 items to go to one account"; nil otherwise.
+    var accountsPendingPhrase: String? {
+        guard accounts.count > 1 else { return nil }
+        let behind = runnableAccounts.filter { summary(of: $0.id).pending > 0 }
+        guard !behind.isEmpty else { return nil }
+        let items = behind.reduce(0) { $0 + summary(of: $1.id).pending }
+        return "\(items.formatted()) items to go to \(behind.count == 1 ? "one account" : "\(behind.count) accounts")"
+    }
+
     /// What the selection asks of an added account's storage before its
     /// first run.
     func storageCheck(for id: String) -> StorageCheck {
@@ -971,6 +993,7 @@ final class AppModel {
         albumsLoaded = true
         photosStatus = .authorized
         var library = AccountLibrary()
+        library.select(fixture.compactMap(\.record).first?.selectedAlbumIDs ?? [])
         for item in fixture {
             let id = library.adopting(account: item.email, storageChecked: item.storageChecked).account.id
             if let record = item.record { library.update(record, for: id) }

@@ -31,7 +31,7 @@ struct HomeView: View {
         let failed = model.engine.failedCount
         return HStack(spacing: 12) {
             StatTile(value: summary.backedUp.formatted(), label: "Backed up", symbol: "checkmark.icloud", tint: .green)
-            StatTile(value: summary.pending.formatted(), label: "To back up", symbol: "arrow.up.circle", tint: .accentColor)
+            StatTile(value: model.overallSummary.pending.formatted(), label: "To back up", symbol: "arrow.up.circle", tint: .accentColor)
             StatTile(value: summary.selectedAlbums.formatted(), label: summary.selectedAlbums == 1 ? "Album" : "Albums",
                      symbol: "rectangle.stack", tint: .orange)
             StatTile(value: failed.formatted(), label: "Failed", symbol: "exclamationmark.triangle", tint: failed > 0 ? .red : .secondary)
@@ -89,7 +89,9 @@ private struct OverviewHero: View {
         let status = model.status
         let engine = model.engine
         let summary = model.summary
-        let coverage = summary.total == 0 ? 0 : Double(summary.backedUp) / Double(summary.total)
+        // With several accounts, every copy the accounts are to hold.
+        let overall = model.overallSummary
+        let coverage = overall.total == 0 ? 0 : Double(overall.backedUp) / Double(overall.total)
         HStack(alignment: .center, spacing: 24) {
             ProgressRing(fraction: model.hasAuthData ? coverage : 0, lineWidth: 10) {
                 VStack(spacing: 0) {
@@ -195,6 +197,8 @@ private struct OverviewHero: View {
         let engine = model.engine
         switch status.kind {
         case .upToDate:
+            let accounts = model.runnableAccounts.count
+            if accounts > 1 { return "\(summary.backedUp.formatted()) photos and videos are in each of your \(accounts) Google accounts." }
             return "\(summary.backedUp.formatted()) photos and videos are in Google Photos."
         case .backingUp:
             if engine.isActive {
@@ -202,8 +206,10 @@ private struct OverviewHero: View {
             }
             return "Your conversations are being saved to the archive."
         case .ready:
+            if let left = model.accountsPendingPhrase { return left + "." }
             return summary.total == 0 ? "Turn on albums in Albums, or start with All Photos." : "\(summary.pending.formatted()) of \(summary.total.formatted()) items aren't in Google Photos yet."
         case .paused:
+            if let left = model.accountsPendingPhrase { return left + ". Resume to continue." }
             return summary.pending > 0 ? "\(summary.pending.formatted()) items are waiting. Resume to continue." : "Resume to continue."
         case .waiting:
             let reason = engine.waitReason

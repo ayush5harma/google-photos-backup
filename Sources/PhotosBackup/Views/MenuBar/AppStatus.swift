@@ -73,7 +73,7 @@ extension AppModel {
 
     var status: MenuBarStatus {
         let engine = engine
-        let summary = summary
+        let summary = overallSummary
         let activity: MenuBarStatus.Activity = switch engine.phase {
         case .idle: .idle
         case .running: .running
@@ -115,14 +115,15 @@ extension AppModel {
     /// else the share of the selection Google has.
     var displayFraction: Double {
         if engine.isActive, engine.runTotal > 0 { return engine.runFraction }
-        let summary = summary
+        let summary = overallSummary
         return summary.total == 0 ? 0 : Double(summary.backedUp) / Double(summary.total)
     }
 
     /// The selection's share in Google Photos, rounded down: 99.6% must
-    /// not read as 100% while items are still missing.
+    /// not read as 100% while items are still missing. With several
+    /// accounts, the share of every copy the accounts are to hold.
     var coverageText: String {
-        let summary = summary
+        let summary = overallSummary
         guard summary.total > 0 else { return "0%" }
         let percent = summary.pending == 0 ? 100 : min(99, summary.backedUp * 100 / summary.total)
         return "\(percent)%"

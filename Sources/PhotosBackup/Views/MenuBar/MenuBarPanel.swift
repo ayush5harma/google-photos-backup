@@ -132,7 +132,8 @@ private struct PanelHero: View {
         let status = model.status
         let engine = model.engine
         let summary = model.summary
-        let coverage = summary.total == 0 ? 0 : Double(summary.backedUp) / Double(summary.total)
+        let overall = model.overallSummary
+        let coverage = overall.total == 0 ? 0 : Double(overall.backedUp) / Double(overall.total)
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 14) {
                 ProgressRing(fraction: model.hasAuthData ? coverage : 0, lineWidth: 5) {
@@ -246,10 +247,13 @@ private struct PanelHero: View {
         }
         switch status.kind {
         case .upToDate:
+            if model.runnableAccounts.count > 1 { return "\(summary.backedUp.formatted()) items in each of \(model.runnableAccounts.count) accounts" }
             return "\(summary.backedUp.formatted()) items in Google Photos"
         case .ready:
+            if let left = model.accountsPendingPhrase { return left }
             return summary.total == 0 ? "Choose albums in Photos Backup" : "\(summary.pending.formatted()) of \(summary.total.formatted()) items to go"
         case .paused:
+            if let left = model.accountsPendingPhrase { return left }
             return summary.pending > 0 ? "\(summary.pending.formatted()) items to go" : "Resume to continue"
         default:
             return status.headline

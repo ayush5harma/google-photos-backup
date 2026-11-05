@@ -93,6 +93,18 @@ enum SnapshotFixture {
                 }
                 settingsWindow?.close()
             }
+            if wanted("accounts") {
+                // Offscreen and never activated, like the iCloud renders: a
+                // capture of the real windows would bring them to the front.
+                applyAccounts(to: model)
+                AppRouter.shared.mainWindow?.orderOut(nil)
+                await render(AccountSettingsTab().environment(model).environment(\.controlActiveState, .active),
+                             size: nil, appearance: appearance,
+                             to: output.appendingPathComponent("settings-accounts-\(name).png"), activateWindow: false)
+                await render(HomeView(section: .constant(.home)).environment(model).environment(\.controlActiveState, .active),
+                             size: CGSize(width: 900, height: 980), appearance: appearance,
+                             to: output.appendingPathComponent("overview-accounts-\(name).png"), activateWindow: false)
+            }
             if wanted("onboarding") {
                 apply(.upToDate, to: model)
                 for page in OnboardingPage.allCases {
@@ -189,6 +201,25 @@ enum SnapshotFixture {
         [item("IMG_3301.HEIC", .failed("Google could not process this file (400)"), size: 3_100_221, minutesAgo: 30),
          item("IMG_3302.MOV", .failed("No answer from the uploader"), size: 101_220_004, minutesAgo: 31),
          item("DSC_0042.JPG", .failed("The file could not be read from Photos"), size: nil, minutesAgo: 31)]
+    }
+
+    /// Three made-up accounts (#49): the primary complete, a family account
+    /// still catching up, and one just added, waiting for its storage check.
+    static func applyAccounts(to model: AppModel) {
+        apply(.upToDate, to: model)
+        let total = Set(albums.filter { selected.contains($0.id) }.flatMap(\.snapshot.assetIDs)).count
+        var family = state(missing: total * 6 / 10)
+        family.accountEmail = "family.photos@gmail.com"
+        var work = BackupState()
+        work.selectedAlbumIDs = selected
+        model.applyFixture(albums: albums, accounts: [
+            .init(email: accountEmail, status: .connected(email: accountEmail), record: state(missing: 0)),
+            .init(email: "family.photos@gmail.com", status: .connected(email: "family.photos@gmail.com"), record: family),
+            .init(email: "jane.work@example.com", status: .connected(email: "jane.work@example.com"), storageChecked: false, record: work),
+        ], runtime: "gpmc 0.9.0 on Python 3.13.15", messages: .ready(found: 0, skipped: 12, partial: false))
+        model.engine.applyFixture(activity: finishedItems, runTotal: 0, runDone: 0, phase: .idle, lastRun: Date().addingTimeInterval(-6 * 60))
+        // The storage check sizes the selection from what was uploaded.
+        if model.diagnostics.runs.isEmpty { recordRuns(model) }
     }
 
     static func apply(_ scenario: Scenario, to model: AppModel) {
