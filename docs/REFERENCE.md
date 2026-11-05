@@ -77,8 +77,9 @@ Apple Photos ──PhotoKit──▶ Photos Backup.app ──JSON over a pipe─
    Google Photos album of the same name. It is created by its first batch, and
    later batches and later runs append to it. Smart albums and All Photos only
    upload their items.
-5. **Record.** Media keys and album links go to
-   `~/Library/Application Support/io.github.ayush5harma.PhotosBackup/state.json`
+5. **Record.** Media keys and album links go to the account's record in
+   `~/Library/Application Support/io.github.ayush5harma.PhotosBackup/`
+   (`state.json` for the first account, `state-<hash>.json` for each one added)
    after every batch, and the staging copies are deleted.
 
 With **Back up automatically** on, a run starts at launch, 30 seconds after the
@@ -159,9 +160,25 @@ What happens underneath follows [gotohp](https://github.com/xob0t/gotohp)
 The sign-in page runs in a web view with a throwaway session; the web view
 identifies itself as Safari, whose engine it is, because Google turns away
 sign-ins from web views it takes for embedded browsers. Only the resulting
-`auth_data` is kept, in your login keychain. Signing in to a different Google
-account resets the backup history, because media keys and albums belong to
-the account that holds them.
+`auth_data` is kept, in your login keychain.
+
+### Several Google accounts
+
+**Add Account** in Settings > Account runs the same sign-in for another
+account, and the selected albums are backed up to every account, one account
+after another (one uploader at a time, all at the chosen quality; Original
+quality is the free Pixel XL path for each of them). Each account has a record
+of its own, so media keys and Google album links never move between accounts:
+switching, removing and signing in again never recreate an album. An account
+added next to another waits for its storage check: Settings shows how many
+selected items it lacks and roughly how large they are, whether the quality
+counts against its storage, and a link to its Google One storage page (Google
+does not tell the app an account's free space). **Remove** signs one account
+out and deletes its keychain item; the others are not touched and its record is
+kept for a later sign-in. Messages media, chosen photos, connected-device
+imports and iCloud go to the first (primary) account only. One keychain item per
+account: the app's service with the account's address as the account name; the
+single item from before (account name `gpmc`) moves to its account at launch.
 
 If the in-app page will not work, **Other ways to connect** accepts the
 `oauth_token` cookie copied from Safari's Web Inspector, or a whole `auth_data`
@@ -343,7 +360,9 @@ folder.
 
 | File (Application Support) | Holds | Limit |
 |---|---|---|
-| `state.json` | media keys, album links, edit stamps | none |
+| `state.json` | the first account's media keys, album links, edit stamps | none |
+| `state-<hash>.json` | the same for each added account | none |
+| `accounts.json` | the accounts in run order, the shared album selection, storage checks | none |
 | `history.json` | run history: trigger, counts, bytes, outcome, conditions | 40 runs |
 | `events.json` | event timeline | 400 events, none older than 14 days |
 | `messages-archive.json` | summary of the last archive run | one |
