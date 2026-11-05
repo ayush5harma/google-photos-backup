@@ -81,8 +81,13 @@ public struct UploadSample: Equatable, Sendable {
 /// What Google limits is the commits one account takes at once, which can
 /// change over hours, so in automatic mode a level lowered this way is tried
 /// one step higher again after `reprobeAfter` clean decisions (no retryable
-/// failure in any request they measured) and climbs from there as above. A
-/// chosen number stays lowered for the run.
+/// failure in any request they measured) and climbs from there while each
+/// step is faster. Unlike the first climb, that recovery settles on the
+/// first step that is not faster (review of PR #68: "one miss climbs on"
+/// took 16 halved to 8 on to 10 and then 13 though 10 was no faster), and
+/// for the rest of the run no climb or later probe goes back to a level
+/// Google had trouble at, or above it. A chosen number stays lowered for
+/// the run.
 public struct UploadParallelism: Equatable, Sendable {
     /// The bridge's MAX_THREADS, and the most a chosen number may be. A
     /// ceiling for the climb, which reaches it only while each step keeps
@@ -117,6 +122,8 @@ public struct UploadParallelism: Equatable, Sendable {
 
     private enum Reason: Equatable, Sendable {
         case finding, noFaster(Int), most, chosen, rateLimited, serverTrouble
+        /// The next rung is at or above a level Google had trouble at.
+        case underTrouble(Int)
     }
 
     private struct Rate: Equatable, Sendable {
@@ -141,6 +148,12 @@ public struct UploadParallelism: Equatable, Sendable {
     /// A request measured since the last decision had a retryable failure,
     /// so that decision is not a clean one.
     private var troubleSinceDecision = false
+    /// The lowest level Google's trouble lowered this run: no rung at or
+    /// above it is tried again.
+    private var troubledAt: Int?
+    /// Climbing back up after Google's trouble: the first step that is not
+    /// faster settles it.
+    private var recovering = false
 
     public init(cap: Int, automatic: Bool) {
         self.cap = min(max(1, cap), Self.automaticCap)
@@ -202,31 +215,34 @@ public struct UploadParallelism: Equatable, Sendable {
     private var isRecovering: Bool { automatic && reason == .serverTrouble }
 
     /// Whether the level may still rise in this run: false at a chosen
-    /// number, at the cap, and once a 429 (or, for a chosen number, Google's
-    /// trouble) lowered it.
+    /// number, at the cap, once a 429 (or, for a chosen number, Google's
+    /// trouble) lowered it, and when the next rung is at or above a level
+    /// Google had trouble at.
     public var mayRise: Bool { isClimbing || isSettled || isRecovering }
 
     private mutating func climb(_ rate: Rate) {
         if let best, rate.bytesPerSecond < best.bytesPerSecond * (1 + Self.improvement) {
             misses += 1
-            if misses >= Self.missesToSettle {
+            if misses >= Self.missesToSettle || recovering {
                 reason = .noFaster(current)
                 current = best.level
                 isClimbing = false
+                recovering = false
                 settledDecisions = 0
             } else {
                 // At the cap this measures the same level once more.
-                current = step(above: current)
+                current = step(above: current) ?? current
             }
             return
         }
         best = rate
         misses = 0
-        if current < cap {
-            current = step(above: current)
+        if let next = step(above: current) {
+            current = next
         } else {
-            reason = .most
+            reason = troubledAt.map { current < cap ? .underTrouble($0) : .most } ?? .most
             isClimbing = false
+            recovering = false
         }
     }
 
@@ -236,22 +252,39 @@ public struct UploadParallelism: Equatable, Sendable {
         best = rate
         settledDecisions += 1
         guard settledDecisions >= Self.reprobeAfter else { return }
+        guard let next = step(above: current) else {
+            // Nothing to try under the level Google had trouble at: it stays
+            // here for the run. (A level settled at the cap measures on.)
+            if let troubledAt, current < cap { reason = .underTrouble(troubledAt) }
+            settledDecisions = 0
+            return
+        }
+        recovering = isRecovering
         reason = .finding
         misses = 0
         isClimbing = true
-        current = step(above: current)
+        current = next
     }
 
-    /// The next rung of the ladder above `level`, never past the cap; the cap
-    /// itself when there is none.
-    private func step(above level: Int) -> Int {
-        min(cap, Self.ladder.first { $0 > level } ?? cap)
+    /// The next rung of the ladder above `level`, never past the cap (the
+    /// cap itself when the ladder has none above it) and never at or above
+    /// a level Google had trouble at this run; nil when there is none.
+    private func step(above level: Int) -> Int? {
+        let rung = min(cap, Self.ladder.first { $0 > level } ?? cap)
+        guard rung > level, rung < troubledAt ?? .max else { return nil }
+        return rung
     }
 
     private mutating func backOff(to level: Int, because cause: Reason) {
+        if cause == .serverTrouble { troubledAt = min(troubledAt ?? current, current) }
         current = max(1, level)
         isClimbing = false
+        recovering = false
         reason = cause
+        // No rung left under the level Google had trouble at (a step down of
+        // one, from a rung): there is nothing to try again, which the
+        // timeline line says.
+        if automatic, cause == .serverTrouble, let troubledAt, step(above: current) == nil { reason = .underTrouble(troubledAt) }
         pendingBytes = 0
         pendingSeconds = 0
         settledDecisions = 0
@@ -269,6 +302,7 @@ public struct UploadParallelism: Equatable, Sendable {
         case .chosen: return "\(level) (as chosen in Settings)"
         case .rateLimited: return "\(level) (Google asked to slow down)"
         case .serverTrouble: return "\(level) (Google had trouble keeping up)"
+        case let .underTrouble(troubled): return "\(level) (Google had trouble keeping up at \(troubled))"
         }
     }
 }
