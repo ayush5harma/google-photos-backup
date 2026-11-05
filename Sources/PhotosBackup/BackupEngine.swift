@@ -1171,13 +1171,13 @@ final class BackupEngine {
                 }
             } catch {
                 // Confirmations already read are on disk before the run ends.
-                forgetMissing(missingKeys)
+                forgetMissing(missingKeys, among: confirmed, album: album?.id)
                 model.saveState()
                 lastError = error.localizedDescription
                 markStopped(pending)
                 return .halt
             }
-            forgetMissing(missingKeys)
+            forgetMissing(missingKeys, among: confirmed, album: album?.id)
             model.saveState()
             if !confirmed.isEmpty { progressed = true }
 
@@ -1359,14 +1359,14 @@ final class BackupEngine {
                     }
                 }
             } catch {
-                forgetMissing(missingKeys)
+                forgetMissing(missingKeys, among: pending, album: albumID)
                 model.saveState()
                 lastError = error.localizedDescription
                 return .halt
             }
             // Forgotten photos are planned for upload on the next pass, so a
             // call that only found dead keys still moved the run on.
-            progressed = forgetMissing(missingKeys) > 0 || progressed
+            progressed = forgetMissing(missingKeys, among: pending, album: albumID) > 0 || progressed
             model.saveState()
             guard let (kind, message) = fatal else { return progressed ? .progressed : .nothing }
             if phase == .stopping { return .halt }
@@ -1526,8 +1526,8 @@ final class BackupEngine {
     /// run already sent waits for the next backup, since the planner never
     /// sends an asset twice in a run. Returns how many uploads were forgotten.
     @discardableResult
-    private func forgetMissing(_ keys: [String]) -> Int {
-        let forgotten = model.state.forgetUploads(withMediaKeys: keys)
+    private func forgetMissing(_ keys: [String], among assetIDs: [String], album albumID: String?) -> Int {
+        let forgotten = model.state.forgetUploads(withMediaKeys: keys, among: assetIDs, reportedBy: albumID)
         guard !forgotten.isEmpty else { return 0 }
         let later = forgotten.filter { tally.confirmedIDs.contains($0) }.count
         let now = forgotten.count - later

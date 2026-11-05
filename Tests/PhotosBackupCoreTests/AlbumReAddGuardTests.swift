@@ -206,22 +206,32 @@ private func added(_ steps: [PlannedStep]) -> [String] {
         #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: state).isEmpty)
     }
 
-    /// Guard C (3): photos uploaded again after Google lost their keys are
-    /// re-adds like any other: a few go back in, a bulk is held.
-    @Test func reAddsAfterDeadKeysFollowTheSameLimit() {
+    /// Guard C (3): photos uploaded again after Google lost their keys go
+    /// back only to the album whose call was adding them (and found the keys
+    /// dead), under the same limit; every other linked album keeps them
+    /// recorded and gets nothing, however many died.
+    @Test func reAddsAfterDeadKeysGoOnlyWhereTheyWereBeingAdded() {
         let members = ids("m", 40)
-        let album = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: members)
-        var few = state(selected: ["shared"], uploaded: members,
-                        mirrors: ["shared": AlbumMirror(googleAlbumID: "g-shared", addedAssetIDs: Set(members))])
-        var bulk = few
-        few.forgetUploads(withMediaKeys: members.prefix(3).map { "key-\($0)" })
-        #expect(BackupPlanner.plan(albums: [album], state: few, mirrorAlbums: true, batchSize: 10, uploadsHidden: true)
-            == [.upload(albumID: "shared", albumTitle: "Shared", assetIDs: Array(members.prefix(3)))])
+        let elsewhere = AlbumSnapshot(id: "elsewhere", title: "Elsewhere", kind: .user, assetIDs: members)
+        var state = state(selected: ["shared", "elsewhere"], uploaded: members,
+                          mirrors: ["shared": AlbumMirror(googleAlbumID: "g-shared", addedAssetIDs: ["old"]),
+                                    "elsewhere": AlbumMirror(googleAlbumID: "g-else", addedAssetIDs: Set(members))])
+        state.recordUpload(assetID: "old", mediaKey: "key-old", existing: false)
+        // 30 of them were being added to "shared" (approved by the owner) when their keys came back dead.
+        state.approveAlbumAdds("shared", assetIDs: members.prefix(30))
+        let dead = Array(members.prefix(30))
+        #expect(state.forgetUploads(withMediaKeys: dead.map { "key-\($0)" }, among: dead, reportedBy: "shared") == dead.sorted())
+        #expect(state.mirrors["elsewhere"]?.addedAssetIDs == Set(members))
 
-        bulk.forgetUploads(withMediaKeys: members.prefix(30).map { "key-\($0)" })
-        #expect(BackupPlanner.plan(albums: [album], state: bulk, mirrorAlbums: true, batchSize: 100, uploadsHidden: true)
-            == [.upload(albumID: "shared", albumTitle: nil, assetIDs: Array(members.prefix(30)))])
-        #expect(BackupPlanner.heldAlbumAdds(albums: [album], state: bulk).first?.assetIDs == Array(members.prefix(30)))
+        let shared = AlbumSnapshot(id: "shared", title: "Shared", kind: .user, assetIDs: dead + ["old"])
+        let steps = BackupPlanner.plan(albums: [shared, elsewhere], state: state, mirrorAlbums: true, batchSize: 100, uploadsHidden: true)
+        #expect(steps == [.upload(albumID: "shared", albumTitle: "Shared", assetIDs: dead)], "approved, so they go back into shared only")
+
+        // Not approved: the same 30 are held for "shared", and still nothing for "elsewhere".
+        state.mirrors["shared"]?.approvedAssetIDs = nil
+        #expect(BackupPlanner.plan(albums: [shared, elsewhere], state: state, mirrorAlbums: true, batchSize: 100, uploadsHidden: true)
+            == [.upload(albumID: "shared", albumTitle: nil, assetIDs: dead)])
+        #expect(BackupPlanner.heldAlbumAdds(albums: [shared, elsewhere], state: state).map(\.albumID) == ["shared"])
     }
 
     @Test func aStateWithoutTheNewFieldsLoadsAndSavesAsBefore() throws {

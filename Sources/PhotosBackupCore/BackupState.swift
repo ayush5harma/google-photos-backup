@@ -143,23 +143,25 @@ public struct BackupState: Codable, Equatable, Sendable {
         uploaded[assetID]?.editStamp = stamp
     }
 
-    /// Google no longer has these media keys (an album call answered 404 for
-    /// them): forget the uploads they belong to, and their album membership,
-    /// so the planner sends those assets again and their new keys join the
-    /// albums. Returns the assets forgotten.
+    /// Google no longer has these media keys: the album call that was adding
+    /// `assetIDs` to `albumID` answered 404 for them. Forget those assets'
+    /// uploads (matched by asset, never another asset that shares a key) so
+    /// the planner sends them again. Only that album loses them from its
+    /// record, since it was adding them anyway; every other album keeps them
+    /// recorded and never gets the new key by itself, as the owner may have
+    /// taken the photo out of it by hand. Returns the assets forgotten.
     @discardableResult
-    public mutating func forgetUploads(withMediaKeys keys: some Sequence<String>) -> [String] {
+    public mutating func forgetUploads(withMediaKeys keys: some Sequence<String>, among assetIDs: some Sequence<String>,
+                                       reportedBy albumID: String?) -> [String] {
         let gone = Set(keys)
         guard !gone.isEmpty else { return [] }
-        let assetIDs = uploaded.compactMap { gone.contains($0.value.mediaKey) ? $0.key : nil }.sorted()
-        for assetID in assetIDs {
+        let forgotten = Set(assetIDs).filter { uploaded[$0].map { gone.contains($0.mediaKey) } ?? false }.sorted()
+        for assetID in forgotten {
             uploaded[assetID] = nil
             forcedUploads = (forcedUploads ?? []).union([assetID])
-            for (albumID, mirror) in mirrors where mirror.addedAssetIDs.contains(assetID) {
-                mirrors[albumID]?.addedAssetIDs.remove(assetID)
-            }
+            if let albumID { mirrors[albumID]?.addedAssetIDs.remove(assetID) }
         }
-        return assetIDs
+        return forgotten
     }
 
     /// The assets among `assetIDs` whose uploaded key is one of `mediaKeys`.
