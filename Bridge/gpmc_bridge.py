@@ -450,7 +450,12 @@ def _renew_one_at_a_time(api: Any) -> None:
             # gpmc's own test for an expired token, the other way round.
             if cache.get("Auth") and int(cache.get("Expiry", "0")) > int(time.time()):
                 return cache
-            return renew()
+            renewed = renew()
+            # Stored before the lock opens: gpmc stores it only after this
+            # returns, and a thread let in meanwhile would find the old,
+            # expired token and sign in again.
+            api.auth_response_cache = renewed
+            return renewed
 
     api._get_auth_token = renew_once
     setattr(api, _RENEWAL_ATTRIBUTE, True)

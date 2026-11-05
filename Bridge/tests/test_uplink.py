@@ -348,6 +348,16 @@ class TokenRenewalTests(unittest.TestCase):
         self.assertEqual(api.sign_ins, 1)
         self.assertEqual(tokens, ["bearer"] * gpmc_bridge.MAX_THREADS)
 
+    def test_the_new_token_is_in_place_before_the_next_thread_looks(self):
+        # Review of the fix: gpmc stores the token only after the renewal
+        # returns, so a thread let in before that renewed again.
+        api = ExpiringApi()
+        gpmc_bridge._renew_one_at_a_time(api)
+        api._get_auth_token()
+        self.assertEqual(api.auth_response_cache["Auth"], "bearer")
+        api._get_auth_token()
+        self.assertEqual(api.sign_ins, 1)
+
     def test_gpmc_alone_signs_in_from_every_thread(self):
         # The fake has gpmc's race, so the test above is not vacuous.
         api = ExpiringApi()
