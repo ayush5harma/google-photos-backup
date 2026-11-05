@@ -4,7 +4,9 @@ import logging
 import gpmc_bridge as bridge
 # Never write auth responses, cookies or local file names to Android logcat.
 logging.disable(logging.CRITICAL)
-def run(payload, listener, cancellation):
+
+
+def _run(payload, listener, cancellation, **factory):
     stop = bridge.StopSignal()
     def emit(event):
         # Confirmations are persisted before observing cancellation.
@@ -13,7 +15,36 @@ def run(payload, listener, cancellation):
             stop.request()
     if cancellation.get():
         return bridge.EXIT_STOPPED
-    return bridge.run(json.loads(payload), emit, stop=stop)
+    return bridge.run(json.loads(payload), emit, stop=stop, **factory)
+
+
+def run(payload, listener, cancellation):
+    """One request with a client of its own (sign-in and connections included)."""
+    return _run(payload, listener, cancellation)
+
+
+class Session:
+    """One BackupWorker run (issue #59): one gpmc client, its bearer token and
+    the bridge's kept connections serve every request of the run, as the Mac
+    app's serve session does, instead of a sign-in and four new TLS
+    connections per file. bridge.ClientCache is the serve session's own
+    factory; because it keeps clients, bridge.run routes gpmc's calls through
+    the client's session pool and leaves the client open between requests.
+    The worker calls close() when it ends, which closes the pool. One request
+    at a time: the worker sends them in turn from its own thread."""
+
+    def __init__(self, client_factory=None):
+        self._clients = bridge.ClientCache(client_factory or bridge.default_client_factory)
+
+    def run(self, payload, listener, cancellation):
+        return _run(payload, listener, cancellation, client_factory=self._clients)
+
+    def close(self):
+        self._clients.close()
+
+
+def session(client_factory=None):
+    return Session(client_factory)
 
 
 def initialize():
