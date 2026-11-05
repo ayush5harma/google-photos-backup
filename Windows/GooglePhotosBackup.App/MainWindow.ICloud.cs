@@ -242,7 +242,8 @@ public sealed partial class MainWindow
             {
                 if (generation != _icloudGeneration) return;
                 ICloudProgress.Value = progress.Total > 0 ? 100.0 * progress.Completed / progress.Total : 0;
-                ICloudProgressText.Text = $"{progress.Completed} of {progress.Total} checked · {progress.Uploaded} uploaded · {progress.Existing} already backed up · {progress.Failed} failed";
+                var speed = progress.Speed is { } sending ? $" · {sending}, {Math.Max(1, progress.Threads)} at a time" : "";
+                ICloudProgressText.Text = $"{progress.Completed} of {progress.Total} checked · {progress.Uploaded} uploaded · {progress.Existing} already backed up · {progress.Failed} failed{speed}";
             });
         }
         coordinator.ProgressChanged += OnProgress;
@@ -250,7 +251,13 @@ public sealed partial class MainWindow
         RefreshControls();
         try
         {
-            var result = await coordinator.BackupAsync(account, _credential, cancellation.Token, reclaimAfterBackup);
+            // The preferences hold one number (uploads at once for folders,
+            // 1-8) and no automatic switch yet, so iCloud runs choose
+            // automatically; the bridge uses exactly `threads` only when
+            // threadsAutomatic is false (issue #60).
+            var result = await coordinator.BackupAsync(account, _credential, cancellation.Token, reclaimAfterBackup,
+                threads: Math.Clamp(_preferences.Threads, ICloudCoordinator.MinThreads, ICloudCoordinator.MaxThreads),
+                threadsAutomatic: true);
             ClearICloudReclaimPreview();
             foreach (var asset in coordinator.ReclaimCandidates) _icloudReclaimCandidates.Add(asset);
             if (_icloudReclaimCandidates.Count > 0)

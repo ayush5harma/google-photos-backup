@@ -17,6 +17,29 @@ struct ICloudProtocolTests {
         #expect(object["password"] == nil)
     }
 
+    @Test func backupCarriesTheUploadParallelism() throws {
+        let request = ICloudRequest(command: .backup, account: "someone@example.test", stateDir: "/private/state",
+                                    stagingDir: "/private/staging", authData: "synthetic-google-token",
+                                    threads: 12, threadsAutomatic: false)
+        let object = try #require(JSONSerialization.jsonObject(with: request.encoded()) as? [String: Any])
+        #expect(object["threads"] as? Int == 12)
+        #expect(object["threads_automatic"] as? Bool == false)
+        // Sign-in requests carry neither; the bridge reads them for backups only.
+        let status = ICloudRequest(command: .status, account: "someone@example.test", stateDir: "/private/state")
+        let statusObject = try #require(JSONSerialization.jsonObject(with: status.encoded()) as? [String: Any])
+        #expect(statusObject["threads"] == nil)
+        #expect(statusObject["threads_automatic"] == nil)
+    }
+
+    @Test func progressCarriesTheSpeedForTheRunView() {
+        #expect(decode(#"{"type":"progress","v":1,"completed":4,"total":10,"bytes_sent":9000000,"bytes_per_second":12345678,"threads":6}"#)
+                == .progress(completed: 4, total: 10, bytesPerSecond: 12_345_678, threads: 6))
+        // The bridge sends null until it has a speed to report.
+        #expect(decode(#"{"type":"progress","v":1,"completed":1,"total":10,"bytes_per_second":null,"threads":4}"#)
+                == .progress(completed: 1, total: 10, bytesPerSecond: nil, threads: 4))
+        #expect(ThroughputMeter.speed(12_345_678) == "12.3 MB/s")
+    }
+
     @Test func authenticationAndResumeEvents() {
         #expect(decode(#"{"type":"auth","v":1,"status":"needs_2fa","account":"someone@example.test"}"#)
                 == .auth(.needs2FA, phones: [], deviceCodeAvailable: true))

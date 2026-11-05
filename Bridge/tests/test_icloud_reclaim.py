@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import icloud_bridge as bridge
-from test_icloud_bridge import FakeAsset, FakeService
+from test_icloud_bridge import FakeAsset, FakeService, SizedAsset, Uploads
 
 
 class ReclaimTests(unittest.TestCase):
@@ -136,6 +136,98 @@ class ReclaimTests(unittest.TestCase):
         record = json.loads(requests[0]['data'])['operations'][0]['record']
         self.assertEqual(record['recordChangeTag'], 'revision-1')
         self.assertEqual(record['fields']['isDeleted']['value'], 1)
+
+
+class ConcurrentAutomaticReclaimTests(unittest.TestCase):
+    """Issue #60: uploads now run many at once. Automatic reclaim must still
+    reach only assets whose every component Google confirmed, and only after
+    a fresh readback verified each one."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.events, self.deletes, self.verifications = [], [], []
+        self.live = {}
+        @contextlib.contextmanager
+        def session(*_): yield self.root
+        def components(asset):
+            parts = [('original', asset.version, asset.filename)]
+            if asset.id in self.live:
+                parts.append(('live', self.live[asset.id], asset.filename + '.MOV'))
+            return parts
+        for name, value in [('session_directory', session), ('_components', components)]:
+            p = patch.object(bridge, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def verify(self, auth, item):
+        self.verifications.append(item['id'])
+        return dict(bytes=item['expected_bytes'], media_key=item['media_key'], sha256='a' * 64)
+
+    def backup(self, assets, upload, **extra):
+        request = dict(dict(command='backup', account='apple@example.com', auth_data='Email=google@example.com',
+                            state_dir=str(self.root / 'state'), staging_dir=str(self.root / 'stage'),
+                            reclaim_after_backup=True, confirm_recently_deleted=True), **extra)
+        return bridge.run(request, self.events.append, factory=lambda *_: FakeService(assets=assets), upload=upload,
+                          verify=self.verify, delete=lambda library, snapshot: self.deletes.append(snapshot['id']))
+
+    def test_failed_or_unconfirmed_uploads_are_never_reclaimed(self):
+        def outcome(item):
+            index = int(item['id'].split(':')[0].split('-')[1])
+            if index % 4 == 0:
+                raise ConnectionError('temporary')
+            if index % 4 == 1:
+                return '', 'uploaded'              # no media key: not confirmed
+            if index % 4 == 2 and item['id'].endswith(':live'):
+                raise bridge.UploadFailed('transfer', False)
+            return 'key-' + item['id'], 'uploaded'
+
+        assets = [SizedAsset(i) for i in range(40)]
+        for asset in assets[2::4]:
+            self.live[asset.id] = type('Version', (), {'size': 6, 'url': 'https://invalid.example/live',
+                                                       'checksum': 'live-' + asset.id})()
+        for threads in (1, 8, 32):
+            with self.subTest(threads=threads):
+                self.events, self.deletes, self.verifications = [], [], []
+                code = self.backup(assets, Uploads(hold=0.002, outcome=outcome), threads=threads,
+                                   state_dir=str(self.root / f'state-{threads}'))
+                confirmed = {a.id for i, a in enumerate(assets) if i % 4 == 3}
+                self.assertEqual(code, 0)
+                self.assertEqual(set(self.deletes), confirmed)
+                self.assertEqual(len(self.deletes), len(confirmed))
+                self.assertEqual({v.split(':')[0] for v in self.verifications}, confirmed)
+                self.assertEqual(self.events[-1]['type'], 'reclaim_done')
+                self.assertEqual(self.events[-1]['soft_deleted'], len(confirmed))
+
+    def test_the_hundred_item_cap_holds_at_thirty_two_uploads_at_once(self):
+        assets = [SizedAsset(i) for i in range(130)]
+        uploads = Uploads(target=32, hold=0.002)
+        self.assertEqual(self.backup(assets, uploads, threads=32), 0)
+        self.assertEqual(uploads.most, 32)
+        self.assertEqual(len(uploads.calls), 100)
+        self.assertEqual(len(self.deletes), 100)
+        self.assertEqual(set(self.deletes), {item['id'].split(':')[0] for item in uploads.calls})
+
+    def test_a_failed_readback_retains_every_source_under_concurrency(self):
+        def fail(auth, item):
+            self.verifications.append(item['id'])
+            raise ValueError('mismatch')
+        self.verify = fail
+        assets = [SizedAsset(i) for i in range(12)]
+        self.assertEqual(self.backup(assets, Uploads(hold=0.002), threads=8), 1)
+        self.assertEqual(self.deletes, [])
+        self.assertEqual(self.events[-1]['retained'], 12)
+
+    def test_a_stopped_run_reclaims_nothing(self):
+        def outcome(item):
+            if item['id'].startswith('asset-006'):
+                raise bridge.StopRequested()
+            return 'key-' + item['id'], 'uploaded'
+        assets = [SizedAsset(i) for i in range(12)]
+        self.assertEqual(self.backup(assets, Uploads(hold=0.002, outcome=outcome), threads=8), 5)
+        self.assertEqual(self.deletes, [])
+        self.assertEqual(self.verifications, [])
 
 
 if __name__ == '__main__': unittest.main()

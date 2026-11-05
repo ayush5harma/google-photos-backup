@@ -94,6 +94,58 @@ public sealed class ICloudCoordinatorTests
         Assert.True(captured["confirm_recently_deleted"]!.GetValue<bool>());
         Assert.Equal(100, captured["max_items"]!.GetValue<int>());
     }
+    [Fact]
+    public async Task BackupSendsTheUploadParallelism()
+    {
+        JsonObject? captured = null;
+        var bridge = new FakeBridge((request, emit, _) => { captured = request; emit(new JsonObject { ["type"] = "done", ["uploaded"] = 0, ["existing"] = 0, ["failed"] = 0, ["pending"] = 0 }); return Task.FromResult(0); });
+        var coordinator = new ICloudCoordinator(bridge, "state", "stage");
+
+        await coordinator.BackupAsync("first@example.com", Credential(), CancellationToken.None);
+        Assert.True(captured!["threads_automatic"]!.GetValue<bool>());
+        Assert.Equal(4, captured["threads"]!.GetValue<int>());
+
+        await coordinator.BackupAsync("first@example.com", Credential(), CancellationToken.None, threads: 32, threadsAutomatic: false);
+        Assert.False(captured!["threads_automatic"]!.GetValue<bool>());
+        Assert.Equal(32, captured["threads"]!.GetValue<int>());
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(33)]
+    public async Task BackupRefusesUploadsAtOnceOutsideOneToThirtyTwo(int threads)
+    {
+        var calls = 0;
+        var bridge = new FakeBridge((_, _, _) => { calls++; return Task.FromResult(0); });
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            new ICloudCoordinator(bridge, "state", "stage").BackupAsync("first@example.com", Credential(), CancellationToken.None,
+                threads: threads, threadsAutomatic: false));
+        Assert.Equal(0, calls);
+    }
+
+    [Fact]
+    public async Task ProgressCarriesTheSpeedForTheRunView()
+    {
+        var bridge = new FakeBridge((_, emit, _) =>
+        {
+            emit(new JsonObject { ["type"] = "progress", ["completed"] = 1, ["total"] = 9, ["uploaded"] = 1, ["existing"] = 0,
+                ["failed"] = 0, ["bytes_sent"] = 3_000_000L, ["bytes_per_second"] = null, ["threads"] = 4 });
+            emit(new JsonObject { ["type"] = "progress", ["completed"] = 4, ["total"] = 9, ["uploaded"] = 4, ["existing"] = 0,
+                ["failed"] = 0, ["bytes_sent"] = 9_000_000_000L, ["bytes_per_second"] = 12_345_678, ["threads"] = 6 });
+            emit(new JsonObject { ["type"] = "done", ["uploaded"] = 4, ["existing"] = 0, ["failed"] = 0, ["pending"] = 5 });
+            return Task.FromResult(0);
+        });
+        var coordinator = new ICloudCoordinator(bridge, "state", "stage");
+        var seen = new List<ICloudBackupProgress>();
+        coordinator.ProgressChanged += seen.Add;
+        await coordinator.BackupAsync("first@example.com", Credential(), CancellationToken.None);
+
+        Assert.Null(seen[0].Speed);
+        Assert.Equal(4, seen[0].Threads);
+        Assert.Equal(new ICloudBackupProgress(4, 9, 4, 0, 0, 9_000_000_000L, 12_345_678, 6), seen[1]);
+        Assert.Equal("12.3 MB/s", seen[1].Speed);
+    }
+
     [Theory]
     [InlineData("signed_out", ICloudAuthStatus.SignedOut)]
     [InlineData("signed_in", ICloudAuthStatus.SignedIn)]
