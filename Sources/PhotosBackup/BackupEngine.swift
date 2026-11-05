@@ -63,6 +63,15 @@ private enum FailureSource {
     case device(DeviceMediaItem)
 }
 
+/// A failed item and the account whose run it failed in. Retry queues on
+/// the active account, which after a pass is the primary again: a failure
+/// of another account's run retried there went to the wrong account
+/// (PR #53 review). That account's next run plans it again anyway.
+private struct Failure {
+    let source: FailureSource
+    let account: String?
+}
+
 /// One staged file in a batch, with what to record once Google confirms it.
 private struct BatchItem {
     let bridgeItem: BridgeItem
@@ -123,7 +132,7 @@ final class BackupEngine {
     /// The run in progress, counted as it goes; it joins the history at the end.
     private(set) var currentRun: RunRecord?
     /// Items that failed for their run, by id, until retried or backed up.
-    private var failures: [String: FailureSource] = [:]
+    private var failures: [String: Failure] = [:]
 
     /// Upload speed and time left in this run.
     private(set) var meter = ThroughputMeter()
@@ -181,8 +190,11 @@ final class BackupEngine {
     var remaining: Int { max(0, runTotal - runDone) }
     var runFraction: Double { runTotal == 0 ? 0 : Double(runDone) / Double(runTotal) }
     var isActive: Bool { phase == .running || phase == .pausing || phase == .stopping || phase == .waiting }
-    /// Failed items that Retry would queue again.
-    var failedCount: Int { failures.count }
+    /// Failed items that Retry would queue again: those of the active
+    /// account's runs.
+    var failedCount: Int { failures.values.filter(isRetryableHere).count }
+
+    private func isRetryableHere(_ failure: Failure) -> Bool { failure.account == model.activeAccountID }
     /// Picks, Messages media or a device import still queued, as a run that
     /// halted (a refused sign-in, a full account) leaves them. Only the
     /// primary account takes these, so AccountRunner starts no other
@@ -214,7 +226,7 @@ final class BackupEngine {
     /// Forgets failed picks, Messages media and device items, so that Retry
     /// cannot send what the old primary account was to take to a new one.
     func forgetPrimaryOnlyFailures() {
-        failures = failures.filter { if case .asset = $0.value { true } else { false } }
+        failures = failures.filter { if case .asset = $0.value.source { true } else { false } }
         discardPickedFiles()
     }
     /// Google's words for each failed row, for the diagnostic report.
@@ -373,7 +385,7 @@ final class BackupEngine {
         startRetry()
     }
 
-    func canRetry(_ id: String) -> Bool { phase != .stopping && failures[id] != nil && !isBusy(id) }
+    func canRetry(_ id: String) -> Bool { phase != .stopping && failures[id].map(isRetryableHere) == true && !isBusy(id) }
 
     /// Being sent now, or queued to be: Retry must not reset its attempts.
     /// (A failure of this run stays in its queue until the next prune; that
@@ -385,7 +397,9 @@ final class BackupEngine {
     }
 
     private func requeue(_ id: String) -> Bool {
-        guard failures[id] != nil, !isBusy(id), let source = failures.removeValue(forKey: id) else { return false }
+        guard let failure = failures[id], isRetryableHere(failure), !isBusy(id) else { return false }
+        failures[id] = nil
+        let source = failure.source
         failedAssets.remove(id)
         retries.forget(id)
         // A failure of this run stops counting; the item counts again when
@@ -455,7 +469,7 @@ final class BackupEngine {
         rateLimiter.runStarted()
         // Assets are planned afresh, so their earlier failures are tried
         // again anyway; a pick or a Messages item is only if Retry queues it.
-        if !messagesOnly { failures = failures.filter { if case .asset = $0.value { false } else { true } } }
+        if !messagesOnly { failures = failures.filter { if case .asset = $0.value.source { false } else { true } } }
         currentRun = RunRecord(kind: messagesOnly ? .messagesMedia : .photos, trigger: trigger, conditions: model.conditions.summary)
         model.diagnostics.runActive = true
 
@@ -1426,12 +1440,14 @@ final class BackupEngine {
         inFlight.remove(id)
         tally.failed(id)
         syncRunCounts()
+        // The active account is the run's: it changes only while idle.
+        let account = model.activeAccountID
         if id.hasPrefix("messages:") {
-            if let item = messages.first(where: { $0.id == id }) { failures[id] = .messages(item) }
+            if let item = messages.first(where: { $0.id == id }) { failures[id] = Failure(source: .messages(item), account: account) }
         } else if id.hasPrefix("device:") {
-            if let item = deviceItems.first(where: { $0.id == id }) { failures[id] = .device(item) }
+            if let item = deviceItems.first(where: { $0.id == id }) { failures[id] = Failure(source: .device(item), account: account) }
         } else {
-            failures[id] = picked.contains(id) ? .picked : .asset
+            failures[id] = Failure(source: picked.contains(id) ? .picked : .asset, account: account)
         }
         let firstLine = message.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? message
         let label = firstLine.count > Self.labelLimit ? String(firstLine.prefix(Self.labelLimit - 3)) + "..." : firstLine

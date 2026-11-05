@@ -741,7 +741,8 @@ final class AppModel {
 
     /// Retry queues failed items on the active account. The failures of the
     /// primary's run include picks and Messages media, which must not go to
-    /// another account, so Retry waits while a pass is on one.
+    /// another account, so Retry waits while a pass is on one; the engine
+    /// retries only failures of the active account's own runs.
     var canRetryFailures: Bool { isPrimaryActive }
 
     func canRetry(_ id: String) -> Bool { isPrimaryActive && engine.canRetry(id) }

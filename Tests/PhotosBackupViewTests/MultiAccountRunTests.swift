@@ -646,4 +646,47 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertNil(keychain.load(account: AccountLibrary.legacyKeychainAccount), "deleted once the keychain allows it")
         XCTAssertEqual(keychain.load(account: firstID), fresh)
     }
+
+    /// Review of PR #53, MINOR 6: after a pass that ended on another
+    /// account, the primary is active again and Retry queued that account's
+    /// failures on the primary. A failure is retried only on the account
+    /// whose run it failed in; the primary's own failures still retry.
+    func testRetryAfterAPassNeverSendsAnotherAccountsFailureToThePrimary() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first)
+        let secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        let shared = try items(1, tag: "shared")
+        let failsOnFirst = try items(1, tag: "fails-on-first")[0]
+        let failsOnSecond = try items(1, tag: "fails-on-second")[0]
+        let refused = "400 Client Error: Bad Request for url: https://photos.example.invalid/commit"
+        try scenario(["per_account": true, "fail": [failsOnFirst.filename: refused, failsOnSecond.filename: refused]])
+        model.runner.turn = { turn, trigger in
+            let own = turn.account == firstID ? failsOnFirst : failsOnSecond
+            model.engine.backUp(messages: shared + [own], includingPhotos: false, trigger: trigger)
+        }
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertEqual(model.activeAccountID, firstID, "the primary is active again after the pass")
+        XCTAssertTrue(uploaded(shared, in: model, firstID) && uploaded(shared, in: model, secondID))
+        XCTAssertTrue(model.engine.activity.contains { $0.id == failsOnSecond.id && $0.isFailed })
+
+        XCTAssertFalse(model.canRetry(failsOnSecond.id), "Retry offered the second account's failure on the primary")
+        XCTAssertTrue(model.canRetry(failsOnFirst.id), "the primary's own failure still retries")
+        XCTAssertEqual(model.engine.failedCount, 1, "Retry Failed counts only what it would retry here")
+
+        // Uploads succeed again: a Retry that went to the wrong account
+        // would now land the second account's item in the primary's record.
+        try scenario(["per_account": true])
+        model.retry(failsOnSecond.id)
+        model.retryFailed()
+        try await settle(model)
+        XCTAssertTrue(uploaded([failsOnFirst], in: model, firstID))
+        XCTAssertTrue(untouched([failsOnSecond], in: model, firstID), "the second account's failure went to the primary")
+        // The ledger lists failed attempts too: the primary never tried it.
+        let triedOnFirst = try uploads().filter { ($0["account"] as? String) == Self.first }.compactMap { $0["filename"] as? String }
+        XCTAssertFalse(triedOnFirst.contains(failsOnSecond.filename), "Google got the second account's item as the primary's")
+        XCTAssertEqual(model.diagnostics.runs.first?.trigger, .retry)
+        XCTAssertEqual(model.accountTitle(reference: model.diagnostics.runs.first?.account), Self.first)
+    }
 }
