@@ -24,9 +24,12 @@ public struct AccountsStore: Sendable {
         /// Files that could not be read, renamed `.unreadable` for inspection,
         /// with the reason; their accounts start from an empty record.
         public var unreadable: [String: String]
+        /// Accounts whose record file (state.json) turned out to hold another
+        /// account's history; they carry on in a file of their own.
+        public var reassigned: [String] = []
 
         /// Whether the index has to be written.
-        public var indexChanged: Bool { migrated || legacyCredentialAccount != nil || !unreadable.isEmpty }
+        public var indexChanged: Bool { migrated || legacyCredentialAccount != nil || !unreadable.isEmpty || !reassigned.isEmpty }
     }
 
     /// - Parameters:
@@ -36,13 +39,29 @@ public struct AccountsStore: Sendable {
         var unreadable: [String: String] = [:]
         var library: AccountLibrary
         var migrated = false
-        if let index = readIndex(&unreadable) {
+        var reassigned: [String] = []
+        if var index = readIndex(&unreadable) {
             var states: [String: BackupState] = [:]
-            for account in index.accounts {
-                states[account.id] = readState(account.stateFile, &unreadable) ?? BackupState()
+            var unclaimed: BackupState?
+            for position in index.accounts.indices {
+                let account = index.accounts[position]
+                let state = readState(account.stateFile, &unreadable)
+                if let state, let owner = state.accountEmail, account.id != AccountLibrary.legacyKeychainAccount,
+                   !GoogleSignIn.sameAccount(owner, account.email ?? account.id), account.stateFile == AccountLibrary.legacyStateFile {
+                    // state.json holds another account's history: an older
+                    // version, signed in to that account after a downgrade,
+                    // rewrote it. It is that account's (unclaimed until it
+                    // signs in); this account carries on in a file of its own.
+                    reassigned.append(account.title)
+                    unclaimed = state
+                    index.accounts[position].stateFile = AccountLibrary.stateFile(for: account.id)
+                    states[account.id] = readState(index.accounts[position].stateFile, &unreadable) ?? BackupState()
+                    continue
+                }
+                states[account.id] = state ?? BackupState()
             }
             let referenced = index.accounts.contains { $0.stateFile == AccountLibrary.legacyStateFile }
-            let unclaimed = referenced ? nil : readState(AccountLibrary.legacyStateFile, &unreadable)
+            if unclaimed == nil, !referenced { unclaimed = readState(AccountLibrary.legacyStateFile, &unreadable) }
             library = AccountLibrary(index: index, states: states, unclaimed: unclaimed)
         } else {
             let legacy = readState(AccountLibrary.legacyStateFile, &unreadable)
@@ -56,7 +75,8 @@ public struct AccountsStore: Sendable {
                 ? library.fileLegacyCredential(email: legacyCredential.email, now: now)
                 : library.fileLegacyCredential(email: legacyCredential.email, now: now, stored: { readState($0) })
         }
-        return Loaded(library: library, migrated: migrated, legacyCredentialAccount: legacyAccount, unreadable: unreadable)
+        return Loaded(library: library, migrated: migrated, legacyCredentialAccount: legacyAccount, unreadable: unreadable,
+                      reassigned: reassigned)
     }
 
     public func save(_ index: AccountsIndex) throws {

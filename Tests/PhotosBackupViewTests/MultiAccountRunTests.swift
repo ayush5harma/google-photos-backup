@@ -157,7 +157,10 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertTrue(try uploads().allSatisfy { ($0["saver"] as? Bool) == false && ($0["use_quota"] as? Bool) == false },
                       "every account goes up as Original quality: saver and use_quota false (Pixel XL)")
         let runs = model.diagnostics.runs.filter { $0.kind == .messagesMedia }
-        XCTAssertEqual(runs.compactMap(\.account), [Self.second, Self.first], "each run is recorded with its account (newest first)")
+        XCTAssertEqual(runs.compactMap { model.accountTitle(reference: $0.account) }, [Self.second, Self.first],
+                       "each run is recorded with its account (newest first)")
+        let history = try String(contentsOf: support.appendingPathComponent("history.json"), encoding: .utf8)
+        XCTAssertFalse(history.contains("example.com"), "history.json names accounts by reference only")
 
         // Stop ends the whole pass: the second account gets none of these.
         try scenario(["per_account": true, "delay": 0.4])
@@ -172,7 +175,7 @@ final class MultiAccountRunTests: XCTestCase {
         try await settle(model)
         XCTAssertTrue(later.allSatisfy { model.record(of: secondID)?.uploaded[$0.id] == nil }, "no account starts after Stop")
         XCTAssertEqual(model.diagnostics.runs.first?.outcome, .stopped)
-        XCTAssertEqual(model.diagnostics.runs.first?.account, Self.first)
+        XCTAssertEqual(model.accountTitle(reference: model.diagnostics.runs.first?.account), Self.first)
         try scenario(["per_account": true])
 
         // Remove signs one account out and touches nothing else.

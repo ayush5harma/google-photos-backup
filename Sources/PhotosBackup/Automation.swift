@@ -30,7 +30,7 @@ extension AppModel {
         case .stop:
             stopBackup()
         case .retryFailed:
-            engine.retryFailed()
+            retryFailed()
         case let .open(section):
             AppRouter.shared.openMain(section: section.map(AppSection.init))
         case let .settings(tab):

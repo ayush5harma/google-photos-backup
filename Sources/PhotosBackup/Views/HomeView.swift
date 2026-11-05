@@ -294,7 +294,7 @@ private struct RecentActivity: View {
                 } else if !runs.isEmpty {
                     ForEach(Array(runs.enumerated()), id: \.element.id) { index, run in
                         if index > 0 { Divider().padding(.leading, 46) }
-                        RunRow(run: run, showsAccount: model.accounts.count > 1).padding(.horizontal, 14)
+                        RunRow(run: run, account: model.accounts.count > 1 ? model.accountTitle(reference: run.account) : nil).padding(.horizontal, 14)
                     }
                 } else {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
@@ -309,8 +309,8 @@ private struct RecentActivity: View {
 
 private struct RunRow: View {
     let run: RunRecord
-    /// With several accounts, which one the run went to.
-    var showsAccount = false
+    /// With several accounts, the address of the one the run went to.
+    var account: String?
 
     var body: some View {
         HStack(spacing: 12) {
@@ -330,7 +330,7 @@ private struct RunRow: View {
 
     private var title: String {
         let base = "\(run.kind.title) · \(run.trigger.title)"
-        guard showsAccount, let account = run.account else { return base }
+        guard let account else { return base }
         return "\(base) · \(account)"
     }
 
@@ -461,7 +461,7 @@ struct PickPhotosButton<Label: View>: View {
                 let ids = picks.map(\.0)
                 let unseen = Set(AssetExporter.unseen(ids)).subtracting(ids.filter { model.state.uploaded[$0] != nil })
                 let visible = ids.filter { !unseen.contains($0) }
-                if !visible.isEmpty { model.engine.backUp(picked: visible) }
+                if !visible.isEmpty { model.backUp(picked: visible) }
                 guard !unseen.isEmpty else { return }
                 Task {
                     var files: [String: URL] = [:]
@@ -472,7 +472,7 @@ struct PickPhotosButton<Label: View>: View {
                             model.log(.photos, "Photos did not hand over a picked item: \(error.localizedDescription)", problem: true)
                         }
                     }
-                    model.engine.backUp(picked: ids.filter { unseen.contains($0) }, files: files)
+                    model.backUp(picked: ids.filter { unseen.contains($0) }, files: files)
                 }
             }
     }

@@ -212,11 +212,18 @@ final class AppModel {
     /// failed this launch: it is read where it is until the next launch.
     @ObservationIgnored private var unmovedLegacyCredential: String?
     @ObservationIgnored private var accountSummaries: [String: (selection: Set<String>, summary: BackupSummary)] = [:]
+    /// Picks made while a pass was on another account (see backUp(picked:)).
+    @ObservationIgnored private var heldPicks: (ids: [String], files: [String: URL]) = ([], [:])
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var timer: Timer?
     @ObservationIgnored private var messagesScanGeneration = 0
 
-    private(set) var albums: [LibraryAlbum] = [] { didSet { summaryCache = nil } }
+    private(set) var albums: [LibraryAlbum] = [] {
+        didSet {
+            summaryCache = nil
+            accountSummaries = [:]
+        }
+    }
     private(set) var albumsLoaded = false
     private(set) var photosStatus: PHAuthorizationStatus
     var state: BackupState { didSet { summaryCache = nil } }
@@ -271,6 +278,10 @@ final class AppModel {
         let legacy = keychain.load(account: AccountLibrary.legacyKeychainAccount)
         let loaded = store.load(legacyCredential: (legacy != nil, legacy.flatMap(GoogleSignIn.email(inCredential:))))
         accountLibrary = loaded.library
+        if !loaded.reassigned.isEmpty {
+            stateError = "The backup record of \(loaded.reassigned.joined(separator: ", ")) held another account's history, "
+                + "written by an older version of the app; it was kept for that account, and this one starts a record of its own."
+        }
         if !loaded.unreadable.isEmpty {
             let names = loaded.unreadable.keys.sorted().joined(separator: ", ")
             stateError = "Backup history could not be read (\(names)); it was set aside with an .unreadable ending and those accounts start fresh."
@@ -567,6 +578,43 @@ final class AppModel {
     /// which only the primary account takes, wait for it to come back.
     var isPrimaryActive: Bool { activeAccountID == primaryAccount?.id }
 
+    /// Chosen photos go to the primary account only. A pick that arrives
+    /// while a pass is on another account (an open picker, or a hidden
+    /// photo still copying out of it) waits here for the primary.
+    func backUp(picked ids: [String], files: [String: URL] = [:]) {
+        guard isPrimaryActive else {
+            heldPicks.ids.append(contentsOf: ids.filter { !heldPicks.ids.contains($0) })
+            heldPicks.files.merge(files) { _, new in new }
+            return
+        }
+        engine.backUp(picked: ids, files: files)
+    }
+
+    /// The picks that waited, once the primary is active again.
+    func releaseHeldPicks() {
+        guard isPrimaryActive, !heldPicks.ids.isEmpty else { return }
+        let held = heldPicks
+        heldPicks = ([], [:])
+        engine.backUp(picked: held.ids, files: held.files)
+    }
+
+    /// Retry queues failed items on the active account. The failures of the
+    /// primary's run include picks and Messages media, which must not go to
+    /// another account, so Retry waits while a pass is on one.
+    var canRetryFailures: Bool { isPrimaryActive }
+
+    func canRetry(_ id: String) -> Bool { isPrimaryActive && engine.canRetry(id) }
+
+    func retry(_ id: String) {
+        guard isPrimaryActive else { return }
+        engine.retry(id)
+    }
+
+    func retryFailed() {
+        guard isPrimaryActive else { return }
+        engine.retryFailed()
+    }
+
     func backUpMessages(includingPhotos: Bool = false, trigger: RunTrigger = .manual) {
         Task { await scanMessages(includingPhotos: includingPhotos, trigger: trigger) }
     }
@@ -797,6 +845,12 @@ final class AppModel {
         let adoption = candidate.adopting(account: email, stored: { store.readState($0) })
         do {
             try keychain.save(credential, account: adoption.account.id)
+            if adoption.account.id == unmovedLegacyCredential {
+                // The fresh sign-in replaces the item that could not be moved;
+                // left in place, it would overwrite this one at the next launch.
+                keychain.delete(account: AccountLibrary.legacyKeychainAccount)
+                unmovedLegacyCredential = nil
+            }
         } catch {
             connectState = .failed("Could not store the account in the keychain: \(error.localizedDescription)")
             return
@@ -860,11 +914,28 @@ final class AppModel {
     }
 
     /// The Messages cursor and scan are the primary account's: a new primary
-    /// starts its Messages media from the first row.
+    /// starts its Messages media from the first row. When the primary was
+    /// removed, Messages media (opt-in: it holds other people's media too)
+    /// is switched off rather than sent to an account nobody chose for it,
+    /// and anything still queued for the old primary is dropped.
     private func primaryChanged(from previous: String?) {
         guard primaryAccount?.id != previous else { return }
         cancelMessagesScan()
         settings.messagesCursor = 0
+        guard previous != nil, let primary = primaryAccount else { return }
+        if settings.messagesMedia {
+            settings.messagesMedia = false
+            messagesStatus = .off
+            log(.messages, "Messages media is off: it went to the account that was removed. Turn it on in Settings to send it to \(primary.title).")
+        }
+        if !engine.isActive, engine.hasQueuedPrimaryOnlyWork { engine.stop() }
+        heldPicks = ([], [:])
+    }
+
+    /// Settings, history rows and the timeline name an account by address;
+    /// the run history keeps only a reference to it.
+    func accountTitle(reference: String?) -> String? {
+        accountLibrary.account(reference: reference)?.title
     }
 
     /// After the storage check, an added account joins the runs.
@@ -915,7 +986,13 @@ final class AppModel {
         var candidate = accountLibrary
         let target = candidate.credential(of: id, belongsTo: email)
         do {
-            try keychain.move(from: id, to: target)
+            if keychain.load(account: target) != nil {
+                // The account signed in on its own since: its credential is
+                // the newer one.
+                keychain.delete(account: id)
+            } else {
+                try keychain.move(from: id, to: target)
+            }
         } catch {
             accountStatuses[id] = .failed("This sign-in is for \(email) and could not be filed under it: \(error.localizedDescription)")
             return
@@ -1005,7 +1082,7 @@ final class AppModel {
     func runFinished(_ record: RunRecord) {
         var record = record
         if record.kind != .messagesArchive, let id = activeAccountID {
-            record.account = accountLibrary.account(id)?.email ?? state.accountEmail
+            record.account = AccountLibrary.reference(for: id)
             runner.finished(record.outcome, for: id)
         }
         diagnostics.record(record)

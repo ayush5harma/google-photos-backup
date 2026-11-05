@@ -198,6 +198,34 @@ enum LegacyStateFixture {
         #expect(loaded.library.primary?.id == "me@example.com")
     }
 
+    /// Review finding: downgraded, the single-account version signed in to
+    /// another account rewrites state.json with that account's history.
+    /// Upgraded again, that history is not taken for the first account's:
+    /// the account it names takes it, the first one carries on in its own file.
+    @Test func aStateFileRewrittenForAnotherAccountIsNotTakenForThisOne() throws {
+        let directory = try scratch()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AccountsStore(directory: directory)
+        let first = store.load(legacyCredential: (exists: true, email: "a@example.com"))
+        try store.save(first.library.index)
+        #expect(first.library.primary?.stateFile == "state.json")
+
+        var other = BackupState()
+        other.accountEmail = "b@example.com"
+        other.recordUpload(assetID: "x", mediaKey: "key-b", existing: false)
+        other.recordAlbum("trip", googleAlbumID: "album-b", added: ["x"])
+        try BackupStore(url: directory.appendingPathComponent("state.json")).save(other)
+
+        let loaded = store.load(legacyCredential: (exists: true, email: "b@example.com"))
+        #expect(loaded.reassigned == ["a@example.com"])
+        #expect(loaded.indexChanged)
+        #expect(loaded.library.account("a@example.com")?.stateFile == AccountLibrary.stateFile(for: "a@example.com"))
+        #expect(loaded.library.state(for: "a@example.com")?.uploaded.isEmpty == true)
+        #expect(loaded.legacyCredentialAccount == "b@example.com")
+        #expect(loaded.library.account("b@example.com")?.stateFile == "state.json")
+        #expect(loaded.library.state(for: "b@example.com")?.mirrors["trip"]?.googleAlbumID == "album-b")
+    }
+
     /// A lost accounts.json is rebuilt from state.json, and an added
     /// account's record, still on disk under its id's name, is found again
     /// when that account signs in.

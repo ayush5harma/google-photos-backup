@@ -79,6 +79,48 @@ import Testing
         #expect(library.account(AccountLibrary.legacyKeychainAccount) == nil)
     }
 
+    /// Review finding: the same account added through Add Account before a
+    /// check named the placeholder used to keep its new empty record while
+    /// the placeholder's history was signed out with it, and its next run
+    /// recreated every album. The added account takes the history.
+    @Test func addingThePlaceholdersOwnAccountTakesItsRecord() {
+        var library = AccountLibrary.migrating(legacy: record(nil), credentialEmail: nil, hasCredential: true)
+        library.adopting(account: "me@gmail.com")
+        #expect(library.accounts.map(\.id) == [AccountLibrary.legacyKeychainAccount, "me@gmail.com"])
+
+        let id = library.credential(of: AccountLibrary.legacyKeychainAccount, belongsTo: "Me@Gmail.com")
+        #expect(id == "me@gmail.com")
+        #expect(library.accounts.map(\.id) == ["me@gmail.com"])
+        #expect(library.primary?.stateFile == AccountLibrary.legacyStateFile)
+        #expect(library.primary?.storageChecked == true)
+        #expect(library.state(for: "me@gmail.com")?.mirrors["trip"]?.googleAlbumID == "album-none")
+        #expect(library.state(for: "me@gmail.com")?.uploaded.count == 1)
+        #expect(library.account(AccountLibrary.legacyKeychainAccount) == nil)
+    }
+
+    /// When both hold history, neither is merged or dropped.
+    @Test func aPlaceholderAndAnAccountWithHistoryKeepTheirOwn() {
+        var library = AccountLibrary.migrating(legacy: record(nil), credentialEmail: nil, hasCredential: true)
+        var own = library.adopting(account: "me@gmail.com").state
+        own.recordUpload(assetID: "mine", mediaKey: "k-mine", existing: false)
+        library.update(own, for: "me@gmail.com")
+
+        _ = library.credential(of: AccountLibrary.legacyKeychainAccount, belongsTo: "me@gmail.com")
+        #expect(library.state(for: "me@gmail.com")?.uploaded.keys.sorted() == ["mine"])
+        #expect(library.account(AccountLibrary.legacyKeychainAccount)?.removed == true)
+        #expect(library.state(for: AccountLibrary.legacyKeychainAccount)?.mirrors["trip"]?.googleAlbumID == "album-none")
+    }
+
+    @Test func historyNamesAccountsByReferenceOnly() {
+        var library = AccountLibrary()
+        library.adopting(account: "a@example.com")
+        let reference = AccountLibrary.reference(for: "a@example.com")
+        #expect(!reference.contains("example"))
+        #expect(library.account(reference: reference)?.id == "a@example.com")
+        #expect(library.account(reference: "0000000000000000") == nil)
+        #expect(AccountLibrary.stateFile(for: "a@example.com") == "state-\(reference).json")
+    }
+
     /// The record names one account and the credential another: both are
     /// kept, each with its own record, and only the credential's runs.
     @Test func aRecordForAnotherAccountIsKeptForIt() {
