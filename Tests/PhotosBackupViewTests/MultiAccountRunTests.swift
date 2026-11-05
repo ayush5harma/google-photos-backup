@@ -621,6 +621,54 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertTrue(rebuilt.stateError?.contains("choose them again") == true, "\(rebuilt.stateError ?? "nil")")
     }
 
+    /// A single-account record the size of the owner's (about 27,700
+    /// uploads, 188 album links).
+    private func realShapeState(email: String?) -> BackupState {
+        var state = BackupState()
+        state.accountEmail = email
+        var ids: [String] = []
+        for i in 0..<27_700 {
+            let id = String(format: "%08X-0000-0000-0000-%012X/L0/001", i, i)
+            state.uploaded[id] = BackupRecord(mediaKey: "AF1Qip\(i)", date: Date(timeIntervalSince1970: 1_760_000_000 + Double(i)),
+                                              existing: i % 7 == 0)
+            ids.append(id)
+        }
+        for a in 0..<188 {
+            state.mirrors["album-\(a)/L0/040"] = AlbumMirror(googleAlbumID: "AF1QipAlbum\(a)",
+                                                             addedAssetIDs: Set(ids[(a * 100)..<(a * 100 + 50)]))
+        }
+        return state
+    }
+
+    /// PR #53 review, second round, MINOR a (the reviewer's companion
+    /// probe): one account, its credential already under its own id, and no
+    /// accounts.json or copy (the first save after the move failed). With a
+    /// state.json from before accountEmail was recorded the rebuild ticked
+    /// nobody, and the Mac stopped backing up.
+    func testASingleAccountWhoseIndexWasNeverSavedKeepsBackingUp() throws {
+        try singleAccountWithoutIndex(email: nil)
+    }
+
+    func testASingleAccountWhoseIndexWasNeverSavedKeepsBackingUpWithItsAddressRecorded() throws {
+        try singleAccountWithoutIndex(email: "Real.Owner@gmail.com")
+    }
+
+    private func singleAccountWithoutIndex(email: String?) throws {
+        let owner = "Real.Owner@gmail.com"
+        let id = GoogleSignIn.normalizedEmail(owner)
+        try FileManager.default.createDirectory(at: support, withIntermediateDirectories: true)
+        let stateURL = support.appendingPathComponent("state.json")
+        try BackupStore(url: stateURL).save(realShapeState(email: email))
+        try keychain.save(Self.credential(owner), account: id)
+        try scenario(["per_account": true])
+        let model = AppModel()
+        model.settings.automatic = false
+        XCTAssertEqual(model.record(of: id)?.uploaded.count, 27_700)
+        XCTAssertEqual(model.record(of: id)?.mirrors.count, 188)
+        XCTAssertEqual(model.primaryAccount?.stateFile, "state.json")
+        XCTAssertEqual(model.targetAccounts.map(\.id), [id], "the single account stops backing up")
+    }
+
     /// Review of PR #53, MINOR 2: Remove ignored a failed keychain delete
     /// and marked the account removed; the item left behind signed it back
     /// in at the next launch. Now it stays signed in and says why.

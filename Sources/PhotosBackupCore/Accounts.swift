@@ -342,12 +342,14 @@ public struct AccountLibrary: Equatable, Sendable {
     /// - Parameters:
     ///   - indexLost: the index that listed them is gone, so nothing says
     ///     which of them backups went to or which passed its storage check.
-    ///     Backups then go to the account state.json belongs to only when no
-    ///     other account has a credential: with others signed in, that account
-    ///     may have been left out as easily as any (PR #53 review, second
-    ///     round: it was, and the rebuild backed the library up to it). Then
-    ///     nobody is ticked and every account waits for a tick and its storage
-    ///     check, as an added one does. Taking "All accounts" and keychain
+    ///     With one credential, its account is the first account, ticked and
+    ///     checked as a first account always is. With several, the account
+    ///     state.json belongs to may have been left out as easily as any (PR
+    ///     #53 review, second round: it was, and the rebuild backed the
+    ///     library up to it), so nobody is ticked and every account waits for
+    ///     a tick and its storage check, as an added one does. Looking that
+    ///     account up before the adoptions missed one taking an unclaimed
+    ///     state.json, and a single account stopped. Taking "All accounts" and keychain
     ///     order instead backed up the library to a work account that had
     ///     been left out, without a storage check (PR #53 review).
     ///   - credentials: the accounts the keychain holds a credential for,
@@ -358,16 +360,22 @@ public struct AccountLibrary: Equatable, Sendable {
     @discardableResult
     public mutating func adoptingStrays(_ emails: [String], indexLost: Bool, credentials: Set<String>, now: Date = Date(),
                                         stored: (String) -> BackupState? = { _ in nil }) -> Bool {
-        let owner = index.accounts.first { $0.stateFile == Self.legacyStateFile }?.id
+        // One credential is the one account signed in: the first account,
+        // ticked and storage-checked by the rule every first account follows.
+        let sole = indexLost && credentials.count == 1 ? credentials.first : nil
         for email in emails {
-            adopting(account: email, now: now, storageChecked: indexLost ? false : nil, stored: stored)
+            let first = sole == GoogleSignIn.normalizedEmail(email)
+            adopting(account: email, now: now, storageChecked: indexLost && !first ? false : nil, stored: stored)
         }
         guard indexLost else { return false }
         index.backUpTo = .chosen
-        let ownerAlone = owner.map { owner in credentials.allSatisfy { $0 == owner } } ?? false
+        // Only after the adoptions: an account signing in takes a state.json
+        // nobody was known to own.
+        let owner = index.accounts.first { $0.stateFile == Self.legacyStateFile }?.id
+        let ticked = sole ?? (credentials.isEmpty ? owner : nil)
         for account in index.accounts {
-            setChosen(account.id, ownerAlone && account.id == owner)
-            if !ownerAlone, credentials.contains(account.id) { setStorageChecked(account.id, false) }
+            setChosen(account.id, account.id == ticked)
+            if ticked == nil, credentials.contains(account.id) { setStorageChecked(account.id, false) }
         }
         return !accounts.isEmpty && included.isEmpty
     }

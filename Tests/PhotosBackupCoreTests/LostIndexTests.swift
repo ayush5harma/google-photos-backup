@@ -171,6 +171,54 @@ import Testing
         #expect(rebuilt.account(Self.workID) == nil, "the work account signed out stays unknown until it signs in")
     }
 
+    /// Second round, MINOR a: a single-account Mac whose state.json is from
+    /// before accounts were recorded (no accountEmail), with its credential
+    /// already under its own id, and no index at all (its first save
+    /// failed). The account state.json belongs to was looked up before the
+    /// credential's account took state.json, so nobody was ticked and the
+    /// Mac stopped backing up. The one credential is the first account.
+    @Test func aLostIndexWithOneCredentialTicksItAsTheFirstAccount() throws {
+        let directory = try scratch()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let legacy = LegacyStateFixture.make(email: nil)
+        try BackupStore(url: directory.appendingPathComponent("state.json")).save(legacy)
+        let store = AccountsStore(directory: directory)
+        let loaded = store.load(legacyCredential: (false, nil))
+        let lost = loaded.indexWasLost(keychainHasAccountItems: true)
+        #expect(lost)
+        var rebuilt = loaded.library
+        let chooseAgain = rebuilt.adoptingStrays([Self.primary], indexLost: lost, credentials: [Self.primaryID],
+                                                 stored: { store.readState($0) })
+        #expect(!chooseAgain)
+        #expect(rebuilt.included.map(\.id) == [Self.primaryID])
+        #expect(rebuilt.account(Self.primaryID)?.storageChecked == true, "checked as the first account always is")
+        #expect(rebuilt.account(Self.primaryID)?.stateFile == "state.json")
+        #expect(rebuilt.state(for: Self.primaryID)?.uploaded.mapValues(\.mediaKey) == legacy.uploaded.mapValues(\.mediaKey))
+        #expect(rebuilt.state(for: Self.primaryID)?.mirrors == legacy.mirrors)
+    }
+
+    /// The one credential belongs to an account other than the one
+    /// state.json names, which is signed out: it is the only account signed
+    /// in, so it is the first account, ticked, its record its own.
+    @Test func aLostIndexWithOneCredentialOfAnotherAccountTicksThatAccount() throws {
+        let directory = try scratch()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AccountsStore(directory: directory)
+        _ = try leftOutWorkAccount(in: store)
+        try Data("{broken".utf8).write(to: store.indexURL)
+        try Data("{broken".utf8).write(to: store.indexCopyURL)
+
+        let loaded = store.load(legacyCredential: (false, nil))
+        var rebuilt = loaded.library
+        let chooseAgain = rebuilt.adoptingStrays([Self.work], indexLost: loaded.indexWasLost(keychainHasAccountItems: true),
+                                                 credentials: [Self.workID], stored: { store.readState($0) })
+        #expect(!chooseAgain)
+        #expect(rebuilt.accounts.map(\.id) == [Self.workID])
+        #expect(rebuilt.included.map(\.id) == [Self.workID])
+        #expect(rebuilt.account(Self.workID)?.storageChecked == true)
+        #expect(rebuilt.account(Self.workID)?.stateFile != "state.json", "state.json stays the signed-out account's")
+    }
+
     /// accounts.json gone with no copy (written before the copy existed),
     /// while the keychain holds account items: lost, decided by the items.
     @Test func aMissingIndexWithAccountItemsInTheKeychainIsLost() throws {
