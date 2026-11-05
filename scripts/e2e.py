@@ -579,7 +579,9 @@ def s_accounts(h: Harness) -> None:
     gets the same album in its own Google account, one account after the
     other, as Original quality; Remove and signing in again lose nothing and
     create no second album. Runs after connect and photos."""
-    s = h.state()
+    # migrate relaunches the app just before this; reading the album list
+    # before it has loaded again found no album (StopIteration, 2026-11-05).
+    s = h.wait("albums to load", lambda s: s["albumsLoaded"] and s.get("selectedAlbumIDs"), timeout=180)
     album_id = s["selectedAlbumIDs"][0]
     count = next(a["count"] for a in s["albums"] if a["id"] == album_id)
     first = account(s, FIRST_ACCOUNT)
