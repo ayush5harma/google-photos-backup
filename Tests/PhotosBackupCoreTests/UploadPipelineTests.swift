@@ -21,9 +21,9 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
 
     @Test func automaticClimbsToThirtyTwoOnlyWhileEveryStepIsFaster() {
         var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap, automatic: true)
-        // Twenty-eight steps, 4 to 32, each 20% faster than the last.
+        // Nine steps, 4 to 32, each 20% faster than the last.
         var megabytes = 40.0
-        for level in 4...31 {
+        for level in UploadParallelism.ladder.dropLast() {
             #expect(parallelism.current == level)
             parallelism.measured(sample(Int64(megabytes)))
             megabytes *= 1.2
@@ -35,10 +35,29 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         #expect(parallelism.isClimbing == false)
     }
 
+    /// One upload more at level L is only 1/L more in flight, so with steps
+    /// of one a link that scales perfectly settled at 21 of 32: from about 20
+    /// on no step of one or two can be 10% faster.
+    @Test func everyStepAddsAtLeastAFifthSoALinkThatScalesReachesTheCap() {
+        let ladder = UploadParallelism.ladder
+        #expect(ladder.first == UploadParallelism.initial)
+        #expect(ladder.last == UploadParallelism.automaticCap)
+        for (lower, higher) in zip(ladder, ladder.dropFirst()) {
+            #expect(Double(higher) >= 1.2 * Double(lower), "\(lower) to \(higher)")
+        }
+        var parallelism = UploadParallelism(cap: UploadParallelism.automaticCap, automatic: true)
+        for _ in 0..<40 {
+            // 1 MB/s for every upload in flight.
+            parallelism.measured(sample(Int64(parallelism.current) * 10))
+        }
+        #expect(parallelism.current == 32)
+        #expect(parallelism.summary == "32 at a time (the most it uses)")
+    }
+
     @Test func automaticStartsAtFourAndClimbsWhileEachStepIsFaster() {
         var parallelism = UploadParallelism(cap: 8, automatic: true)
         #expect(parallelism.current == 4)
-        for (level, megabytes) in zip(4...7, [40, 50, 60, 70] as [Int64]) {
+        for (level, megabytes) in zip([4, 5, 6], [40, 50, 60] as [Int64]) {
             #expect(parallelism.current == level)
             parallelism.measured(sample(megabytes))
         }
@@ -56,10 +75,10 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         parallelism.measured(sample(40))  // 4 MB/s at 4
         parallelism.measured(sample(60))  // 6 MB/s at 5
         parallelism.measured(sample(62))  // 6.2 at 6: under 10% better than 5
-        #expect(parallelism.current == 7)
-        #expect(parallelism.isClimbing)
-        parallelism.measured(sample(80))  // 8 at 7: better than the best, 6 at 5
         #expect(parallelism.current == 8)
+        #expect(parallelism.isClimbing)
+        parallelism.measured(sample(80))  // 8 at 8: better than the best, 6 at 5
+        #expect(parallelism.current == 10)
         #expect(parallelism.isClimbing)
     }
 
@@ -68,10 +87,10 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         parallelism.measured(sample(40))  // 4 MB/s at 4
         parallelism.measured(sample(60))  // 6 MB/s at 5
         parallelism.measured(sample(62))  // 6.2 at 6
-        parallelism.measured(sample(64))  // 6.4 at 7: still under 6.6
+        parallelism.measured(sample(64))  // 6.4 at 8: still under 6.6
         #expect(parallelism.current == 5)
         #expect(parallelism.isClimbing == false)
-        #expect(parallelism.summary == "5 at a time (no faster at 7)")
+        #expect(parallelism.summary == "5 at a time (no faster at 8)")
         parallelism.measured(sample(200))
         #expect(parallelism.current == 5)
     }
@@ -107,7 +126,7 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         #expect(parallelism.isClimbing)
         #expect(parallelism.summary == "6 at a time, finding the fastest")
         parallelism.measured(sample(70))  // 7 at 6: over 6.6
-        #expect(parallelism.current == 7)
+        #expect(parallelism.current == 8)
     }
 
     @Test func aReprobeIsJudgedAgainstTheSettledLevelsLatestRate() {
@@ -117,7 +136,7 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         for _ in 0..<UploadParallelism.reprobeAfter { parallelism.measured(sample(30)) }
         #expect(parallelism.current == 6)
         parallelism.measured(sample(34))
-        #expect(parallelism.current == 7)
+        #expect(parallelism.current == 8)
         #expect(parallelism.isClimbing)
     }
 

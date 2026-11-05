@@ -38,8 +38,8 @@ public struct UploadSample: Equatable, Sendable {
 /// trips (hash check, upload token, bytes, commit), so the photos in flight,
 /// not the bandwidth, set the pace.
 ///
-/// Automatically, it starts at four and adds one while each step is
-/// measurably faster (10% more bytes a second than the best level so far).
+/// Automatically, it starts at four and climbs the `ladder` while each step
+/// is measurably faster (10% more bytes a second than the best level so far).
 /// A step that is not faster is the link's limit showing as longer per-file
 /// times, so that is also how rising latency reads here; but one such step
 /// can as well be noise (a few slow commits, a batch of tiny files), so it
@@ -57,6 +57,11 @@ public struct UploadParallelism: Equatable, Sendable {
     /// before a 177 Mbit/s uplink does.
     public static let automaticCap = 32
     public static let initial = 4
+    /// The levels the climb steps through, each at least a fifth more uploads
+    /// than the one before. With steps of one, a step at level L adds only
+    /// 1/L more in flight, so from about ten on no step could be 10% faster
+    /// even on a link that scales perfectly; such a link settled at 21 of 32.
+    public static let ladder = [4, 5, 6, 8, 10, 13, 16, 20, 25, 32]
     public static let improvement = 0.10
     /// A level is judged on at least this much: one batch of photos is
     /// usually enough, a batch of items Google already has is not.
@@ -148,14 +153,14 @@ public struct UploadParallelism: Equatable, Sendable {
                 settledDecisions = 0
             } else {
                 // At the cap this measures the same level once more.
-                current = min(current + 1, cap)
+                current = step(above: current)
             }
             return
         }
         best = rate
         misses = 0
         if current < cap {
-            current += 1
+            current = step(above: current)
         } else {
             reason = .most
             isClimbing = false
@@ -171,7 +176,13 @@ public struct UploadParallelism: Equatable, Sendable {
         reason = .finding
         misses = 0
         isClimbing = true
-        current = min(current + 1, cap)
+        current = step(above: current)
+    }
+
+    /// The next rung of the ladder above `level`, never past the cap; the cap
+    /// itself when there is none.
+    private func step(above level: Int) -> Int {
+        min(cap, Self.ladder.first { $0 > level } ?? cap)
     }
 
     private mutating func backOff(to level: Int, because cause: Reason) {
