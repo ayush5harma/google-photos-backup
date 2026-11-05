@@ -42,6 +42,10 @@ The hamburger button switches between labeled navigation and a compact icon rail
 
 Only confirmed uploads enter the local resume state. A later run skips unchanged, confirmed files and retries pending files and album updates; edited files may upload again. Overlapping folder selections are deduplicated. The app uploads copies and does not delete source files or Google Photos media.
 
+### Upload speed
+
+A backup runs one uploader process for the whole run, so Python's start-up, the Google sign-in, and connections to Google are paid once rather than for every batch. In **Settings**, **Choose parallel uploads automatically** starts with 4 uploads at once and adds one per batch while that is at least 10% faster, up to 32. One slower batch is measured again before it ends the climb. When Google asks the app to slow down, it halves the number, and repeated server errors take one off; either holds for the rest of the backup. Turn it off to use exactly the number you choose for every batch. **Items per batch** (5-100, default 50) sets how many files go in one request to the uploader. The run view shows the upload speed, the estimated time left, and how many uploads are going at once. Upload quality is never changed by these settings: Original quality always uses gpmc's Pixel XL mode.
+
 This preview does not yet provide automatic scheduling, a tray app, Windows Photos library integration, or the macOS Messages features.
 
 ## Windows verification

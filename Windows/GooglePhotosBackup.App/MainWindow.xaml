@@ -225,6 +225,17 @@
                                    TextWrapping="Wrap" Opacity="0.75" />
                         <ToggleSwitch x:Name="MirrorFoldersToggle" Header="Create Google Photos albums for folders"
                                       Toggled="MirrorFolders_Toggled" />
+                        <ToggleSwitch x:Name="ThreadsAutomaticToggle" Header="Choose parallel uploads automatically"
+                                      Toggled="ThreadsAutomatic_Toggled" />
+                        <NumberBox x:Name="ThreadsBox" Header="Parallel uploads" Width="200" HorizontalAlignment="Left"
+                                   SpinButtonPlacementMode="Inline" SmallChange="1" LargeChange="4"
+                                   ValidationMode="InvalidInputOverwritten" ValueChanged="Threads_ValueChanged"
+                                   AutomationProperties.Name="Parallel uploads" />
+                        <NumberBox x:Name="BatchSizeBox" Header="Items per batch" Width="200" HorizontalAlignment="Left"
+                                   SpinButtonPlacementMode="Inline" SmallChange="5" LargeChange="25"
+                                   ValidationMode="InvalidInputOverwritten" ValueChanged="BatchSize_ValueChanged"
+                                   AutomationProperties.Name="Items per batch" />
+                        <TextBlock x:Name="ParallelUploadsNote" TextWrapping="Wrap" Opacity="0.75" />
                     </StackPanel>
                 </StackPanel>
             </ScrollViewer>

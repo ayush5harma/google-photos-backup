@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using GooglePhotosBackup.Core;
 
 namespace GooglePhotosBackup.App;
 
@@ -9,8 +10,21 @@ internal sealed class AppPreferences
     public List<string> Folders { get; set; } = [];
     public string Quality { get; set; } = "original";
     public bool MirrorFolders { get; set; } = true;
-    public int Threads { get; set; } = 2;
+    /// <summary>The parallel uploads Manual uses. Settings before issue #58 saved 2 here without showing it;
+    /// that only matters once automatic is turned off.</summary>
+    public int Threads { get; set; } = UploadParallelism.Initial;
+    /// <summary>Absent from settings saved before issue #58, so those users get automatic.</summary>
+    public bool ThreadsAutomatic { get; set; } = true;
+    public int BatchSize { get; set; } = BackupOptions.DefaultBatchSize;
     public string? ICloudAccount { get; set; }
+
+    /// <summary>A hand-edited or older settings file cannot start a run the coordinator would refuse.</summary>
+    public AppPreferences Normalized()
+    {
+        Threads = Math.Clamp(Threads, 1, UploadParallelism.MaximumThreads);
+        BatchSize = Math.Clamp(BatchSize, BackupOptions.MinimumChosenBatchSize, BackupOptions.MaximumBatchSize);
+        return this;
+    }
 }
 
 internal sealed record RunRecord(DateTimeOffset Started, int Uploaded, int Existing, int Failed, bool Canceled);
@@ -36,7 +50,7 @@ internal sealed class LocalStore
     {
         try
         {
-            return JsonSerializer.Deserialize<AppPreferences>(File.ReadAllText(PreferencesFile)) ?? new AppPreferences();
+            return (JsonSerializer.Deserialize<AppPreferences>(File.ReadAllText(PreferencesFile)) ?? new AppPreferences()).Normalized();
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException)
         {
