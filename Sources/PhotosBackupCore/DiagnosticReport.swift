@@ -246,8 +246,7 @@ public enum DiagnosticReport {
         ByteCountFormatter.string(fromByteCount: count, countStyle: .file)
     }
 
-    /// Megabytes a second, as the run view shows them.
     static func speed(_ bytesPerSecond: Double) -> String {
-        String(format: "%.1f MB/s", bytesPerSecond / 1_000_000)
+        ThroughputMeter.speed(bytesPerSecond)
     }
 }

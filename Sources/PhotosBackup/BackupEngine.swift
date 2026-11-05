@@ -80,13 +80,20 @@ private struct SourceFingerprint: Equatable {
     let bytes: Int64
 }
 
-/// One upload step's photos, exported into a private staging folder.
+/// One upload step's photos, exported into private staging folders (a
+/// second one when an export ahead stopped part-way and the rest followed).
 private struct StagedBatch {
-    let directory: URL
-    let ids: [String]
+    var directories: [URL]
+    var ids: [String]
     var items: [BatchItem] = []
 
     var bytes: Int64 { items.reduce(0) { $0 + ($1.size ?? 0) } }
+
+    mutating func append(_ other: StagedBatch) {
+        directories += other.directories
+        ids += other.ids
+        items += other.items
+    }
 }
 
 /// Runs backups: plans from the selected albums, exports each batch from
@@ -654,16 +661,21 @@ final class BackupEngine {
     private func upload(_ assetIDs: [String], album: (id: String, title: String)?, includingHidden: Bool = false,
                         staged: StagedBatch? = nil, stageNext: () -> Void = {}, auth: String,
                         runtime: BridgeRuntime, settings: BackupSettings) async -> Outcome {
-        let batch: StagedBatch
-        if let staged {
-            batch = staged
-        } else {
+        var batch = staged ?? StagedBatch(directories: [], ids: [])
+        defer { release(batch) }
+        // Not exported yet: the whole step, or what an export ahead left when
+        // a hold stopped it part-way (it neither exported nor failed those).
+        let exported = Set(batch.items.map(\.id))
+        let missing = assetIDs.filter { !exported.contains($0) && !failedAssets.contains($0) }
+        if !missing.isEmpty {
             // iCloud originals download during the export, so it waits for the
             // network like the upload does.
-            if let outcome = await clearance(retryAt: nil, holding: [], category: .photos) { return outcome }
-            batch = await stage(assetIDs, includingHidden: includingHidden, ahead: false)
+            if let outcome = await clearance(retryAt: nil, holding: [], category: .photos) {
+                markStopped(batch.items.map(\.id))
+                return outcome
+            }
+            batch.append(await stage(missing, includingHidden: includingHidden, ahead: false))
         }
-        defer { release(batch) }
         if phase == .stopping {
             markStopped(batch.items.map(\.id))
             return .halt
@@ -674,14 +686,20 @@ final class BackupEngine {
     }
 
     /// Exports `assetIDs` from Photos into a new private staging folder. An
-    /// export ahead of its turn also stops for Pause and when discarded, and
-    /// its rows wait as ready rather than look like they are uploading.
+    /// export ahead of its turn also stops for Pause, when discarded, and
+    /// whenever the run waits or a condition would hold it (offline, a
+    /// metered network...), so it never downloads iCloud originals the
+    /// settings say to hold; its step exports the rest on its turn. Its rows
+    /// wait as ready rather than look like they are uploading.
     private func stage(_ assetIDs: [String], includingHidden: Bool, ahead: Bool) async -> StagedBatch {
-        var batch = StagedBatch(directory: model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true), ids: assetIDs)
+        let directory = model.paths.staging.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        var batch = StagedBatch(directories: [directory], ids: assetIDs)
         inFlight.formUnion(assetIDs)
         await AssetExporter().export(assetIDs, includingHidden: includingHidden,
-                                     pickedFiles: includingHidden ? pickedFiles : [:], into: batch.directory, shouldStop: {
-            self.phase == .stopping || (ahead && (Task.isCancelled || self.shouldHalt))
+                                     pickedFiles: includingHidden ? pickedFiles : [:], into: directory, shouldStop: {
+            if self.phase == .stopping { return true }
+            guard ahead else { return false }
+            return Task.isCancelled || self.shouldHalt || self.phase == .waiting || self.holdingCondition() != nil
         }, started: { id, filename in
             self.show(id, filename: filename, status: .exporting)
         }, finished: { id, result in
@@ -703,7 +721,7 @@ final class BackupEngine {
     /// The batch is sent or given up: its files go, and Retry may take its items again.
     private func release(_ batch: StagedBatch) {
         inFlight.subtract(batch.ids)
-        try? FileManager.default.removeItem(at: batch.directory)
+        for directory in batch.directories { try? FileManager.default.removeItem(at: directory) }
     }
 
     /// While step `index` uploads, exports the next upload steps of the pass,
@@ -996,6 +1014,7 @@ final class BackupEngine {
             let unanswered = pending.filter { !answered.contains($0) }
             sample.seconds = Date().timeIntervalSince(sentAt)
             sample.rateLimited = limited || fatal?.0 == .rateLimit
+            sample.includesStartUp = bridge.lastRequestStartedBridge
             adjustParallelism(after: sample, category: category)
 
             if let (kind, message) = fatal {
@@ -1351,6 +1370,8 @@ final class BackupEngine {
     /// The item has failed for this run; Retry or the next run releases it.
     private func fail(_ id: String, _ message: String, retryable: Bool) {
         failedAssets.insert(id)
+        // Done for this batch, even one exported ahead: Retry may take it now.
+        inFlight.remove(id)
         tally.failed(id)
         syncRunCounts()
         if id.hasPrefix("messages:") {

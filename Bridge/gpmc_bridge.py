@@ -111,8 +111,8 @@ def upload_flags(quality: str) -> dict[str, bool]:
     flags and nothing else (Pixel XL when both are False). Every upload the
     bridge makes passes exactly these, so one long-lived bridge, more threads
     or kept connections cannot move an Original-quality item onto the
-    account's storage. tests/test_bridge.py QualityGuardTests hold every path
-    to it.
+    account's storage. tests/test_uplink.py QualityGuardTests and
+    tests/test_original_real_gpmc.py hold every path to it.
     """
     saver, use_quota = QUALITIES[quality]
     return {"saver": saver, "use_quota": use_quota}

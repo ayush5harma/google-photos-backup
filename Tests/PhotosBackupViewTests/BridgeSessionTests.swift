@@ -112,17 +112,21 @@ final class ExportAheadTests: XCTestCase {
         }
 
         ahead.stage([1, 2, 3, 4], export: export)
+        XCTAssertEqual(ahead.count, 1, "one export at a time")
+        // Long enough for both window places to fill, and no more.
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(started, [1, 2])
         XCTAssertEqual(ahead.count, StagingWindow.batchesAhead)
         let first = await ahead.take(1)
         XCTAssertEqual(first, 1_000)
-        ahead.stage([2, 3, 4], export: export)
         let second = await ahead.take(2)
         let third = await ahead.take(3)
         XCTAssertEqual([second, third], [2_000, 3_000])
         let none = await ahead.take(9)
         XCTAssertNil(none)
-        XCTAssertEqual(started, [1, 2, 3])
+        XCTAssertEqual(Array(started.prefix(3)), [1, 2, 3])
         XCTAssertEqual(most, 1, "one export at a time")
+        _ = await ahead.discard()
         XCTAssertEqual(ahead.bytesReady, 0)
     }
 
@@ -133,20 +137,45 @@ final class ExportAheadTests: XCTestCase {
             return Task.isCancelled
         }
         let cancelled = await ahead.discard()
-        XCTAssertEqual(cancelled, [true, true])
+        XCTAssertEqual(cancelled, [true], "the running export is cancelled; the next never starts")
         XCTAssertEqual(ahead.count, 0)
         XCTAssertEqual(ahead.bytesReady, 0)
     }
 
+    /// The cap is judged on finished exports: a batch that fills it holds
+    /// back the next one until it is taken.
     func testTheByteCapHoldsBackTheNextExport() async throws {
         let ahead = ExportAhead<Int64>(bytes: { $0 })
-        ahead.stage([1]) { _ in StagingWindow.bytesAhead }
-        _ = await ahead.take(1)
-        ahead.stage([2]) { _ in StagingWindow.bytesAhead }
-        // Wait for 2 to finish exporting: its bytes fill the window.
-        try? await Task.sleep(for: .milliseconds(50))
-        ahead.stage([3]) { _ in 1 }
+        var started: [Int] = []
+        ahead.stage([1, 2]) { index in
+            started.append(index)
+            return index == 1 ? StagingWindow.bytesAhead : 1
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(started, [1])
         XCTAssertEqual(ahead.count, 1)
+        _ = await ahead.take(1)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(started, [1, 2])
+        _ = await ahead.discard()
+    }
+
+    /// A step taken before its export began is the caller's to export; it
+    /// is never exported again behind its back.
+    func testATakenStepIsNotExportedLater() async throws {
+        let ahead = ExportAhead<Int>(bytes: { _ in 0 })
+        var started: [Int] = []
+        ahead.stage([1, 2]) { index in
+            started.append(index)
+            try? await Task.sleep(for: .milliseconds(30))
+            return index
+        }
+        let early = await ahead.take(2)
+        XCTAssertNil(early)
+        let first = await ahead.take(1)
+        XCTAssertEqual(first, 1)
+        try await Task.sleep(for: .milliseconds(80))
+        XCTAssertEqual(started, [1])
         _ = await ahead.discard()
     }
 }

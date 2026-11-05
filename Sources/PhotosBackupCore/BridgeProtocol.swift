@@ -3,6 +3,8 @@ import Foundation
 /// The Swift half of the line protocol documented in Bridge/gpmc_bridge.py.
 public enum BridgeProtocol {
     public static let version = 1
+    /// The bridge's EXIT_STOPPED; after it a serve session has ended.
+    public static let stoppedStatus: Int32 = 5
 }
 
 /// What gpmc reports to Google as the uploading device, which decides the

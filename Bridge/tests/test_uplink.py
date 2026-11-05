@@ -10,7 +10,9 @@ another device or quality.
 
 import io
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import unittest
@@ -287,6 +289,26 @@ class ServeProcessTests(unittest.TestCase):
         events = [json.loads(line) for line in proc.stdout.splitlines()]
         self.assertEqual([e["type"] for e in events], ["version", "served", "version", "served"])
         self.assertEqual([e["code"] for e in of_type(events, "served")], [0, 0])
+
+    @unittest.skipIf(os.name == "nt", "a console read is not interrupted by CTRL_BREAK on Windows")
+    def test_a_stop_between_requests_ends_the_session_with_stopped(self):
+        script = Path(gpmc_bridge.__file__)
+        process = subprocess.Popen([sys.executable, "-I", str(script)], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE, text=True)
+        process.stdin.write(json.dumps({"command": "serve"}) + "\n" + json.dumps({"command": "version"}) + "\n")
+        process.stdin.flush()
+        answered = [json.loads(process.stdout.readline()) for _ in range(2)]
+        # Idle in readline, stdin still open: what a run's Stop finds.
+        process.send_signal(signal.SIGTERM)
+        rest = [json.loads(line) for line in process.stdout]
+        process.wait(timeout=30)
+        process.stdin.close()
+        process.stdout.close()
+        process.stderr.close()
+
+        self.assertEqual([e["type"] for e in answered], ["version", "served"])
+        self.assertEqual([e["type"] for e in rest], ["stopped"])
+        self.assertEqual(process.returncode, gpmc_bridge.EXIT_STOPPED)
 
     def test_a_request_spread_over_lines_is_still_one_request(self):
         proc = self.bridge(json.dumps({"command": "version"}, indent=2))

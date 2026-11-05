@@ -86,20 +86,25 @@ final class BridgeProcess {
 /// events of one request, in order, then that request's exit status.
 @MainActor
 final class BridgeSession {
-    /// The bridge's EXIT_STOPPED: after a stop the bridge ends its session.
-    static let stoppedStatus: Int32 = 5
-
     private var child: BridgeChild?
     private var events: AsyncStream<BridgeEvent>.Iterator?
+    /// A request is waiting for its answer.
+    private var busy = false
+    /// The last request started the bridge, so its time includes Python's
+    /// start-up and the sign-in.
+    private(set) var lastRequestStartedBridge = false
 
     func run(_ request: BridgeRequest, runtime: BridgeRuntime, workDirectory: URL, log: URL,
              onEvent: (BridgeEvent) -> Void) async throws -> Int32 {
+        lastRequestStartedBridge = !(child?.process.isRunning ?? false)
         let child = try running(runtime: runtime, workDirectory: workDirectory, log: log)
+        busy = true
+        defer { busy = false }
         child.note(request.command)
         child.send(request)
         while let event = await nextEvent() {
             if case let .served(code) = event {
-                if code == Self.stoppedStatus { forget() }
+                if code == BridgeProtocol.stoppedStatus { forget() }
                 return code
             }
             onEvent(event)
@@ -118,19 +123,21 @@ final class BridgeSession {
     }
 
     /// SIGTERM, as for BridgeProcess: the request in flight ends with what
-    /// Google confirmed so far, and so does the session.
+    /// Google confirmed so far, and so does the session. Between requests
+    /// nobody reads the bridge's last "stopped", so the session lets it go
+    /// at once and the next request starts a new bridge.
     func terminate() {
         if let process = child?.process, process.isRunning { process.terminate() }
+        if !busy { forget() }
     }
 
     private func running(runtime: BridgeRuntime, workDirectory: URL, log: URL) throws -> BridgeChild {
         if let child, child.process.isRunning { return child }
         forget()
-        let started = try BridgeChild.launch(runtime: runtime, workDirectory: workDirectory, log: log, first: "serve")
-        BridgeProcess.track(started.process)
-        started.process.terminationHandler = { process in
+        let started = try BridgeChild.launch(runtime: runtime, workDirectory: workDirectory, log: log, first: "serve") { process in
             Task { @MainActor in BridgeProcess.untrack(process) }
         }
+        BridgeProcess.track(started.process)
         started.send(.serve)
         child = started
         events = started.events.makeAsyncIterator()
@@ -162,7 +169,10 @@ private struct BridgeChild {
     let events: AsyncStream<BridgeEvent>
     let log: FileHandle
 
-    static func launch(runtime: BridgeRuntime, workDirectory: URL, log: URL, first command: String) throws -> BridgeChild {
+    /// - Parameter exited: runs on the process's own queue when it ends; set
+    ///   before it starts, so a bridge that exits at once still calls it.
+    static func launch(runtime: BridgeRuntime, workDirectory: URL, log: URL, first command: String,
+                       exited: (@Sendable (Process) -> Void)? = nil) throws -> BridgeChild {
         let files = FileManager.default
         try files.createDirectory(at: workDirectory, withIntermediateDirectories: true)
         if let size = try? files.attributesOfItem(atPath: log.path)[.size] as? UInt64, size > Self.logLimit {
@@ -216,6 +226,7 @@ private struct BridgeChild {
             }
         }
 
+        process.terminationHandler = exited
         do {
             try process.run()
         } catch {

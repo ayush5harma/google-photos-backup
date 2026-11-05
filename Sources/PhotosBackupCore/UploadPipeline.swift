@@ -13,13 +13,18 @@ public struct UploadSample: Equatable, Sendable {
     /// Items that failed in a way sending again may fix: a 5xx, a 408, a
     /// dropped connection or a timeout.
     public var serverFailures: Int
+    /// The run's first request, whose time includes the bridge's start-up
+    /// and sign-in: it counts for pushback, not for speed.
+    public var includesStartUp: Bool
 
-    public init(bytes: Int64, seconds: TimeInterval, items: Int, rateLimited: Bool, serverFailures: Int) {
+    public init(bytes: Int64, seconds: TimeInterval, items: Int, rateLimited: Bool, serverFailures: Int,
+                includesStartUp: Bool = false) {
         self.bytes = bytes
         self.seconds = seconds
         self.items = items
         self.rateLimited = rateLimited
         self.serverFailures = serverFailures
+        self.includesStartUp = includesStartUp
     }
 }
 
@@ -73,7 +78,7 @@ public struct UploadParallelism: Equatable, Sendable {
             backOff(to: current - 1, because: .serverTrouble)
             return
         }
-        guard isClimbing, sample.items > 0 else { return }
+        guard isClimbing, sample.items > 0, !sample.includesStartUp else { return }
         pendingBytes += sample.bytes
         pendingSeconds += sample.seconds
         guard pendingBytes >= Self.decisionBytes, pendingSeconds >= Self.decisionSeconds else { return }
@@ -194,9 +199,14 @@ public struct ThroughputMeter: Equatable, Sendable {
     /// "12.3 MB/s, about 14 min left"; nil until there is a speed to show.
     public static func describe(bytesPerSecond: Double?, secondsLeft: TimeInterval?) -> String? {
         guard let bytesPerSecond else { return nil }
-        let speed = String(format: "%.1f MB/s", bytesPerSecond / 1_000_000)
+        let speed = speed(bytesPerSecond)
         guard let secondsLeft else { return speed }
         return "\(speed), \(timeLeft(secondsLeft))"
+    }
+
+    /// "12.3 MB/s" (decimal megabytes, as Finder counts them).
+    public static func speed(_ bytesPerSecond: Double) -> String {
+        String(format: "%.1f MB/s", bytesPerSecond / 1_000_000)
     }
 
     static func timeLeft(_ seconds: TimeInterval) -> String {
@@ -211,8 +221,8 @@ public struct ThroughputMeter: Equatable, Sendable {
 
 /// How far the export from Photos may run ahead of the upload (issue #50):
 /// the next batches are staged while one uploads, so the network does not
-/// wait on PhotoKit, but never so far that a run stages more than a couple
-/// of batches or a couple of gigabytes of videos at once.
+/// wait on PhotoKit, but a new export starts only while fewer than two
+/// batches and under 2 GB are waiting.
 public enum StagingWindow {
     public static let batchesAhead = 2
     public static let bytesAhead: Int64 = 2_000_000_000

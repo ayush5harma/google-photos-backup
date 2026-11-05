@@ -70,6 +70,20 @@ private func sample(_ megabytes: Int64, seconds: TimeInterval = 10, items: Int =
         #expect(parallelism.current == 5)
     }
 
+    @Test func theRequestThatStartedTheBridgeCountsOnlyForPushback() {
+        var parallelism = UploadParallelism(cap: 8)
+        var first = sample(40, seconds: 20)
+        first.includesStartUp = true
+        parallelism.measured(first)
+        #expect(parallelism.current == 4)
+        parallelism.measured(sample(40))
+        #expect(parallelism.current == 5)
+        var limited = UploadParallelism(cap: 8)
+        first.rateLimited = true
+        limited.measured(first)
+        #expect(limited.current == 2)
+    }
+
     @Test func aChosenNumberIsTheMostItEverUses() {
         var two = UploadParallelism(cap: 2)
         #expect(two.current == 2)

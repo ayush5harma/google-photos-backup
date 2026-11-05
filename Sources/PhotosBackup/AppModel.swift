@@ -71,9 +71,10 @@ struct BackupSettings: Codable, Equatable {
         }
         quality = try value(.quality, quality)
         threads = Self.threadRange.clamp(try value(.threads, threads))
-        // Settings saved before 0.6 stored threads = 2, the old default, for
-        // everyone; they get Automatic like a new install.
-        threadsAutomatic = try value(.threadsAutomatic, threadsAutomatic)
+        // Settings saved before this key existed: 2 was the default (stored
+        // for everyone who never touched it) and becomes Automatic; a number
+        // someone chose stays the most a run uses.
+        threadsAutomatic = try value(.threadsAutomatic, threads == 2)
         batchSize = Self.batchRange.clamp(try value(.batchSize, batchSize))
         mirrorAlbums = try value(.mirrorAlbums, mirrorAlbums)
         automatic = try value(.automatic, automatic)
