@@ -10,13 +10,25 @@ public sealed record ICloudTrustedPhone(int Id, string Label);
 
 public sealed record ICloudBackupResult(int Uploaded, int Existing, int Failed, int Pending);
 
-public sealed record ICloudBackupProgress(int Completed, int Total, int Uploaded, int Existing, int Failed);
+/// <summary>BytesPerSecond is what Google is being sent, null until the bridge
+/// has measured five seconds of sending; Threads is uploads at once (issue #60).</summary>
+public sealed record ICloudBackupProgress(int Completed, int Total, int Uploaded, int Existing, int Failed,
+    long BytesSent = 0, double? BytesPerSecond = null, int Threads = 0)
+{
+    /// <summary>"12.3 MB/s" (decimal megabytes, as Explorer and Finder count them), or null.</summary>
+    public string? Speed => BytesPerSecond is { } rate ? FormatSpeed(rate) : null;
+
+    public static string FormatSpeed(double bytesPerSecond) =>
+        (bytesPerSecond / 1_000_000).ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " MB/s";
+}
 public sealed record ICloudSourceAsset(string Id, string Filename);
 public sealed record ICloudReclaimPreview(string Token, int Count, long Bytes, int ExpiresIn);
 public sealed record ICloudReclaimResult(int SoftDeleted, int Retained, int Uncertain);
 
 public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirectory, string stagingDirectory)
 {
+    /// <summary>The bridge's range of uploads at once for an iCloud backup.</summary>
+    public const int MinThreads = 1, MaxThreads = 32;
     private string? reclaimPreviewAccount;
     private string? reclaimPreviewCredentialHash;
     public event Action<ICloudBackupProgress>? ProgressChanged;
@@ -87,14 +99,20 @@ public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirector
         return status.Value;
     }
 
-    public async Task<ICloudBackupResult> BackupAsync(string account, string googleCredential, CancellationToken cancellationToken, bool reclaimAfterBackup = false)
+    /// <param name="threads">Uploads at once when <paramref name="threadsAutomatic"/> is off: exactly this many.</param>
+    /// <param name="threadsAutomatic">The bridge starts at 4 and finds the fastest level itself (issue #60).</param>
+    public async Task<ICloudBackupResult> BackupAsync(string account, string googleCredential, CancellationToken cancellationToken,
+        bool reclaimAfterBackup = false, int threads = 4, bool threadsAutomatic = true)
     {
         if (string.IsNullOrWhiteSpace(account)) throw new ArgumentException("Connect iCloud first.", nameof(account));
         if (GoogleSignIn.Email(googleCredential) is null) throw new ArgumentException("Connect Google Photos first.", nameof(googleCredential));
+        if (threads is < MinThreads or > MaxThreads)
+            throw new ArgumentOutOfRangeException(nameof(threads), $"Uploads at once must be between {MinThreads} and {MaxThreads}.");
         var request = new JsonObject
         {
             ["command"] = "backup", ["account"] = account.Trim(), ["state_dir"] = stateDirectory,
-            ["staging_dir"] = stagingDirectory, ["auth_data"] = googleCredential
+            ["staging_dir"] = stagingDirectory, ["auth_data"] = googleCredential,
+            ["threads"] = threads, ["threads_automatic"] = threadsAutomatic
         };
         if (reclaimAfterBackup)
         {
@@ -123,7 +141,8 @@ public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirector
                 case "progress":
                     ProgressChanged?.Invoke(new ICloudBackupProgress(
                         Number(message, "completed"), Number(message, "total"), Number(message, "uploaded"),
-                        Number(message, "existing"), Number(message, "failed")));
+                        Number(message, "existing"), Number(message, "failed"), Long(message, "bytes_sent"),
+                        Rate(message, "bytes_per_second"), Number(message, "threads")));
                     break;
                 case "source_asset":
                     if (Text(message, "id") is { Length: > 0 } id && Text(message, "filename") is { Length: > 0 } filename)
@@ -196,6 +215,13 @@ public sealed class ICloudCoordinator(IBridgeClient bridge, string stateDirector
         item[key] is JsonValue value && value.TryGetValue<int>(out var number) && number >= 0 ? number : 0;
     private static long Long(JsonObject item, string key) =>
         item[key] is JsonValue value && value.TryGetValue<long>(out var number) && number >= 0 ? number : 0;
+    // Read from the number's JSON text: a JsonValue holding a CLR int or long
+    // does not convert to double through TryGetValue, a parsed one does.
+    private static double? Rate(JsonObject item, string key) =>
+        item[key] is JsonValue value && value.GetValueKind() == System.Text.Json.JsonValueKind.Number &&
+        double.TryParse(value.ToJsonString(), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var rate) && rate >= 0 && double.IsFinite(rate)
+            ? rate : null;
 
     private static string CredentialHash(string credential) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(credential)));
