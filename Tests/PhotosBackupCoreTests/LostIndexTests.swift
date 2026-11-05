@@ -43,6 +43,7 @@ import Testing
 
     /// The keychain's items, in its (sorted) order, as the app reads them.
     private let keychainEmails = [work, primary]
+    private let keychainIDs: Set<String> = [workID, primaryID]
 
     @Test func anUnreadableIndexIsReadFromItsCopyWithTheChoiceIntact() throws {
         let directory = try scratch()
@@ -61,7 +62,7 @@ import Testing
         #expect(loaded.unreadable.isEmpty, "nothing was lost, so nothing is reported unreadable")
         #expect(!loaded.indexWasLost(keychainHasAccountItems: true))
         var library = loaded.library
-        library.adoptingStrays([], indexLost: false)
+        library.adoptingStrays([], indexLost: false, credentials: [Self.primaryID, Self.workID])
         #expect(library.choice == .chosen)
         #expect(library.accounts.map(\.id) == [Self.primaryID, Self.workID])
         #expect(library.included.map(\.id) == [Self.primaryID])
@@ -87,7 +88,10 @@ import Testing
 
     /// The reviewer's exact failure, with the copy unreadable too: before
     /// the fix choice=all, the work account included and storage-checked.
-    @Test func aLostIndexAndCopyBackUpOnlyToTheAccountStateJsonBelongsTo() throws {
+    /// With the work account's credential in the keychain nothing says the
+    /// primary was the one backed up to (second round: the primary could
+    /// have been the one left out), so nobody is ticked.
+    @Test func aLostIndexAndCopyTickNobodyWhileAnotherAccountIsSignedIn() throws {
         let directory = try scratch()
         defer { try? FileManager.default.removeItem(at: directory) }
         let store = AccountsStore(directory: directory)
@@ -101,18 +105,70 @@ import Testing
         let lost = loaded.indexWasLost(keychainHasAccountItems: true)
         #expect(lost)
         var rebuilt = loaded.library
-        rebuilt.adoptingStrays(keychainEmails, indexLost: lost, stored: { store.readState($0) })
+        let chooseAgain = rebuilt.adoptingStrays(keychainEmails, indexLost: lost, credentials: keychainIDs,
+                                                 stored: { store.readState($0) })
 
+        #expect(chooseAgain, "the targets have to be chosen again")
         #expect(rebuilt.choice == .chosen)
         #expect(rebuilt.primary?.id == Self.primaryID)
         #expect(rebuilt.accounts.map(\.id) == [Self.primaryID, Self.workID])
-        #expect(!rebuilt.isIncluded(Self.workID), "the work account left out is not backed up to")
-        #expect(rebuilt.account(Self.workID)?.storageChecked == false, "it waits for its storage check")
-        #expect(rebuilt.included.map(\.id) == [Self.primaryID])
-        #expect(rebuilt.account(Self.primaryID)?.storageChecked == true)
+        #expect(rebuilt.included.isEmpty, "nobody is backed up to until chosen")
+        #expect(rebuilt.accounts.allSatisfy { !$0.storageChecked }, "each waits for its storage check")
         #expect(rebuilt.state(for: Self.primaryID)?.uploaded.mapValues(\.mediaKey) == primaryState.uploaded.mapValues(\.mediaKey))
         #expect(rebuilt.state(for: Self.primaryID)?.mirrors == primaryState.mirrors)
         #expect(rebuilt.account(Self.primaryID)?.stateFile == "state.json")
+    }
+
+    /// The second round's reproduction: the account state.json belongs to
+    /// was left out and the other one chosen. Before the fix the rebuild
+    /// ticked the left-out account, storage-checked, and backed up to it.
+    @Test func aLostIndexNeverTicksTheStateJsonAccountThatWasLeftOut() throws {
+        let directory = try scratch()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AccountsStore(directory: directory)
+        var library = store.load(legacyCredential: (true, Self.primary)).library
+        library.adopting(account: Self.work)
+        library.confirmStorage(Self.workID)
+        library.include(Self.primaryID, false)
+        #expect(library.included.map(\.id) == [Self.workID])
+        for account in library.accounts {
+            try store.save(try #require(library.storedState(for: account.id)), file: account.stateFile)
+        }
+        try store.save(library.index)
+        try Data("{broken".utf8).write(to: store.indexURL)
+        try Data("{broken".utf8).write(to: store.indexCopyURL)
+
+        let loaded = store.load(legacyCredential: (false, nil))
+        var rebuilt = loaded.library
+        let chooseAgain = rebuilt.adoptingStrays(keychainEmails, indexLost: loaded.indexWasLost(keychainHasAccountItems: true),
+                                                 credentials: keychainIDs, stored: { store.readState($0) })
+        #expect(chooseAgain)
+        #expect(rebuilt.choice == .chosen)
+        #expect(!rebuilt.isIncluded(Self.primaryID), "the account left out is not backed up to")
+        #expect(rebuilt.included.isEmpty)
+        #expect(rebuilt.account(Self.primaryID)?.storageChecked == false)
+        #expect(rebuilt.account(Self.workID)?.storageChecked == false)
+    }
+
+    /// Only the account state.json belongs to has a credential: it is the
+    /// one this Mac was backing up to, as before there were accounts.
+    @Test func aLostIndexWithOnlyTheStateJsonAccountSignedInTicksIt() throws {
+        let directory = try scratch()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AccountsStore(directory: directory)
+        _ = try leftOutWorkAccount(in: store)
+        try Data("{broken".utf8).write(to: store.indexURL)
+        try Data("{broken".utf8).write(to: store.indexCopyURL)
+
+        let loaded = store.load(legacyCredential: (false, nil))
+        var rebuilt = loaded.library
+        let chooseAgain = rebuilt.adoptingStrays([Self.primary], indexLost: loaded.indexWasLost(keychainHasAccountItems: true),
+                                                 credentials: [Self.primaryID], stored: { store.readState($0) })
+        #expect(!chooseAgain)
+        #expect(rebuilt.choice == .chosen)
+        #expect(rebuilt.included.map(\.id) == [Self.primaryID])
+        #expect(rebuilt.account(Self.primaryID)?.storageChecked == true)
+        #expect(rebuilt.account(Self.workID) == nil, "the work account signed out stays unknown until it signs in")
     }
 
     /// accounts.json gone with no copy (written before the copy existed),
@@ -130,9 +186,11 @@ import Testing
         let lost = loaded.indexWasLost(keychainHasAccountItems: true)
         #expect(lost)
         var rebuilt = loaded.library
-        rebuilt.adoptingStrays(keychainEmails, indexLost: lost, stored: { store.readState($0) })
+        let chooseAgain = rebuilt.adoptingStrays(keychainEmails, indexLost: lost, credentials: keychainIDs,
+                                                 stored: { store.readState($0) })
+        #expect(chooseAgain)
         #expect(rebuilt.choice == .chosen)
-        #expect(rebuilt.included.map(\.id) == [Self.primaryID])
+        #expect(rebuilt.included.isEmpty)
         #expect(rebuilt.account(Self.workID)?.storageChecked == false)
     }
 
@@ -147,7 +205,7 @@ import Testing
         let lost = loaded.indexWasLost(keychainHasAccountItems: false)
         #expect(!lost)
         var library = loaded.library
-        library.adoptingStrays([], indexLost: lost)
+        library.adoptingStrays([], indexLost: lost, credentials: ["janeappleseed@gmail.com"])
         #expect(library.choice == .all)
         #expect(library.included.map(\.id) == ["janeappleseed@gmail.com"])
         #expect(library.index == loaded.library.index, "nothing to adopt changes nothing")
@@ -164,7 +222,8 @@ import Testing
         try store.save(first.library.index)
         let loaded = store.load(legacyCredential: (false, nil))
         var library = loaded.library
-        library.adoptingStrays([Self.work], indexLost: loaded.indexWasLost(keychainHasAccountItems: true))
+        library.adoptingStrays([Self.work], indexLost: loaded.indexWasLost(keychainHasAccountItems: true),
+                               credentials: [Self.primaryID, Self.workID])
         #expect(library.choice == .all)
         #expect(library.account(Self.workID)?.storageChecked == false)
         #expect(library.accounts.map(\.id) == [Self.primaryID, Self.workID])

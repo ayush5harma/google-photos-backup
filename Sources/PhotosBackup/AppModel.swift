@@ -313,8 +313,12 @@ final class AppModel {
                 unmovedLegacyCredential = target
             }
         }
-        let indexLost = Self.adoptStrayCredentials(keychain: keychain, store: store, loaded: loaded, into: &accountLibrary)
-        if indexLost {
+        let (indexLost, chooseAgain) = Self.adoptStrayCredentials(keychain: keychain, store: store, loaded: loaded,
+                                                                  into: &accountLibrary)
+        if chooseAgain {
+            problems.append("The accounts list could not be read and was rebuilt. Nothing says which accounts backups went to, "
+                + "so none is backed up until you choose them again in Settings > Account, where each first shows its storage check.")
+        } else if indexLost {
             let only = accountLibrary.included.first?.title
             problems.append("The accounts list could not be read and was rebuilt: backups go only to \(only ?? "no account") "
                 + "until you include others in Settings > Account, where each first shows its storage check.")
@@ -346,14 +350,18 @@ final class AppModel {
     /// A credential in the keychain that accounts.json does not show signed
     /// in (the index was lost, or written before the keychain was): the
     /// credential says whose it is, and that account is signed in again with
-    /// its record, if one is on disk. When the index was lost, only the
-    /// account state.json belongs to is included (`adoptingStrays`).
-    /// - Returns: whether the index was lost.
+    /// its record, if one is on disk. When the index was lost, the account
+    /// state.json belongs to is included only if no other account has a
+    /// credential; otherwise none is (`adoptingStrays`).
+    /// - Returns: whether the index was lost, and whether the backup targets
+    ///   have to be chosen again.
     private static func adoptStrayCredentials(keychain: Keychain, store: AccountsStore, loaded: AccountsStore.Loaded,
-                                              into library: inout AccountLibrary) -> Bool {
-        // Attributes only: whether items exist decides "lost", even for one
-        // whose secret cannot be read this launch.
-        let strays = keychain.accounts().filter { $0 != AccountLibrary.legacyKeychainAccount && library.account($0)?.removed != false }
+                                              into library: inout AccountLibrary) -> (lost: Bool, chooseAgain: Bool) {
+        // Attributes only: whether items exist decides "lost", and who holds
+        // a credential, even for one whose secret cannot be read this launch.
+        let items = keychain.accounts()
+        let credentials = Set(items.map { $0 == AccountLibrary.legacyKeychainAccount ? loaded.legacyCredentialAccount ?? $0 : $0 })
+        let strays = items.filter { $0 != AccountLibrary.legacyKeychainAccount && library.account($0)?.removed != false }
         let indexLost = loaded.indexWasLost(keychainHasAccountItems: !strays.isEmpty)
         let emails: [String] = strays.compactMap { id in
             guard let credential = keychain.load(account: id) else { return nil }
@@ -361,8 +369,9 @@ final class AppModel {
             guard let email, GoogleSignIn.normalizedEmail(email) == id else { return nil }
             return email
         }
-        library.adoptingStrays(emails, indexLost: indexLost, stored: { store.readState($0) })
-        return indexLost
+        let chooseAgain = library.adoptingStrays(emails, indexLost: indexLost, credentials: credentials,
+                                                 stored: { store.readState($0) })
+        return (indexLost, chooseAgain)
     }
 
     /// The active account's credential: the one a run started now would use.

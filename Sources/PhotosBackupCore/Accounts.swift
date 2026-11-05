@@ -339,23 +339,37 @@ public struct AccountLibrary: Equatable, Sendable {
     /// keychain (a crash between the two), or it was lost. Each takes its
     /// record back from disk if one is there (`stored`).
     ///
-    /// - Parameter indexLost: the index that listed them is gone, so nothing
-    ///   says which of them backups went to or which passed its storage
-    ///   check. Backups then go only to the account state.json belongs to,
-    ///   which this Mac was backing up to before there were accounts; every
-    ///   other account waits for a tick and its storage check, as an added
-    ///   one does. Taking "All accounts" and keychain order instead backed up
-    ///   the library to a work account that had been left out, without a
-    ///   storage check (PR #53 review).
-    public mutating func adoptingStrays(_ emails: [String], indexLost: Bool, now: Date = Date(),
-                                        stored: (String) -> BackupState? = { _ in nil }) {
+    /// - Parameters:
+    ///   - indexLost: the index that listed them is gone, so nothing says
+    ///     which of them backups went to or which passed its storage check.
+    ///     Backups then go to the account state.json belongs to only when no
+    ///     other account has a credential: with others signed in, that account
+    ///     may have been left out as easily as any (PR #53 review, second
+    ///     round: it was, and the rebuild backed the library up to it). Then
+    ///     nobody is ticked and every account waits for a tick and its storage
+    ///     check, as an added one does. Taking "All accounts" and keychain
+    ///     order instead backed up the library to a work account that had
+    ///     been left out, without a storage check (PR #53 review).
+    ///   - credentials: the accounts the keychain holds a credential for,
+    ///     readable this launch or not, the legacy item under the account it
+    ///     is filed to.
+    /// - Returns: the index was lost and accounts are signed in, but none is
+    ///   ticked: the backup targets have to be chosen again.
+    @discardableResult
+    public mutating func adoptingStrays(_ emails: [String], indexLost: Bool, credentials: Set<String>, now: Date = Date(),
+                                        stored: (String) -> BackupState? = { _ in nil }) -> Bool {
         let owner = index.accounts.first { $0.stateFile == Self.legacyStateFile }?.id
         for email in emails {
             adopting(account: email, now: now, storageChecked: indexLost ? false : nil, stored: stored)
         }
-        guard indexLost else { return }
+        guard indexLost else { return false }
         index.backUpTo = .chosen
-        for account in index.accounts { setChosen(account.id, account.id == owner) }
+        let ownerAlone = owner.map { owner in credentials.allSatisfy { $0 == owner } } ?? false
+        for account in index.accounts {
+            setChosen(account.id, ownerAlone && account.id == owner)
+            if !ownerAlone, credentials.contains(account.id) { setStorageChecked(account.id, false) }
+        }
+        return !accounts.isEmpty && included.isEmpty
     }
 
     /// Signs the account out of the run order. Its record stays.
@@ -461,6 +475,12 @@ public struct AccountLibrary: Equatable, Sendable {
     private mutating func setChosen(_ id: String, _ chosen: Bool) {
         guard var account = account(id) else { return }
         account.chosen = chosen
+        replace(account)
+    }
+
+    private mutating func setStorageChecked(_ id: String, _ checked: Bool) {
+        guard var account = account(id) else { return }
+        account.storageChecked = checked
         replace(account)
     }
 

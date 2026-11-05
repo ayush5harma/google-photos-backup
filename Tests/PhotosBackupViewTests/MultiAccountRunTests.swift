@@ -530,8 +530,10 @@ final class MultiAccountRunTests: XCTestCase {
     /// state.json and each keychain item signed in again in keychain order,
     /// so the work account (sorting first) came back included, under "All
     /// accounts", and past its storage check. Now the copy kept beside the
-    /// index restores it as it was; with the copy unreadable too, backups go
-    /// only to the account state.json belongs to.
+    /// index restores it as it was; with the copy unreadable too, nothing
+    /// says which accounts backups went to, so none is backed up until they
+    /// are chosen again (second round: the account state.json belongs to
+    /// may be the one left out).
     func testALostAccountsListNeverIncludesAnAccountThatWasLeftOut() async throws {
         let primary = "zed.primary@gmail.com", work = "a.work@corp.example.com"
         let primaryID = GoogleSignIn.normalizedEmail(primary), workID = GoogleSignIn.normalizedEmail(work)
@@ -574,16 +576,49 @@ final class MultiAccountRunTests: XCTestCase {
         XCTAssertEqual(rebuilt.accountsChoice, .chosen)
         XCTAssertFalse(rebuilt.isIncluded(workID), "a rebuilt list included the work account")
         XCTAssertEqual(rebuilt.accounts.first { $0.id == workID }?.storageChecked, false, "it waits for its storage check again")
-        XCTAssertEqual(rebuilt.targetAccounts.map(\.id), [primaryID])
+        XCTAssertEqual(rebuilt.targetAccounts.map(\.id), [], "nobody is backed up to until chosen again")
+        XCTAssertTrue(rebuilt.noAccountIncluded)
         XCTAssertTrue(uploaded(batch, in: rebuilt, primaryID), "the primary's record is state.json, untouched")
         XCTAssertTrue(untouched(batch, in: rebuilt, workID))
-        XCTAssertNotNil(rebuilt.stateError, "the rebuild is reported")
+        XCTAssertTrue(rebuilt.stateError?.contains("choose them again") == true, "the rebuild is reported: \(rebuilt.stateError ?? "nil")")
 
         // What the rebuild decided is saved: a further launch keeps it.
         let after = AppModel()
         XCTAssertEqual(after.accountsChoice, .chosen)
-        XCTAssertEqual(after.targetAccounts.map(\.id), [primaryID])
+        XCTAssertEqual(after.targetAccounts.map(\.id), [])
         XCTAssertNil(after.stateError)
+    }
+
+    /// PR #53 review, second round (the reviewer's probe): the account
+    /// state.json belongs to was left out and only the other one chosen,
+    /// then accounts.json and its copy were both damaged. The rebuild ticked
+    /// the state.json account, storage-checked, and backed up to it. With
+    /// another account signed in, nothing says which was chosen: nobody is.
+    func testALostAccountsListNeverTicksTheStateJsonAccountThatWasLeftOut() async throws {
+        let firstID = GoogleSignIn.normalizedEmail(Self.first), secondID = GoogleSignIn.normalizedEmail(Self.second)
+        try scenario(["per_account": true])
+        let model = try await twoAccounts()
+        let batch = try items(1, tag: "owner-left-out")
+        _ = recordTurns(model) { batch }
+        model.startBackupNow()
+        try await settle(model)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: support.appendingPathComponent("state.json").path))
+        model.setIncluded(firstID, false)
+        model.setIncluded(secondID, true)
+        XCTAssertEqual(model.accountsChoice, .chosen)
+        XCTAssertEqual(model.targetAccounts.map(\.id), [secondID])
+        XCTAssertEqual(model.primaryAccount?.stateFile, "state.json")
+        try Data("{broken".utf8).write(to: support.appendingPathComponent("accounts.json"))
+        try Data("{broken".utf8).write(to: support.appendingPathComponent("accounts.json.bak"))
+
+        let rebuilt = AppModel()
+        rebuilt.settings.automatic = false
+        XCTAssertFalse(rebuilt.targetAccounts.map(\.id).contains(firstID), "the left-out state.json account is a target after the rebuild")
+        XCTAssertEqual(rebuilt.targetAccounts.map(\.id), [])
+        XCTAssertEqual(rebuilt.accountsChoice, .chosen)
+        XCTAssertEqual(Set(rebuilt.accounts.map(\.id)), [firstID, secondID])
+        XCTAssertTrue(rebuilt.accounts.allSatisfy { !$0.storageChecked }, "each waits for its storage check")
+        XCTAssertTrue(rebuilt.stateError?.contains("choose them again") == true, "\(rebuilt.stateError ?? "nil")")
     }
 
     /// Review of PR #53, MINOR 2: Remove ignored a failed keychain delete
