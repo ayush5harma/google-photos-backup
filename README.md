@@ -78,7 +78,7 @@ Android has no automatic backups: nothing uploads until you start it. Battery sa
 - **Messages:** backs up the photos and videos in your Messages, and can keep a readable archive of your conversations on the Mac. Both need Full Disk Access.
 - **iCloud Photos:** backs up straight from iCloud, without signing in to iCloud on the Mac.
 - Imports photos from a connected iPhone or camera.
-- A menu bar panel, keyboard shortcuts, and `photosbackup://` links for Shortcuts.
+- A menu bar panel, keyboard shortcuts, and [`photosbackup://` links](docs/REFERENCE.md#links) for Shortcuts.
 
 **Windows**
 
