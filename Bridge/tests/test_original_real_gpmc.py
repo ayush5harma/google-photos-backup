@@ -50,7 +50,11 @@ class OriginalQualityOnRealGpmcTests(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()
         self.root = Path(self.scratch.name)
+        # One entry per committed item, shaped like a one-item commit body.
         self.commits = []
+        self.commit_calls = 0
+        self.commit_sizes = []
+        self.refuse_batches = False
         self.adapters_used = set()
         self.calls = 0
         self.sign_ins = 0
@@ -99,11 +103,24 @@ class OriginalQualityOnRealGpmcTests(unittest.TestCase):
             typedef = {"1": {"type": "int"}, "2": {"type": "bytes"}}
             return self.respond(request, content=bytes(self.bbp.encode_message(reply, typedef)))
         if url == COMMIT_URL:
+            # One call may carry several items (field 1 repeated); Google
+            # answers each in order with its upload token echoed (measured
+            # 2026-11-06, see gpmc_bridge.COMMIT_BATCH).
             decoded, _ = self.bbp.decode_message(request.body, self.types.COMMIT_UPLOAD)
+            items = decoded["1"] if isinstance(decoded["1"], list) else [decoded["1"]]
             with self.lock:
-                self.commits.append(decoded)
-            key = {"1": {"3": {"1": f"AF1Qip{len(self.commits):040d}"}}}
-            return self.respond(request, content=bytes(self.bbp.encode_message(key, gpmc_bridge.KEY_RESPONSE_TYPES["commit_upload"])))
+                self.commit_calls += 1
+                self.commit_sizes.append(len(items))
+                if len(items) > 1 and self.refuse_batches:
+                    response = self.respond(request)
+                    response.status_code = 500
+                    return response
+                results = []
+                for item in items:
+                    self.commits.append({"1": item, "2": decoded["2"], "3": decoded["3"]})
+                    results.append({"1": item["1"], "2": 0, "3": {"1": f"AF1Qip{len(self.commits):040d}"}})
+            reply = {"1": results if len(results) > 1 else results[0]}
+            return self.respond(request, content=bytes(self.bbp.encode_message(reply, gpmc_bridge._COMMIT_RESULTS_TYPE)))
         raise AssertionError(f"unexpected call to {url}")
 
     def stage(self, count, offset=0):
@@ -136,9 +153,11 @@ class OriginalQualityOnRealGpmcTests(unittest.TestCase):
         for commit in self.commits:
             self.assertEqual(commit["2"]["3"], "Pixel XL")
             self.assertEqual(commit["1"]["7"], QUALITY_FIELD["original"])
-        # 1 sign-in + 4 calls a file over at most 8 kept sessions (+1 for the
-        # sign-in's own), where gpmc alone would open one per call.
-        self.assertEqual(self.calls, 1 + 4 * 24)
+        # 1 sign-in + 3 calls a file + the commit calls, over at most 8 kept
+        # sessions (+1 for the sign-in's own), where gpmc alone would open
+        # one per call; the 24 commits went out in fewer calls.
+        self.assertEqual(self.calls, 1 + 3 * 24 + self.commit_calls)
+        self.assertLess(self.commit_calls, 24)
         self.assertLessEqual(len(self.adapters_used), 8 + 1)
 
     def test_thirty_two_threads_commit_original_over_gpmcs_real_sessions(self):
@@ -153,7 +172,9 @@ class OriginalQualityOnRealGpmcTests(unittest.TestCase):
         for commit in self.commits:
             self.assertEqual(commit["2"]["3"], "Pixel XL")
             self.assertEqual(commit["1"]["7"], QUALITY_FIELD["original"])
-        self.assertEqual(self.calls, 1 + 4 * 132)
+        self.assertEqual(self.calls, 1 + 3 * 132 + self.commit_calls)
+        self.assertLess(self.commit_calls, 132)
+        self.assertLessEqual(max(self.commit_sizes), gpmc_bridge.COMMIT_BATCH)
         self.assertLessEqual(len(self.adapters_used), 32 + 1)
 
     def test_every_thread_count_commits_original_from_a_pixel_xl(self):
@@ -179,6 +200,36 @@ class OriginalQualityOnRealGpmcTests(unittest.TestCase):
         self.assertEqual([e for e in events if e["type"] == "item_failed"], [])
         self.assertEqual(len(self.commits), 8)
         self.assertEqual(self.sign_ins, 2, "the sign-in at connect, then one renewal for every thread")
+
+    def test_a_batched_item_is_what_gpmcs_own_single_commit_sends(self):
+        # One thread commits through gpmc's commit_upload; four batch the same
+        # files. Every item field, the device and the capabilities must match.
+        items = self.stage(4)
+        code, events = self.serve(self.upload(items, threads=1), self.upload(items, threads=4))
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual([e for e in events if e["type"] == "item_failed"], [])
+        self.assertEqual(self.commit_sizes[:4], [1, 1, 1, 1])
+        self.assertLess(len(self.commit_sizes), 8, "the second request batched")
+        single = {c["1"]["2"]: c for c in self.commits[:4]}
+        batched = {c["1"]["2"]: c for c in self.commits[4:]}
+        self.assertEqual(batched, single)
+        for commit in batched.values():
+            self.assertEqual(commit["2"]["3"], "Pixel XL")
+            self.assertEqual(commit["1"]["7"], QUALITY_FIELD["original"])
+
+    def test_a_refused_batch_is_committed_one_at_a_time_as_original(self):
+        self.refuse_batches = True
+        code, events = self.serve(self.upload(self.stage(8), threads=8))
+
+        self.assertEqual(code, gpmc_bridge.EXIT_OK)
+        self.assertEqual([e for e in events if e["type"] == "item_failed"], [])
+        self.assertEqual(len([e for e in events if e["type"] == "item"]), 8)
+        self.assertEqual(len(self.commits), 8)
+        self.assertGreater(max(self.commit_sizes), 1, "a batch was tried first")
+        for commit in self.commits:
+            self.assertEqual(commit["2"]["3"], "Pixel XL")
+            self.assertEqual(commit["1"]["7"], QUALITY_FIELD["original"])
 
     def test_the_same_reading_sees_the_paid_path(self):
         # The guard is not vacuous: quota is committed from a Pixel 8.

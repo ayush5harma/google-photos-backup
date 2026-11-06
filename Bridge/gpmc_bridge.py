@@ -580,6 +580,217 @@ def _close_sessions(client: Any) -> None:
         pool.close()
 
 
+# Google commits an account's uploads one at a time. Measured 2026-11-06 on
+# one account with 2.3 MB files: a commit alone took 1.18 s, and with six in
+# flight each waited its turn (median 2.14 s, up to 3.30 s), so an account
+# never passed about one photo a second however many threads ran; at 16 the
+# commit answered 500/503 about once a second. The commit RPC
+# (PhotosCreateMediaItems) takes a list of items in its field 1, as Google's
+# iOS app sends it, and answers one result per item, in order, each echoing
+# the item's upload token: 2 items took 0.82 s, 5 took 0.91 s, 20 took
+# 1.40 s. Twenty files at six streams then went up in 9.3 s instead of about
+# 19 s. So in a serve session the upload threads hand their commits to one
+# committer, which sends whatever has gathered, up to COMMIT_BATCH, as one
+# call. The item fields, device and capabilities are gpmc 0.9.0's own
+# (_commit_body; tests/test_original_real_gpmc.py holds them to gpmc's
+# single commit), so Original stays Pixel XL at quality 3.
+COMMIT_BATCH = 20  # the largest batch measured
+# How long a commit waits for others to join it when the committer is idle;
+# while a batch is in flight the next one gathers anyway.
+COMMIT_GATHER_SECONDS = 0.25
+COMMIT_URL = "https://photosdata-pa.googleapis.com/6439526531001121323/16538846908252377752"
+# gpmc 0.9.0's commit_upload, field for field.
+_QUALITY_FIELD = {"saver": 1, "original": 3}
+_ESTIMATED_CAPTURE_NANOS = 46000000
+_COMMIT_HEADERS = {"x-goog-ext-173412678-bin": "CgcIAhClARgC", "x-goog-ext-174067345-bin": "CgIIAg=="}
+# The answer's field 1, an entry per item: the token echoed, a status code
+# and the media item, whose key is pinned to a string (see KEY_RESPONSE_TYPES).
+_COMMIT_RESULTS_TYPE = {"1": {"type": "message", "message_typedef": {
+    "1": {"type": "message", "message_typedef": {"1": {"type": "int"}, "2": {"type": "bytes"}}},
+    "2": {"type": "int"},
+    "3": {"type": "message", "message_typedef": {"1": {"type": "string"}}}}}}
+
+
+class _Commit:
+    """One upload thread's commit, waiting for its batch."""
+
+    def __init__(self, kwargs: dict[str, Any]) -> None:
+        self.kwargs = kwargs
+        self.done = threading.Event()
+        self.key: str | None = None
+        self.error: BaseException | None = None
+        self.since = _monotonic()
+
+
+def _codec(api: Any) -> Any:
+    """gpmc.api's protobuf functions and message types, if the api has them."""
+    module = sys.modules.get(type(api).__module__)
+    types = getattr(module, "message_types", None)
+    if not all(hasattr(module, name) for name in ("encode_message", "decode_message")) or not hasattr(types, "COMMIT_UPLOAD"):
+        return None
+    return module
+
+
+def _commit_body(api: Any, codec: Any, commits: list[_Commit]) -> bytes:
+    def item(kwargs: dict[str, Any]) -> dict[str, Any]:
+        return {"1": kwargs["upload_response_decoded"], "2": kwargs["file_name"], "3": kwargs["sha1_hash"],
+                "4": {"1": kwargs.get("upload_timestamp") or int(time.time()), "2": _ESTIMATED_CAPTURE_NANOS},
+                "7": _QUALITY_FIELD[kwargs.get("quality", "original")], "10": 1}
+
+    first = commits[0].kwargs
+    device = {"3": first.get("model") or api.model, "4": first.get("make") or api.make, "5": api.android_api_version}
+    body = {"1": [item(commit.kwargs) for commit in commits], "2": device, "3": bytes([1, 3])}
+    return bytes(codec.encode_message(body, codec.message_types.COMMIT_UPLOAD))
+
+
+def _device(kwargs: dict[str, Any]) -> tuple[Any, Any]:
+    return kwargs.get("model"), kwargs.get("make")
+
+
+class CommitBatcher:
+    """Sends the commits of one upload request's threads to Google in batches.
+
+    Installed as the api's commit_upload while the request runs, so gpmc's
+    Client._upload_file is unchanged around it: a thread blocks in its commit
+    until its batch answers, then gets the key or the exception a single
+    commit would have raised. Items a batch call did not commit (the call
+    failed, or an item came back without a key) are committed one at a time
+    with gpmc's own commit_upload, so their failures read as they always have.
+    """
+
+    def __init__(self, api: Any, codec: Any, single: Callable[..., str], size: int) -> None:
+        self._api, self._codec, self._single, self._size = api, codec, single, size
+        self._pending: list[_Commit] = []
+        self._cond = threading.Condition()
+        self._closed = False
+        self.calls = 0
+        self._thread = threading.Thread(target=self._run, name="commit-batcher", daemon=True)
+        self._thread.start()
+
+    def commit_upload(self, upload_response_decoded: Any, file_name: str, sha1_hash: bytes, **kwargs: Any) -> str:
+        commit = _Commit({"upload_response_decoded": upload_response_decoded, "file_name": file_name, "sha1_hash": sha1_hash, **kwargs})
+        with self._cond:
+            if self._closed:
+                raise RuntimeError("the upload request has ended")
+            self._pending.append(commit)
+            self._cond.notify_all()
+        commit.done.wait()
+        if commit.error is not None:
+            raise commit.error
+        return commit.key  # type: ignore[return-value]
+
+    def close(self) -> None:
+        """End the request's batching. A request that ran to its end has
+        nothing waiting; after a stop, commits not yet sent are dropped, as
+        gpmc's own abandoned files are, and a call in flight is not waited
+        for (the next run finds what it committed by the hash check)."""
+        with self._cond:
+            self._closed = True
+            dropped, self._pending = self._pending, []
+            self._cond.notify_all()
+        for commit in dropped:
+            commit.error = RuntimeError("the upload request ended before this file was committed")
+            commit.done.set()
+
+    def _take(self) -> list[_Commit]:
+        with self._cond:
+            while True:
+                if self._closed:
+                    return []
+                if self._pending:
+                    wait = self._pending[0].since + COMMIT_GATHER_SECONDS - _monotonic()
+                    if len(self._pending) >= self._size or wait <= 0:
+                        break
+                    self._cond.wait(wait)
+                else:
+                    self._cond.wait()
+            # One device per call: the body carries one.
+            device = _device(self._pending[0].kwargs)
+            batch = [c for c in self._pending if _device(c.kwargs) == device][:self._size]
+            self._pending = [c for c in self._pending if c not in batch]
+            return batch
+
+    def _run(self) -> None:
+        while batch := self._take():
+            try:
+                self._send(batch)
+            except BaseException as error:  # never leave a thread waiting
+                for commit in batch:
+                    if not commit.done.is_set():
+                        commit.error = error
+                        commit.done.set()
+
+    def _send(self, batch: list[_Commit]) -> None:
+        left = batch
+        if len(batch) > 1:
+            try:
+                keys = self._batch_call(batch)
+            except Exception:
+                logging.getLogger(__name__).warning("a commit of %d items failed; committing them one at a time", len(batch), exc_info=True)
+                keys = {}
+            for commit in batch:
+                if isinstance(keys.get(id(commit)), str):
+                    commit.key = keys[id(commit)]
+                    commit.done.set()
+            left = [commit for commit in batch if not commit.done.is_set()]
+        for commit in left:
+            try:
+                commit.key = self._single(**commit.kwargs)
+            except Exception as error:
+                commit.error = error
+            commit.done.set()
+
+    def _batch_call(self, batch: list[_Commit]) -> dict[int, Any]:
+        """One commit call for the batch; returns each item's key by id()."""
+        api, codec = self._api, self._codec
+        headers = {"Accept-Encoding": "gzip", "Accept-Language": api.language, "Content-Type": "application/x-protobuf",
+                   "User-Agent": api.user_agent, "Authorization": f"Bearer {api.bearer_token}", **_COMMIT_HEADERS}
+        data = _commit_body(api, codec, batch)
+        self.calls += 1
+        with api._new_session() as session:
+            response = session.post(COMMIT_URL, headers=headers, data=data, timeout=api.timeout)
+        response.raise_for_status()
+        decoded, _ = codec.decode_message(response.content, _COMMIT_RESULTS_TYPE)
+        results = decoded.get("1", [])
+        results = results if isinstance(results, list) else [results]
+        keys: dict[int, Any] = {}
+        unmatched = list(batch)
+        for position, result in enumerate(results):
+            media = result.get("3") if isinstance(result, dict) else None
+            if not isinstance(media, dict):
+                continue
+            # By the echoed upload token (measured: always there, in order);
+            # by position only for an answer without one.
+            token = result.get("1")
+            if token is not None:
+                match = next((c for c in unmatched if c.kwargs["upload_response_decoded"] == token), None)
+            else:
+                match = batch[position] if position < len(batch) and batch[position] in unmatched else None
+            if match is not None:
+                unmatched.remove(match)
+                keys[id(match)] = media.get("1")
+        return keys
+
+
+@contextlib.contextmanager
+def _batched_commits(client: Any, threads: int, keep: bool) -> Iterator[CommitBatcher | None]:
+    """Route the client's commits through a CommitBatcher meanwhile, in a
+    serve session (`keep`) with more than one thread; otherwise unchanged."""
+    api = getattr(client, "api", None)
+    codec = _codec(api) if api is not None else None
+    single = getattr(api, "commit_upload", None)
+    if not keep or threads < 2 or codec is None or single is None or "commit_upload" in vars(api):
+        yield None
+        return
+    batcher = CommitBatcher(api, codec, single, min(COMMIT_BATCH, threads))
+    api.commit_upload = batcher.commit_upload
+    try:
+        yield batcher
+    finally:
+        del api.commit_upload
+        batcher.close()
+
+
 class ClientCache:
     """The client factory of a serve session: the client, and with it gpmc's
     cached bearer token and the kept connections, lasts for the session.
@@ -903,7 +1114,8 @@ def _upload(request: Event, client: Any, emit: Emit, failures: FailureLog, stop:
         )
 
     with _kept_sessions(client, keep_sessions):
-        counts, confirmed = _upload_all(items, upload_one, threads, emit, failures, skipped)
+        with _batched_commits(client, threads, keep_sessions):
+            counts, confirmed = _upload_all(items, upload_one, threads, emit, failures, skipped)
         if album and confirmed:
             # A stop must not land between Google creating the album and the app
             # hearing its id, or the next run would create a second one.
