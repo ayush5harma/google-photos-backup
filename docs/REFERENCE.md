@@ -32,9 +32,7 @@ for all upstream projects.
 - **One way, upload only.** Deleting a photo on the Mac does not delete it from
   Google Photos, and nothing comes back down from Google.
 
-## Upcoming v0.5.0 media-source preview
-
-These features are prepared for v0.5.0 and are not present in the published v0.4.0 packages.
+## Media sources added in v0.5.0
 
 **Android device folders.** The app can enumerate accessible image and video folders through Android MediaStore, then mirror a selected device-folder name as a Google Photos album. A MediaStore folder is a device storage grouping, not a logical Google album. With Android's partial-media permission, the list contains only media the person granted this app access to. Android Wi-Fi pairing validation is pending.
 
@@ -171,9 +169,13 @@ sign-ins from web views it takes for embedded browsers. Only the resulting
 ### Several Google accounts
 
 **Add Account** in Settings > Account runs the same sign-in for another
-account, and the selected albums are backed up to every account, one account
-after another (one uploader at a time, all at the chosen quality; Original
-quality is the free Pixel XL path for each of them). Each account has a record
+account, and the selected albums are backed up to every account at the same
+time. Each account has its own uploader, parallel uploads, retries, album work
+and wait when Google asks it to slow down, all at the chosen quality (Original
+quality is the free Pixel XL path for each of them). A batch is exported from
+Photos once and kept until every account has finished with it, so each account
+goes at its own pace; the accounts wait for each other only when the staging
+space is full. Each account has a record
 of its own, so media keys and Google album links never move between accounts:
 switching, removing and signing in again never recreate an album. An account
 added next to another waits for its storage check: Settings shows how many
@@ -219,9 +221,9 @@ For most users, download the macOS arm64 or x86_64 DMG from the
 [latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest).
 The prebuilt app requires macOS 14 or later and needs no developer tools.
 Open the DMG, drag **Photos Backup.app** to Applications, eject the image, and
-open the app. v0.4.0 publishes Apple silicon and Intel DMGs, two Windows
-installers, an Android APK, and `SHA256SUMS.txt`; source builds also create ZIP
-archives. The macOS app is signed ad hoc and is not notarized. If macOS blocks it, use **System Settings
+open the app. Each release publishes Apple silicon and Intel DMGs, two Windows
+installers and `SHA256SUMS.txt`, and an Android APK when Android has a new
+signed version; source builds also create ZIP archives. The macOS app is signed ad hoc and is not notarized. If macOS blocks it, use **System Settings
 > Privacy & Security > Open Anyway** after checking that you trust the download.
 
 Building from source requires macOS 14 or later, Xcode 26 or later (Xcode or
@@ -416,7 +418,18 @@ folder.
 
 ## Links
 
-See the table in the README. A link runs the same code as the matching button.
+| Link | Action |
+| --- | --- |
+| `photosbackup://backup` | Back Up Now, including Messages media when it is on |
+| `photosbackup://backup/photos` | Back up Photos only |
+| `photosbackup://backup/messages-media` | Back up Messages media only |
+| `photosbackup://archive` | Archive Messages now, when the archive is on |
+| `photosbackup://pause`, `resume`, `stop` | Control the current run |
+| `photosbackup://retry-failed` | Retry failed items |
+| `photosbackup://open`, `open/<section>` | Open the window, or one of `overview`, `albums`, `messages`, `activity` |
+| `photosbackup://settings`, `settings/<tab>` | Open Settings, or one of `general`, `backup`, `messages`, `account`, `advanced` |
+
+A link runs the same code as the matching button.
 `photosbackup://open/home` still works and means `overview`. Backing up needs a
 signed-in account; `backup/photos` also needs Photos access; `archive` needs the
 archive turned on. `backup` and `backup/photos` go where **Back up to** says;
@@ -462,18 +475,16 @@ shortcuts.
   until Messages has downloaded them to this Mac.
 - Google caps an album at 20,000 items. gpmc splits a larger new album into
   "Name 1", "Name 2" and so on, but the app only remembers the first.
-- macOS release builds are signed ad hoc and are not notarized. v0.4.0 has
-  Apple silicon and Intel DMGs, Windows ARM64/x64 installers, an Android APK,
-  and `SHA256SUMS.txt`. Windows remains an unsigned preview.
+- macOS release builds are signed ad hoc and are not notarized, so macOS asks
+  for Photos access again after each update. Windows remains an unsigned
+  preview.
 - If the response to creating a Google album is lost (a timeout, a crash, or
   a quit that outlasts the 15-second stop), the album exists but the app never
   learned its id, and the next run creates another. gpmc cannot list albums,
   so the orphan cannot be found again automatically.
-- Deleting an item from Google Photos does not send it again;
+- Deleting an item from Google Photos does not send it again, unless it is
+  still in a backed-up Photos album that is updated later (since v0.5.4);
   Re-check Backups does. Edits are sent again only while Back up edits again is on.
-- Each batch is a new uploader process that signs in again, so the default
-  batch size means one sign-in per 20 items. For very large libraries the
-  next step is a long-lived uploader that reuses its token.
 - Messages deleted from the Mac stay in the archive, and there is no restore
   tool: the dated database copies are for a manual restore.
 - The in-app conversation preview reads a conversation's whole `messages.json`

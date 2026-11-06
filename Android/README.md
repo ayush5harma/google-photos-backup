@@ -1,8 +1,8 @@
 # Photos Backup for Android
 
-A native Kotlin / Compose app for explicitly selected photos and videos. Connect Google Photos, select media using Android's private photo picker, review the list, and tap **Start backup**. No broad photo-library/storage permission, automatic camera roll scan, iCloud integration, or implicit upload occurs. Backup, Activity and Settings support light/dark appearance and use the shared app artwork.
+A native Kotlin / Compose app for explicitly selected photos and videos. Connect Google Photos, choose **Select media** (Android's private photo picker, which needs no permission) or **Device folders** (accessible MediaStore folders, mirrored as Google Photos albums; this asks for photo and video access, and with partial access only the media you granted appears), review the list, and tap **Start backup**. There is no automatic camera roll scan, iCloud integration, or upload you did not start. Backup, Activity and Settings support light/dark appearance and use the shared app artwork.
 
-Download `Photos-Backup-0.4.0-Android.apk` and verify it with `SHA256SUMS.txt` from the [v0.4.0 release](https://github.com/ayush5harma/google-photos-backup/releases/tag/v0.4.0). The app uses the unofficial [gpmc](https://github.com/xob0t/gpmc) API; Google can change authentication, upload behavior, or storage accounting at any time.
+Download `Photos-Backup-0.6.4-Android.apk` and verify it with `SHA256SUMS.txt` from the [v0.6.4 release](https://github.com/ayush5harma/google-photos-backup/releases/tag/v0.6.4). It is signed with the same key as 0.5.0, so it installs over 0.5.0 as an update. The app uses the unofficial [gpmc](https://github.com/xob0t/gpmc) API; Google can change authentication, upload behavior, or storage accounting at any time.
 
 ## Preview
 
