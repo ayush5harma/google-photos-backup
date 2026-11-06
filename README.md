@@ -118,15 +118,24 @@ That was a small test, not a guarantee. Google can change sign-in, uploads or st
 
 These show made-up demo data.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/accounts-overview-dark.png">
+  <img src="docs/accounts-overview-light.png" alt="Mac app backing up to three Google accounts at once, each with its own count">
+</picture>
+
 | macOS | Windows |
 | --- | --- |
-| ![macOS menu bar panel](docs/menu-bar-panel-light.png) | ![Windows connected-device import](docs/windows-connected-device-light.png) |
+| ![macOS menu bar panel](docs/menu-bar-panel-light.png) | ![Windows overview during a backup, with speed and uploads at a time](docs/windows-overview.png) |
 
-<details><summary>Android, dark mode and connected iPhone import</summary>
+<details><summary>Android, dark mode, settings and connected device imports</summary>
 
 <img src="docs/android-overview-dark.png" width="280" alt="Android app with a full-width backup button and demo media">
 
 ![macOS menu bar panel in dark mode during a backup](docs/menu-bar-panel-backing-up-dark.png)
+
+![Mac Backup settings: parallel uploads chosen automatically, up to 32](docs/backup-settings-light.png)
+
+![Windows connected-device import](docs/windows-connected-device-light.png)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/macos-connected-device-dark.png">
