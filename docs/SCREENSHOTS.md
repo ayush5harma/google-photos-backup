@@ -15,8 +15,10 @@ SNAPSHOT_FIXTURE=1 scripts/snapshots.sh /tmp/photos-backup-screenshots menubar,o
 ```
 
 The optional second argument limits the groups: `sections`, `settings`,
-`onboarding`, `menubar` and `links`. Every Overview state, section, Settings tab,
-welcome page and menu bar panel state is written in light and dark.
+`accounts`, `onboarding`, `menubar` and `links`. Every Overview state, section,
+Settings tab, welcome page and menu bar panel state is written in light and dark.
+The `accounts` group adds four made-up accounts at example.com: idle, at a
+storage check, left out of backups, and three of them backing up at once.
 
 ## Choosing images
 
@@ -36,12 +38,27 @@ Images narrower than that, such as the menu bar panel, are used as rendered.
 
 ## Published set
 
-| File | Shows |
-| --- | --- |
-| `menu-bar-panel-light.png` | The panel when everything is backed up |
-| `menu-bar-panel-dark.png` | The same, in dark mode |
-| `menu-bar-panel-backing-up-dark.png` | The panel during a run |
-| `welcome-guide-light.png` | The first page of the welcome guide |
+| File | Shows | Fixture render |
+| --- | --- | --- |
+| `menu-bar-panel-light.png` | The panel when everything is backed up | `menubar-up-to-date-light` |
+| `menu-bar-panel-dark.png` | The same, in dark mode | `menubar-up-to-date-dark` |
+| `menu-bar-panel-backing-up-dark.png` | The panel during a run to three accounts at once | `menubar-accounts-running-dark` |
+| `accounts-menubar-light.png` | The panel with several accounts, ready to back up, and its accounts button | `menubar-accounts-light` |
+| `accounts-overview-light.png` | The Overview during a run to three accounts at once, each with its own count, and a fourth left out | `overview-accounts-running-light` |
+| `accounts-overview-dark.png` | The same, in dark mode | `overview-accounts-running-dark` |
+| `accounts-activity-light.png` | Activity during that run: each account's progress and uploads at a time | `activity-accounts-running-light` |
+| `accounts-activity-dark.png` | The same, in dark mode | `activity-accounts-running-dark` |
+| `accounts-settings-light.png` | Settings > Account, backing up only the chosen accounts | `settings-accounts-light` |
+| `accounts-settings-dark.png` | The same, in dark mode | `settings-accounts-dark` |
+| `accounts-storage-check-light.png` | An added account's storage check with Start Backing Up | `settings-accounts-storage-light` |
+| `backup-settings-light.png` | Settings > Backup with parallel uploads chosen automatically, up to 32 | `settings-backup-light` |
+| `backup-settings-dark.png` | The same, in dark mode | `settings-backup-dark` |
+| `backup-settings-fixed-light.png` | Settings > Backup with 16 uploads at once chosen | `settings-backup-fixed-light` |
+| `welcome-guide-light.png` | The first page of the welcome guide | `onboarding-1-welcome-light` |
+| `icloud-setup-light.png` | The signed-out iCloud Photos form | `icloud-setup-light` |
+| `icloud-setup-dark.png` | The same, in dark mode | `icloud-setup-dark` |
+| `macos-connected-device-light.png` | Connected device with a made-up iPhone and two files | `section-devices-light` |
+| `macos-connected-device-dark.png` | The same, in dark mode | `section-devices-dark` |
 
 ## Windows preview
 
@@ -69,3 +86,15 @@ Parallels overview capture.
 
 The Android image is retained from the v0.5.0 device validation in `0f7fd37`;
 it already shows the current release's full-width backup action.
+
+## v0.6.4 refresh — 2026-11-07
+
+Every macOS image in the published set above was re-rendered from the fixture
+at `9c0511b` (v0.6.4 main) plus the fixture commit `ad47aa2`, with all six
+groups, and looked at before it was kept. The 2026-11-05 accounts images and the
+2026-10-17 menu bar and welcome images showed greyed switches, bars and
+prominent buttons from an inactive window; the accounts renders now draw in a
+key window like the others. The connected-device images of 2026-10-16 were blank below the toolbar;
+the iCloud setup images still had the retired "Copies only" card. The made-up
+accounts moved from gmail.com to example.com. Images wider than 1400 px were
+downscaled with `sips --resampleWidth 1400`.
