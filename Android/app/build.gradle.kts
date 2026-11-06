@@ -13,7 +13,7 @@ android {
         applicationId = "com.photosbackup"
         minSdk = 26
         targetSdk = 36
-        versionCode = 500
+        versionCode = 604
         versionName =
             rootProject.file("VERSION").takeIf { it.exists() }?.readText()?.trim() ?: "0.5.0"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
