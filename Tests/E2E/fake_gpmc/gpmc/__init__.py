@@ -42,6 +42,9 @@ Scenario keys (all optional):
       "commit"       Google's extra time to commit an upload
       "link_mb_s"    the uplink, shared by every upload in the process
       "stream_mb_s"  the most one connection carries
+  "refuse_batch_commits": true   a commit of several uploads in one call (the
+                                 bridge's batch) answers 500, so the bridge
+                                 must fall back to one commit per file
   "per_account": true            each account (the credential's Email) holds
                                  its own media and albums, as separate Google
                                  accounts do, under "accounts" in the ledger
@@ -52,7 +55,9 @@ change what a run costs here exactly as they would against Google.
 
 Ledger (JSON, written under an exclusive file lock):
   {"media": {"<sha1 hex>": "<media key>"},
-   "counters": {"uploads": n, "auth": n, "<file name>": attempts},
+   "counters": {"uploads": n, "auth": n, "<file name>": attempts,
+                "commit_calls": n, "batched_items": n},   every commit call, single or
+                                 batched, and the items the batched ones carried
    "uploads": [{"filename", "sha1", "status": "uploaded" | "existing" | "failed", "message"?,
                 "account", "saver", "use_quota", "quality", "model", "pid", "connections"}],
    "albums": {"<album id>": {"name", "media_keys": [...]}},
@@ -252,7 +257,8 @@ def _connections_so_far() -> int:
 class Session:
     """Shaped like the requests.Session gpmc's Api._new_session returns."""
 
-    def __init__(self) -> None:
+    def __init__(self, api: "Api") -> None:
+        self.api = api
         self.cookies: dict[str, str] = {}
         self.headers: dict[str, str] = {}
         self.adapters: dict[str, Any] = {}
@@ -269,6 +275,23 @@ class Session:
 
     def close(self) -> None:
         self.connected = False
+
+    def post(self, url: str, headers: dict[str, str] | None = None, data: bytes = b"", timeout: float = 60) -> "_Response":
+        """The one raw call the bridge makes itself: a commit of several
+        uploads (PhotosCreateMediaItems with field 1 repeated). Answered as
+        Google does, one result per item in order, the token echoed."""
+        if url != COMMIT_URL:
+            raise AssertionError(f"unexpected POST to {url}")
+        self.call(server=float(_network().get("commit", 0)))
+        body, _ = decode_message(data)
+        scenario = _scenario()
+        with _ledger(scenario) as ledger:
+            _count(ledger, "commit_calls")
+            ledger["counters"]["batched_items"] = ledger["counters"].get("batched_items", 0) + len(body["1"])
+        if scenario.get("refuse_batch_commits"):
+            return _Response(500, b"")
+        results = [{"1": item["1"], "2": 0, "3": {"1": self.api.media_key(bytes.fromhex(item["3"]["hex"]))}} for item in body["1"]]
+        return _Response(200, encode_message({"1": results}, None))
 
     def call(self, upload_bytes: int = 0, server: float = 0.0) -> None:
         """One request on this session's connection, timed by the scenario."""
@@ -288,16 +311,60 @@ if _network().get("startup"):
     time.sleep(float(_network()["startup"]))
 
 
+class _Response:
+    """Shaped like the requests.Response the bridge reads from a commit."""
+
+    def __init__(self, status: int, content: bytes) -> None:
+        self.status_code, self.content = status, content
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise _error(str(self.status_code), COMMIT_URL)
+
+
+# gpmc.api's protobuf surface, with JSON standing in for protobuf: the bridge
+# encodes a batched commit through these, found beside Api as in gpmc.api.
+message_types = type("message_types", (), {"COMMIT_UPLOAD": {}})
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, (bytes, bytearray)):
+        return {"hex": bytes(value).hex()}
+    if isinstance(value, dict):
+        return {key: _plain(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_plain(item) for item in value]
+    return value
+
+
+def encode_message(value: Any, typedef: Any) -> bytes:
+    return json.dumps(_plain(value)).encode()
+
+
+def decode_message(buf: bytes, typedef: Any = None) -> tuple[Any, Any]:
+    return json.loads(buf), typedef
+
+
 class Api:
     def __init__(self, auth_data: str) -> None:
         self.auth_data = auth_data
         self.account = _email(auth_data)
         self.model = "Pixel XL"
         self.make = "Google"
+        self.android_api_version = 28
+        self.language = "en_US"
+        self.user_agent = "com.google.android.apps.photos (fake)"
+        self.timeout = 60
         self._token: str | None = None
 
     def _new_session(self) -> Session:
-        return Session()
+        return Session(self)
+
+    def media_key(self, sha1_hash: bytes) -> str:
+        if _scenario().get("per_account"):
+            # A key of the account's own: one item in two accounts has two keys.
+            return "fake-" + hashlib.sha1((self.account + sha1_hash.hex()).encode()).hexdigest()[:24]
+        return f"fake-{sha1_hash.hex()[:24]}"
 
     @property
     def bearer_token(self) -> str:
@@ -363,10 +430,9 @@ class Api:
                       quality: str = "original", model: str | None = None, upload_timestamp: int | None = None) -> str:
         with self._new_session() as session:
             session.call(server=float(_network().get("commit", 0)))
-        if _scenario().get("per_account"):
-            # A key of the account's own: one item in two accounts has two keys.
-            return "fake-" + hashlib.sha1((self.account + sha1_hash.hex()).encode()).hexdigest()[:24]
-        return f"fake-{sha1_hash.hex()[:24]}"
+        with _ledger(_scenario()) as data:
+            _count(data, "commit_calls")
+        return self.media_key(sha1_hash)
 
 
 def _sha1(path: Path) -> str:
