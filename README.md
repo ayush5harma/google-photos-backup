@@ -5,133 +5,160 @@
   <img src="docs/app-icon.png" width="112" height="112" alt="Aperture and infinity app icon">
 </picture></p>
 
-Back up selected photos and videos to Google Photos from **macOS, Windows, or Android**. The apps keep your originals by default and include a **currently working unlimited original-quality mode** through the unofficial gpmc client. [Validation and limits](#upload-mode-and-its-limits).
+Photos Backup is a native app for macOS, Windows and Android that backs up your photos and videos to Google Photos at original quality.
 
-[Website](https://ayush5harma.github.io/google-photos-backup/) · [Download v0.6.4](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Setup](docs/SETUP.md) · [Reference](docs/REFERENCE.md) · [Credits](ACKNOWLEDGEMENTS.md)
+It is unofficial: it uploads through [gpmc](https://github.com/xob0t/gpmc), a client for Google Photos' mobile API. Today, original-quality uploads made this way do not count against your Google storage. Google can change that at any time, so treat it as a bonus that may end, not a promise.
 
-## Start here
+[Website](https://ayush5harma.github.io/google-photos-backup/) · [Download](https://github.com/ayush5harma/google-photos-backup/releases/latest) · [Setup guide](docs/SETUP.md) · [Reference](docs/REFERENCE.md) · [Changelog](CHANGELOG.md) · [Credits](ACKNOWLEDGEMENTS.md)
 
-1. Install the current release for your platform below (v0.6.4 on Mac and Windows, v0.5.0 on Android).
-2. Pick a small source and review automatic backup settings (on by default on Mac), then connect Google Photos and run a backup.
-3. Check the uploaded item in Google Photos, including its quality and storage details, before trusting a larger backup.
+## Download
 
-| Platform | Download |
-| --- | --- |
-| macOS 14+ (v0.6.4) | [Apple silicon DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.4/Photos-Backup-0.6.4-macOS-arm64.dmg) · [Intel DMG](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.4/Photos-Backup-0.6.4-macOS-x86_64.dmg) |
-| Windows 10 1809+ (x64) / Windows 11 (ARM64) (v0.6.4) | [ARM64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.4/Google-Photos-Backup-0.6.4-Windows-arm64-Setup.exe) · [Intel/AMD x64 installer](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.4/Google-Photos-Backup-0.6.4-Windows-x64-Setup.exe) |
-| Android 8+ (v0.5.0) | [APK — ARM64 and x86_64](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/Photos-Backup-0.5.0-Android.apk) |
+Get the files from the [latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest) (v0.6.4):
 
-`SHA256SUMS.txt` in the [v0.6.4](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.4/SHA256SUMS.txt) and [v0.5.0](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.5.0/SHA256SUMS.txt) releases cover their packages. The Mac app is ad-hoc signed and not notarized; Windows installers are unsigned previews.
+| Platform | Needs | File |
+| --- | --- | --- |
+| Mac with Apple silicon | macOS 14 or later | [Photos-Backup-0.6.4-macOS-arm64.dmg](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.4/Photos-Backup-0.6.4-macOS-arm64.dmg) |
+| Mac with an Intel processor | macOS 14 or later | [Photos-Backup-0.6.4-macOS-x86_64.dmg](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.4/Photos-Backup-0.6.4-macOS-x86_64.dmg) |
+| Windows PC, Intel or AMD | Windows 10 (1809) or later | [Google-Photos-Backup-0.6.4-Windows-x64-Setup.exe](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.4/Google-Photos-Backup-0.6.4-Windows-x64-Setup.exe) |
+| Windows PC, ARM | Windows 11 | [Google-Photos-Backup-0.6.4-Windows-arm64-Setup.exe](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.4/Google-Photos-Backup-0.6.4-Windows-arm64-Setup.exe) |
+| Android phone or tablet | Android 8 or later | [Photos-Backup-0.6.4-Android.apk](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.6.4/Photos-Backup-0.6.4-Android.apk) |
 
-## Upload mode and its limits
+Each release has a `SHA256SUMS.txt` so you can check your download. Not sure which Windows file you need? Look under **Settings > System > About > System type**.
 
-Photos Backup uses [xob0t's gpmc](https://github.com/xob0t/gpmc), an unofficial Google Photos client. Its Pixel XL profile currently produced **Original quality** uploads that did **not** count against Google account storage in our finite live tests. Google can change authentication, upload behavior, or storage accounting at any time, so this is neither a guarantee nor an entitlement for every account or file.
+## Quick start
 
-On 16 October 2026, a photo and video from each supported platform were read back from Google Photos with SHA-256 hashes matching the originals. The tested Mac albums and Windows folders also had their expected names and contents. See the [validation report](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/live-validation.md).
+Start with a small backup, then check the result in Google Photos (quality and storage) before you back up everything.
 
-## What’s new in v0.6.4
+### Mac
 
-Uploads are confirmed with Google in batches of up to 20 instead of one at a time. Google confirms one account's uploads one after another, about 1.2 s each, which held each account to about one photo a second however many uploads ran. Measured on 2026-11-05: 20 uploads confirmed in one call took 1.4 s, and one account went from about 1.1 to 2.2 photos a second. If a batch is refused, its photos are confirmed one at a time as before. Original quality is unchanged and still does not count against storage.
+1. Open the DMG and drag **Photos Backup** to Applications.
+2. Open the app. It is not notarized by Apple, so if macOS blocks it, go to **System Settings > Privacy & Security** and choose **Open Anyway**.
+3. Follow the welcome guide: allow Photos access, sign in with Google, and choose **All Photos** or the albums you want.
+4. Choose **Back Up Now**, in the window or the menu bar. Automatic backups are on by default once the guide is done; you can turn them off in **Settings > General**.
 
-## What’s new in v0.6.3
+Good to know: the app is ad-hoc signed, so macOS asks for Photos access again after each update. If you update from a version before 0.6.0, macOS may also ask whether the app may use its keychain item: choose **Always Allow**.
 
-Each Google account now uploads at its own pace. In 0.6.2 the accounts moved together batch by batch, so every account waited for the slowest one at the end of each batch. Now a batch is exported from Photos once and kept until every account has finished with it, and the accounts wait for each other only if the staging space is full. Picks, Messages media and device imports go to the first account without holding the others back. Each account row shows its own count while it backs up.
+### Windows
 
-## What’s new in v0.6.2
+1. Run the `Setup.exe` for your PC. The installer is unsigned, so SmartScreen warns you: choose **More info > Run anyway**. It installs for your Windows account only; uninstall it from Windows Settings.
+2. Open **Settings** and choose **Sign in with Google**.
+3. Open **Folders** and add the folders you want. Subfolders are included. Turn on **Create Google Photos albums for folders** if you want an album per folder.
+4. Choose **Back Up Now** on **Overview**. Keep the app open while it runs: Windows has no scheduled backups yet.
 
-Several Google accounts back up at the same time on the Mac, instead of one after another. Each photo is exported from Photos once and sent to every account that still needs it. Each account has its own uploads, retries, album work and record, and every album guard holds for each account. Measured on 2026-11-05, one account took about half a photo a second however many uploads went at once, because Google limits the commits each account takes. Running the accounts side by side multiplies that by the number of accounts. Parallel uploads also step down in proportion to how much of a batch Google refused, and try a higher level again after a long clean stretch, instead of dropping one at a time for the rest of the backup. Windows gets one uploader process per run and up to 32 uploads at once, iCloud backups download and upload in parallel on the Mac and Windows, and Android keeps one Google client per run with parallel uploads.
+Google sign-in needs the Microsoft Edge WebView2 Runtime. See the [Windows guide](Windows/README.md) for the full requirements.
 
-## What’s new in v0.6.1
+### Android
 
-Faster uploads on the Mac. With **Choose parallel uploads automatically** off, a backup uploads exactly the number you choose from the first batch, instead of starting at 4 and creeping up. The automatic mode no longer settles after one slow batch, tries a higher level again later, and climbs in larger steps. Up to 32 uploads can run at once, up from 16. Measured on a 177 Mbit/s uplink with v0.6.0, mostly small photos went at about one a second because few uploads were in flight. Original quality still uploads the way that does not count against your storage.
+1. Download the APK on your phone and open it. Allow your browser or file manager to install apps if Android asks. Version 0.6.4 is signed with the same key as 0.5.0, so it installs over 0.5.0 as an update.
+2. Tap **Connect Google Photos** and sign in.
+3. Tap **Select media** to pick photos and videos, or **Device folders** to back up whole folders as albums.
+4. Tap **Start backup**. A notification shows progress, and you can cancel from it.
 
-## What’s new in v0.6.0
+Android has no automatic backups: nothing uploads until you start it. Battery savers on some phones can stop long backups; start the backup again to finish the rest.
 
-On the Mac, the same album selection can now go to several Google accounts ([#49](https://github.com/ayush5harma/google-photos-backup/issues/49)). Add them in Settings > Account; each account has its own sign-in and its own backup record, and **Back up to** sends backups to all accounts or only the ones you tick. Back Up Now can also send a one-off backup to one account. Upgrading keeps the existing account's uploads and album links unchanged and keeps a one-time copy of the old record.
+## Features
 
-Uploads keep the link busier ([#50](https://github.com/ayush5harma/google-photos-backup/issues/50)): the next batch is exported while one uploads, one uploader serves the whole run over kept connections, and parallel uploads adapt between 4 and 32 to the speed the link gives, or stay at the number chosen in Settings. Original quality still uploads the way that does not count against your storage.
+**On every platform**
 
-Albums are more careful. Hidden photos never go into a Google album and never go to an account other than the first. An album the app has already created only receives photos newly added to it, and a large batch waits for you to add or skip it, so photos you removed from a Google album by hand are not put back.
+- Uploads at **Original quality** by default. You can also choose Storage saver, or Original quality that counts against your storage.
+- Makes copies only. It never deletes photos from your device or from Google Photos (the one exception is the opt-in iCloud clean-up below).
+- Skips anything Google already has, so an interrupted or repeated backup never uploads the same file twice.
+- **Parallel uploads**, either automatic (the app finds the fastest level) or a fixed number you choose. Up to 32 at once on Mac and Windows; on Android up to 8 on Wi-Fi and 2 on a metered network.
+- Retries passing errors, and waits when Google asks it to slow down.
 
-## What’s new in v0.5.7
+**Mac**
 
-On the Mac, photos chosen with Choose Photos from the unlocked Hidden album now back up ([#46](https://github.com/ayush5harma/google-photos-backup/issues/46)). With the Hidden album locked, macOS gives apps no access to hidden photos, so 0.5.6's fix could not reach them; the app now uploads the file the photo picker hands over for such a pick. Hidden photos still go up only when you choose them; selected albums leave them out as before. The Android APK stays at 0.5.0 until a signed APK is published.
+- Backs up your whole Photos library or the albums you choose, and **mirrors your albums** as Google Photos albums with the same names.
+- **Several Google accounts** back up side by side, each at its own pace. Send backups to all accounts or only the ones you tick, or back up once to a single account.
+- **Hidden photos** go up only when you pick them with **Choose Photos**. They go only to the first account and never into an album.
+- **Photos you remove from a Google album are never put back.** If more than 25 photos are about to be added to an album that already exists, the app waits for you to add or skip them.
+- **Batch commits:** uploads are confirmed with Google up to 20 at a time, which roughly doubles how fast one account goes.
+- Backs up automatically when your library changes, at launch, after the Mac wakes and every 30 minutes. It can pause on a metered network, in Low Data Mode, in Low Power Mode or on battery.
+- Uploads a photo again when you edit it (you can turn this off).
+- **Messages:** backs up the photos and videos in your Messages, and can keep a readable archive of your conversations on the Mac. Both need Full Disk Access.
+- **iCloud Photos:** backs up straight from iCloud, without signing in to iCloud on the Mac.
+- Imports photos from a connected iPhone or camera.
+- A menu bar panel, keyboard shortcuts, and `photosbackup://` links for Shortcuts.
 
-## What’s new in v0.5.5
+**Windows**
 
-Adding photos to an album no longer gives up on a passing "500 Server Error" or "503 Service Unavailable" from Google ([#44](https://github.com/ayush5harma/google-photos-backup/issues/44)). The call is tried again after a few seconds, so an album no longer waits for the next backup because of one bad moment on Google's side. On Windows this covers adding to existing albums; creating a new album there is unchanged. The Android APK stays at 0.5.0 until a signed APK is published.
+- Backs up the folders you choose, with an optional Google album for each folder.
+- **iCloud Photos:** backs up straight from iCloud. iCloud for Windows is not needed.
+- Imports from connected phones and cameras, and optionally from an Android phone over wireless ADB.
+- Pause, resume or stop a backup.
 
-## What’s new in v0.5.4
+**Android**
 
-On the Mac, albums no longer stop filling with "404 Client Error: Not Found" ([#42](https://github.com/ayush5harma/google-photos-backup/issues/42)). Google refuses a whole album call when one photo in it is no longer in Google Photos; a day after one large backup, 1 of 72 sampled uploads had become such a photo. The app now adds every other photo, uploads the missing ones again and files them in their albums. Burst frames added to an album one by one now back up instead of failing as "No longer in the Photos library". A photo deleted in Google Photos while it is still in a backed-up Photos album is now uploaded again the next time that album is updated. Windows keeps the earlier album behaviour for now, and the Android APK stays at 0.5.0 until a signed APK is published.
+- Backs up photos and videos you pick with Android's photo picker, which needs no permission.
+- Backs up device folders and mirrors each folder's name as a Google album. If you allow access to only some photos, only those appear.
 
-## What’s new in v0.5.3
+**iCloud clean-up (experimental, Mac and Windows).** iCloud backups are copy-only unless you turn this on. When you do, the app downloads each original from iCloud and from Google Photos again, checks they match byte for byte, and only then moves the iCloud item to Recently Deleted. You either review a preview and confirm it, or allow automatic runs of up to 100 items. Recently Deleted does not free space right away, and the clean-up has not yet been tested end to end with real deletions.
 
-Large backups no longer stall on an item with "The uploader stopped unexpectedly (exit 0)": gpmc 0.9.0 occasionally decoded a Google media key as a nested message, which lost that item and broke the album add for its batch ([#40](https://github.com/ayush5harma/google-photos-backup/issues/40)). Use Retry Failed, or the next backup, for an item that failed this way. The Android APK stays at 0.5.0, which still has this and the v0.5.2 album problem, until a signed APK is published.
+**Not supported yet:** On the Mac, Live Photos upload as their still image only, and shared albums are skipped. A full Google account shows up as failed items rather than a clear message. The iCloud source may not work with Advanced Data Protection. More limits are in the [reference](docs/REFERENCE.md#not-done-yet).
 
-## What’s new in v0.5.2
+## Speed
 
-Albums now fill completely: since v0.2.0, adding items to an existing Google Photos album, from its second batch on, failed with "'Client' object has no attribute 'add_to_existing_album'", so an album got only its first batch ([#38](https://github.com/ayush5harma/google-photos-backup/issues/38)). Items that were backed up but left out are added to their album on the next backup. The Android APK stays at 0.5.0, which still has this problem, until a signed 0.5.2 APK is published.
+Google limits how fast a single account accepts new uploads, so a fast connection alone does not make one account fast. That is why the Mac app runs several accounts side by side and confirms uploads in batches. Measured on 2026-11-06 on a 177 Mbit/s uplink: about 138 Mbit/s and 5.7 photos a second across three accounts at 16 uploads each.
 
-## What’s new in v0.5.1
+## Original quality and Google storage
 
-On macOS, choosing **Connected device** (or launching with it as the saved section) no longer leaves the main window blank, with no sidebar and no page ([#36](https://github.com/ayush5harma/google-photos-backup/issues/36)). Mac and Windows packages are 0.5.1; the Android APK stays at 0.5.0, since it is signed with the release key outside CI and Android code did not change.
+The uploader presents itself to Google as a Pixel XL phone. On 16 October 2026, a photo and a video from each platform were uploaded, showed in Google Photos as Original quality without using account storage, and downloaded back with matching SHA-256 hashes ([validation report](https://github.com/ayush5harma/google-photos-backup/releases/download/v0.4.0/live-validation.md)).
 
-## What’s new in v0.5.0
+That was a small test, not a guarantee. Google can change sign-in, uploads or storage accounting at any time. To check your own account, note your storage at [one.google.com/storage](https://one.google.com/storage), back up one large video, and look again the next day.
 
-Disposable files passed import and byte-for-byte Google original readback: iPhone on Mac, and iPhone and Pixel through Windows production components. Android folder backup and album creation passed the owner’s on-device check, and its responsive layout passed device tests and scrcpy inspection. Live iCloud reclaim validation remains pending. [Validation](docs/VALIDATION-v0.5.0.md).
+## Privacy and safety
 
-- **Android:** select accessible MediaStore folders and mirror them as Google Photos albums. These are device folders, not logical Google albums. Android's partial-media permission means only media you granted the app can appear.
-- **macOS:** import selected originals from a connected, unlocked and trusted iPhone or camera through DCIM/Image Capture. This is file import, not PhotoKit album access or cloud-only media.
-- **Windows:** import selected media from devices exposed through Windows portable storage/DCIM. An optional, explicitly configured ADB source can import from a wireless Android connection.
-- **iCloud reclaim (experimental):** iCloud backup remains copy-only by default. A manual preview, or an explicitly confirmed automatic run of at most 100 items, may move verified source assets to Recently Deleted only after fresh original readback and SHA-256 verification of every component. Recently Deleted changes propagate to iCloud devices; it does not promise immediate free space or purge the items.
-
-## Know before backing up
-
-- macOS can recreate selected Apple Photos albums. Windows mirrors selected folder names. Android selects individual files or accessible device folders.
-- Live Photos and other paired components need special care. The Mac Photos-library source currently uploads the still image; connected-device reclaim requires every identified paired component.
-- Selected media and associated metadata go to your Google account. Credentials stay in macOS Keychain, Windows DPAPI, or Android Keystore; local history stays on your device.
+- **Your sign-in stays on your device.** It is kept in the macOS Keychain, encrypted with Windows DPAPI, or encrypted with an Android Keystore key. On Mac and Windows it reaches the uploader through a pipe, never on a command line. It works like a password, so never paste it into an issue or a log.
+- **Your media goes only to your Google account.** The iCloud source also talks to Apple. There are no analytics.
+- **History and logs stay on your device.** On the Mac, the timeline and the diagnostic report remove tokens, email addresses, phone numbers and your user name, but read a report before you share it.
+- **The Messages archive is a private local folder.** It is never uploaded by the app, but if you put it in a synced folder, it syncs.
+- Found a security problem? See [SECURITY.md](SECURITY.md).
 
 ## Screenshots
 
-Screenshots show v0.5.0 with synthetic data; they are not live-upload evidence.
+These show made-up demo data.
 
 | macOS | Windows |
 | --- | --- |
-| ![macOS menu bar](docs/menu-bar-panel-light.png) | ![Windows connected-device import](docs/windows-connected-device-light.png) |
+| ![macOS menu bar panel](docs/menu-bar-panel-light.png) | ![Windows connected-device import](docs/windows-connected-device-light.png) |
 
-<details><summary>Android and dark mode</summary>
+<details><summary>Android, dark mode and connected iPhone import</summary>
 
-<img src="docs/android-overview-dark.png" width="280" alt="Android app with full-width backup action and synthetic media">
+<img src="docs/android-overview-dark.png" width="280" alt="Android app with a full-width backup button and demo media">
 
-Android image shows v0.5.0 with synthetic account and media data.
-
-![macOS dark mode](docs/menu-bar-panel-backing-up-dark.png)
-
-</details>
-
-See [detailed setup](docs/SETUP.md), the [technical reference](docs/REFERENCE.md), [Windows guide](Windows/README.md), and [Android guide](Android/README.md). Developers can start with [CONTRIBUTING.md](CONTRIBUTING.md).
-
-<details><summary>Connected iPhone import — v0.5.0</summary>
+![macOS menu bar panel in dark mode during a backup](docs/menu-bar-panel-backing-up-dark.png)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/macos-connected-device-dark.png">
-  <img src="docs/macos-connected-device-light.png" alt="Connected iPhone import preview with synthetic photo and video files">
+  <img src="docs/macos-connected-device-light.png" alt="Connected iPhone import with demo photo and video files">
 </picture>
 
 </details>
 
-<details><summary>Connected-device import on Windows — v0.5.0</summary>
+## Build from source
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/windows-connected-device-dark.png">
-  <img src="docs/windows-connected-device-light.png" alt="Windows Connected devices page with synthetic Android and portable-device media">
-</picture>
+On a Mac with macOS 14 or later, Xcode 26 or later and [uv](https://docs.astral.sh/uv/):
 
-The `--device-smoke` fixture supplies synthetic media and does not query connected devices.
+```sh
+git clone https://github.com/ayush5harma/google-photos-backup.git
+cd google-photos-backup
+scripts/build-app.sh                              # builds "build/Photos Backup.app"
+swift test                                        # app tests
+python3 -B -m unittest discover -s Bridge/tests   # uploader tests, against a fake Google
+```
 
-</details>
+The [Windows guide](Windows/README.md#build-on-windows) and the [Android guide](Android/README.md#build) cover the other apps. [CONTRIBUTING.md](CONTRIBUTING.md) explains the test layers and the end-to-end run, and [ARCHITECTURE.md](docs/ARCHITECTURE.md) shows how the pieces fit.
+
+## What's new
+
+- **0.6.4:** Uploads are confirmed with Google up to 20 at a time on the Mac, about doubling one account's speed. A new Android APK, the first since 0.5.0, brings parallel uploads to Android.
+- **0.6.3:** Each Google account uploads at its own pace, so a fast account never waits for a slow one.
+- **0.6.2:** Several Google accounts back up at the same time. Faster uploads on Windows and for iCloud backups.
+- **0.6.1:** A fixed number of parallel uploads is used from the first batch, and up to 32 can run at once.
+- **0.6.0:** Back up to several Google accounts, with album safeguards that never put removed photos back.
+
+The full history is in [CHANGELOG.md](CHANGELOG.md) and on the [releases page](https://github.com/ayush5harma/google-photos-backup/releases).
 
 ## Credits
 
-Made possible by [gpmc](https://github.com/xob0t/gpmc) and [gotohp](https://github.com/xob0t/gotohp) by **xob0t**, [iCloud Photos Downloader](https://github.com/icloud-photos-downloader/icloud_photos_downloader), and the projects listed in [Acknowledgements](ACKNOWLEDGEMENTS.md). Photos Backup is [MIT licensed](LICENSE); upstream projects retain their own licenses.
+Made possible by [gpmc](https://github.com/xob0t/gpmc) and [gotohp](https://github.com/xob0t/gotohp) by **xob0t**, [iCloud Photos Downloader](https://github.com/icloud-photos-downloader/icloud_photos_downloader), and the projects listed in [Acknowledgements](ACKNOWLEDGEMENTS.md). Photos Backup is [MIT licensed](LICENSE); upstream projects keep their own licenses.
