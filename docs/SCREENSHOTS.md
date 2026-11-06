@@ -98,3 +98,13 @@ key window like the others. The connected-device images of 2026-10-16 were blank
 the iCloud setup images still had the retired "Copies only" card. The made-up
 accounts moved from gmail.com to example.com. Images wider than 1400 px were
 downscaled with `sips --resampleWidth 1400`.
+
+## Windows refresh: 2026-11-06
+
+`windows-overview.png`, `windows-overview-dark.png`, `windows-navigation-collapsed.png`,
+`windows-connected-device-light.png` and `windows-connected-device-dark.png` were
+rendered by the 0.6.4 ARM64 build's `--smoke-test ... --screenshot` mode in a
+Windows 11 ARM64 Parallels VM, with synthetic data and Windows' default accent.
+They show the 0.6 progress line (MB/s, time left, uploads at a time). The smoke
+mode can capture a frame before WinUI's animations settle (#76), so check each
+image for half-drawn buttons before publishing; these were checked.
