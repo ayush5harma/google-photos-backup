@@ -47,8 +47,8 @@ struct AccountSettingsTab: View {
                 Text(model.accounts.count > 1 ? "Google accounts" : "Google account")
             } footer: {
                 FormNote(model.showsAccountChoice
-                         ? "Back Up Now and automatic backups go to the accounts above, one after another, with the same albums and a record of their own; Back Up Now's arrow backs up to one account once. Messages media, chosen photos, device imports and iCloud go to the primary account whether or not it is included. Your sign-in stays in your login keychain."
-                         : "You sign in on Google's own page. Google hands back a token for a new Android device, the kind Google Photos for Android uses. It stays in your login keychain; the sign-in page's session is discarded. Every account gets the same albums, one account after another, each with its own record, so adding or removing one never touches the others.")
+                         ? "Back Up Now and automatic backups go to the accounts above at the same time, each at its own pace, with the same albums and a record of its own; Back Up Now's arrow backs up to one account once. Messages media, chosen photos, device imports and iCloud go to the primary account whether or not it is included. Your sign-in stays in your login keychain."
+                         : "You sign in on Google's own page. Google hands back a token for a new Android device, the kind Google Photos for Android uses. It stays in your login keychain; the sign-in page's session is discarded. Every account gets the same albums at the same time, each with its own record, so adding or removing one never touches the others.")
             }
 
             Section {
