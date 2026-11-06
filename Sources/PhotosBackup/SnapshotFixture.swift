@@ -91,25 +91,39 @@ enum SnapshotFixture {
                 for tab in AutomationCommand.SettingsTab.allCases {
                     await captureSettings(tab: tab, to: output.appendingPathComponent("settings-\(tab.rawValue)-\(name).png"))
                 }
+                // A number chosen rather than found, from the same range.
+                model.settings.threadsAutomatic = false
+                model.settings.threads = 16
+                await captureSettings(tab: .backup, to: output.appendingPathComponent("settings-backup-fixed-\(name).png"))
+                model.settings.threadsAutomatic = BackupSettings().threadsAutomatic
+                model.settings.threads = BackupSettings().threads
                 settingsWindow?.close()
             }
             if wanted("accounts") {
-                // Offscreen and never activated, like the iCloud renders: a
-                // capture of the real windows would bring them to the front.
+                // Offscreen windows of their own: a capture of the real
+                // windows would bring them to the front. Key, like the menu
+                // bar renders: a window that is not key draws switches,
+                // prominent buttons and progress bars grey whatever
+                // controlActiveState says (every accounts image of
+                // 2026-11-05 had them).
                 AppRouter.shared.mainWindow?.orderOut(nil)
                 for (scene, file) in [(AccountsScene.choice, "settings-accounts"), (.storageCheck, "settings-accounts-storage")] {
                     applyAccounts(to: model, scene)
                     await render(AccountSettingsTab().environment(model).environment(\.controlActiveState, .active),
-                                 size: nil, appearance: appearance,
-                                 to: output.appendingPathComponent("\(file)-\(name).png"), activateWindow: false)
+                                 size: nil, appearance: appearance, to: output.appendingPathComponent("\(file)-\(name).png"))
                 }
-                applyAccounts(to: model)
-                await render(HomeView(section: .constant(.home)).environment(model).environment(\.controlActiveState, .active),
-                             size: CGSize(width: 900, height: 980), appearance: appearance,
-                             to: output.appendingPathComponent("overview-accounts-\(name).png"), activateWindow: false)
-                await render(PanelSnapshot().environment(model).environment(\.controlActiveState, .active),
-                             size: nil, appearance: appearance,
-                             to: output.appendingPathComponent("menubar-accounts-\(name).png"), activateWindow: false)
+                for (scene, suffix) in [(AccountsScene.overview, ""), (.running, "-running")] {
+                    applyAccounts(to: model, scene)
+                    await render(HomeView(section: .constant(.home)).environment(model).environment(\.controlActiveState, .active),
+                                 size: CGSize(width: 900, height: 980), appearance: appearance,
+                                 to: output.appendingPathComponent("overview-accounts\(suffix)-\(name).png"))
+                    await render(PanelSnapshot().environment(model).environment(\.controlActiveState, .active),
+                                 size: nil, appearance: appearance, to: output.appendingPathComponent("menubar-accounts\(suffix)-\(name).png"))
+                }
+                // Still the run to three accounts: each one's own progress.
+                await render(ActivityView(section: .constant(.activity)).environment(model).environment(\.controlActiveState, .active),
+                             size: CGSize(width: 900, height: 610), appearance: appearance,
+                             to: output.appendingPathComponent("activity-accounts-running-\(name).png"))
             }
             if wanted("onboarding") {
                 apply(.upToDate, to: model)
@@ -218,6 +232,22 @@ enum SnapshotFixture {
         case choice
         /// "All accounts", with an added account at its storage check.
         case storageCheck
+        /// All four, the work account left out and the other three backing
+        /// up at once (#66), each at its own count (#70).
+        case running
+    }
+
+    // Reserved example domains only: a made-up address at a real mail
+    // provider could be somebody's account.
+    private static let familyEmail = "family.photos@example.com"
+    private static let archiveEmail = "jane.archive@example.com"
+    private static let workEmail = "jane.appleseed@work.example.com"
+
+    /// Everything selected backed up to `email` except `missing` items.
+    private static func record(_ email: String, missing: Int) -> BackupState {
+        var record = state(missing: missing)
+        record.accountEmail = email
+        return record
     }
 
     /// The primary complete, a family account still catching up, one just
@@ -225,28 +255,51 @@ enum SnapshotFixture {
     /// of backups.
     static func applyAccounts(to model: AppModel, _ scene: AccountsScene = .overview) {
         apply(.upToDate, to: model)
+        if scene == .running {
+            applyAccountsRun(to: model)
+            return
+        }
         let total = Set(albums.filter { selected.contains($0.id) }.flatMap(\.snapshot.assetIDs)).count
-        var family = state(missing: total * 6 / 10)
-        family.accountEmail = "family.photos@gmail.com"
         var added = BackupState()
         added.selectedAlbumIDs = selected
-        var work = state(missing: total * 9 / 10)
-        work.accountEmail = "jane.appleseed@work.example.com"
-        let fresh: AppModel.FixtureAccount = .init(email: "jane.archive@gmail.com", status: .connected(email: "jane.archive@gmail.com"),
+        let fresh: AppModel.FixtureAccount = .init(email: archiveEmail, status: .connected(email: archiveEmail),
                                                    storageChecked: false, record: added)
-        let leftOut: AppModel.FixtureAccount = .init(email: "jane.appleseed@work.example.com",
-                                                     status: .connected(email: "jane.appleseed@work.example.com"), included: false, record: work)
+        let leftOut: AppModel.FixtureAccount = .init(email: workEmail, status: .connected(email: workEmail), included: false,
+                                                     record: record(workEmail, missing: total * 9 / 10))
         let others: [AppModel.FixtureAccount] = switch scene {
-        case .overview: [fresh, leftOut]
+        case .overview, .running: [fresh, leftOut]
         case .choice: [leftOut]
         case .storageCheck: [fresh]
         }
         model.applyFixture(albums: albums, accounts: [
             .init(email: accountEmail, status: .connected(email: accountEmail), record: state(missing: 0)),
-            .init(email: "family.photos@gmail.com", status: .connected(email: "family.photos@gmail.com"), record: family),
+            .init(email: familyEmail, status: .connected(email: familyEmail), record: record(familyEmail, missing: total * 6 / 10)),
         ] + others, runtime: "gpmc 0.9.0 on Python 3.13.15", messages: .ready(found: 0, skipped: 12, partial: false))
         model.engine.applyFixture(activity: finishedItems, runTotal: 0, runDone: 0, phase: .idle, lastRun: Date().addingTimeInterval(-6 * 60))
         // The storage check sizes the selection from what was uploaded.
+        if model.diagnostics.runs.isEmpty { recordRuns(model) }
+    }
+
+    /// One run to three accounts at once: the primary catching up on new
+    /// photos, the family account part way, the added account just past its
+    /// storage check. Each record already holds what its lane has done.
+    private static func applyAccountsRun(to model: AppModel) {
+        let total = Set(albums.filter { selected.contains($0.id) }.flatMap(\.snapshot.assetIDs)).count
+        let runs: [(email: String, total: Int, done: Int, atOnce: Int)] = [
+            (accountEmail, 1_234, 1_180, 16), (familyEmail, 28_927, 12_410, 13), (archiveEmail, 27_639, 400, 8),
+        ]
+        let running: [AppModel.FixtureAccount] = runs.map { run in
+            .init(email: run.email, status: .connected(email: run.email), record: record(run.email, missing: run.total - run.done))
+        }
+        model.applyFixture(albums: albums, accounts: running + [
+            .init(email: workEmail, status: .connected(email: workEmail), included: false, record: record(workEmail, missing: total * 9 / 10)),
+        ], runtime: "gpmc 0.9.0 on Python 3.13.15", messages: .ready(found: 0, skipped: 12, partial: false))
+        let lanes: [BackupEngine.FixtureLane] = runs.compactMap { run in
+            model.accounts.first { $0.email == run.email }.map { .init(account: $0.id, total: run.total, done: run.done, atOnce: run.atOnce) }
+        }
+        let current = item("IMG_4821_long_name_from_a_camera_import_2026-10-14.HEIC", .uploading(0.42), size: 6_210_004, minutesAgo: 0)
+        model.engine.applyFixture(activity: [current, item("IMG_4822.HEIC", .hashing, size: nil, minutesAgo: 0)] + finishedItems,
+                                  runTotal: 0, runDone: 0, phase: .running, lastRun: Date().addingTimeInterval(-6 * 60), lanes: lanes)
         if model.diagnostics.runs.isEmpty { recordRuns(model) }
     }
 

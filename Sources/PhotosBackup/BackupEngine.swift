@@ -609,11 +609,31 @@ final class BackupEngine {
     }
 
     #if DEBUG
-    /// Snapshot fixtures only: a populated engine to draw.
+    /// One account's part of a fixture run: its own count and how many
+    /// uploads go to it at a time.
+    struct FixtureLane {
+        var account: String
+        var total: Int
+        var done: Int
+        var atOnce: Int
+    }
+
+    /// Snapshot fixtures only: a populated engine to draw. With `lanes` the
+    /// run goes to those accounts at once and, as in a real run, its counts
+    /// are their sums, so `runTotal` and `runDone` are not used.
     func applyFixture(activity: [ActivityItem], runTotal: Int, runDone: Int, phase: Phase,
-                      lastRun: Date?, waitReason: WaitReason? = nil, lastError: String? = nil) {
+                      lastRun: Date?, waitReason: WaitReason? = nil, lastError: String? = nil,
+                      lanes fixtureLanes: [FixtureLane] = []) {
         self.activity = activity
-        self.fixtureTally = RunTally(total: runTotal, done: runDone)
+        lanes = fixtureLanes.map { item in
+            let lane = AccountLane(plan: LanePlan(account: item.account, photos: true, followsChoice: true),
+                                   title: model.accounts.first { $0.id == item.account }?.title ?? "Google account", auth: "",
+                                   parallelism: UploadParallelism(cap: item.atOnce, automatic: false),
+                                   record: RunRecord(kind: .photos, trigger: .manual, conditions: nil))
+            lane.tally = RunTally(total: item.total, done: item.done)
+            return lane
+        }
+        self.fixtureTally = fixtureLanes.isEmpty ? RunTally(total: runTotal, done: runDone) : nil
         self.phase = phase
         self.lastRun = lastRun
         self.waitReason = waitReason
