@@ -248,6 +248,32 @@ class FakeGpmcEndToEndTests(unittest.TestCase):
         # ones open one per thread, plus the sign-in's.
         self.assertLessEqual(max(u["connections"] for u in uploads), 4 + 1)
 
+    def test_a_serve_session_commits_in_batches_as_original(self):
+        self.given(network={"rtt": 0.002, "commit": 0.05})
+        names = [f"IMG_{n}.JPG" for n in range(12)]
+        code, events, err = self.serve(self.request(self.stage(*names), threads=6))
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.of_type(events, "item_failed"), [])
+        self.assertEqual(len(self.of_type(events, "item")), 12)
+        uploads = [u for u in self.ledger_data()["uploads"] if u["status"] == "uploaded"]
+        self.assertEqual({(u["quality"], u["model"]) for u in uploads}, {("original", "Pixel XL")})
+        counters = self.ledger_data()["counters"]
+        self.assertLess(counters["commit_calls"], 12)
+        self.assertGreater(counters["batched_items"], 0)
+
+    def test_a_refused_batch_falls_back_to_one_commit_a_file(self):
+        self.given(refuse_batch_commits=True)
+        names = [f"IMG_{n}.JPG" for n in range(6)]
+        code, events, err = self.serve(self.request(self.stage(*names), threads=6))
+
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.of_type(events, "item_failed"), [])
+        self.assertEqual(len(self.of_type(events, "item")), 6)
+        counters = self.ledger_data()["counters"]
+        self.assertGreater(counters["batched_items"], 0, "a batch was tried")
+        self.assertEqual(len([u for u in self.ledger_data()["uploads"] if u["status"] == "uploaded"]), 6)
+
     def test_stop_ends_a_serve_session(self):
         self.given(delay=0.4)
         first, second = self.stage("a.jpg", "b.jpg", "c.jpg", "d.jpg"), self.stage("e.jpg")
