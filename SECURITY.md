@@ -18,7 +18,7 @@ understand the issue. There is no guaranteed response time.
   device in your Google account.
 - **The Messages archive.** When you turn it on, the app writes private message
   text, attachments and dated copies of Messages' own database to a folder you
-  choose (default `~/Documents/Messages Archive`). Folders are created 0700 and
+  choose (default `~/Messages Archive`). Folders are created 0700 and
   files 0600, but the folder is a normal folder: if you point it at a synced or
   shared location, whoever can read that location can read your messages. It is
   never uploaded by this app. The Messages features need Full Disk Access.

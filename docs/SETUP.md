@@ -30,13 +30,13 @@ Apple session material is stored in macOS Keychain or encrypted with Windows DPA
 
 This integration currently copies media and retains the iCloud originals. Upload completion alone is not a safe basis for reclaiming iCloud storage.
 
-### Upcoming v0.5.0: verified iCloud reclaim preview
+### Verified iCloud reclaim (experimental, since v0.5.0)
 
-The upcoming v0.5.0 preview keeps iCloud backup copy-only by default. Reclaim is a separate, opt-in action: review a manual preview, or explicitly confirm an automatic run of no more than 100 assets. Before an asset is moved, the app freshly downloads every original component from iCloud, reads the uploaded original back from Google Photos, and compares SHA-256 hashes and byte counts. A changed source, failed verification, or uncertain deletion leaves the source retained.
+iCloud backup stays copy-only by default. Reclaim is a separate, opt-in action: review a manual preview, or explicitly confirm an automatic run of no more than 100 assets. Before an asset is moved, the app freshly downloads every original component from iCloud, reads the uploaded original back from Google Photos, and compares SHA-256 hashes and byte counts. A changed source, failed verification, or uncertain deletion leaves the source retained.
 
 A successful reclaim moves the item to **Recently Deleted**; it does not permanently purge it, guarantee immediate iCloud storage recovery, or avoid propagation to devices sharing that iCloud Photos library. Review the preview and Recently Deleted consequence carefully. Validation of synthetic iCloud reclaim synchronization is still pending.
 
-### Upcoming v0.5.0: connected devices
+### Connected devices (since v0.5.0)
 
 On macOS, an unlocked and trusted iPhone or camera can supply selected originals through Image Capture/DCIM. This imports files that the connected device exposes; it does not browse PhotoKit albums or cloud-only items. The import path copies originals and retains the device source. A disposable iPhone HEIC passed the complete import path and SHA-256 verification against a fresh Google original download on 16 October 2026. The source was retained; companion-file and device-deletion behavior were not validated.
 

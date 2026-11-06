@@ -6,14 +6,14 @@ It is an unsigned preview release. Google Photos access uses an unofficial API, 
 
 ## Download
 
-The v0.4.0 packages are listed on the [latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest). Choose your native architecture under **Settings > System > About > System type**:
+The installers are on the [latest release](https://github.com/ayush5harma/google-photos-backup/releases/latest). Choose your native architecture under **Settings > System > About > System type**:
 
 | System | Per-user installer |
 | --- | --- |
-| ARM64 | `Google-Photos-Backup-0.4.0-Windows-arm64-Setup.exe` |
-| Intel or AMD x64 | `Google-Photos-Backup-0.4.0-Windows-x64-Setup.exe` |
+| ARM64 | `Google-Photos-Backup-<version>-Windows-arm64-Setup.exe` |
+| Intel or AMD x64 | `Google-Photos-Backup-<version>-Windows-x64-Setup.exe` |
 
-Run `Setup.exe` to install under your account's `%LOCALAPPDATA%\Programs\Google Photos Backup`; uninstall through Windows Settings. The installer includes .NET, Windows App SDK, native Python, and backup providers. Verify downloads with the release's `SHA256SUMS.txt`.
+The installer is unsigned, so SmartScreen may warn: choose **More info > Run anyway**. Run `Setup.exe` to install under your account's `%LOCALAPPDATA%\Programs\Google Photos Backup`; uninstall through Windows Settings. The installer includes .NET, Windows App SDK, native Python, and backup providers. Verify downloads with the release's `SHA256SUMS.txt`.
 
 The x64 build targets Windows 10 version 1809 or later; use Windows 11 for ARM64 and for the native Mica appearance. ARM64 packages contain native ARM64 app and provider binaries. Google sign-in requires Microsoft Edge WebView2 Runtime. Follow Microsoft's [Windows App SDK runtime prerequisites](https://learn.microsoft.com/en-us/windows/apps/windows-app-sdk/deployment-architecture), including the Visual C++ Redistributable for your package's architecture (x64 or ARM64). A clean installation without that redistributable has not been tested. The app and installer are unsigned, so Windows may warn when opening them; inspect the source and build provenance before trusting a preview.
 
@@ -58,7 +58,7 @@ CI also verifies PE architecture, application version, provider imports, package
 
 Settings, history, and account-specific resume state are stored in `%LOCALAPPDATA%\GooglePhotosBackup`. Credentials are encrypted with DPAPI `CurrentUser` and sent to the uploader through standard input, not command-line arguments. Disconnecting removes the saved credential. Deleting resume state can cause files to be reconsidered on the next run.
 
-Selected media and optional album names are sent to Google Photos using an unofficial API. Google may change authentication, upload behavior, and storage accounting. Read the repository's [privacy notes](../README.md#know-before-backing-up) and [credits](../ACKNOWLEDGEMENTS.md).
+Selected media and optional album names are sent to Google Photos using an unofficial API. Google may change authentication, upload behavior, and storage accounting. Read the repository's [privacy notes](../README.md#privacy-and-safety) and [credits](../ACKNOWLEDGEMENTS.md).
 
 ## Build on Windows
 
