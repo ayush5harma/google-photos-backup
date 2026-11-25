@@ -60,3 +60,6 @@ jobs:
 
   windows:
     uses: ./.github/workflows/windows.yml
+
+  ios:
+    uses: ./.github/workflows/ios.yml

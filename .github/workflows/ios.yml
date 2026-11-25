@@ -1,0 +1,70 @@
+name: iOS app
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'iOS/**'
+      - 'Sources/PhotosBackupCore/**'
+      - 'Package.swift'
+      - 'scripts/build-ios.sh'
+      - 'VERSION'
+      - '.github/workflows/ios.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'iOS/**'
+      - 'Sources/PhotosBackupCore/**'
+      - 'Package.swift'
+      - 'scripts/build-ios.sh'
+      - 'VERSION'
+      - '.github/workflows/ios.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: iOS
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      # The Xcode test.yml and release.yml select; the project file stays
+      # within what Xcode 26 reads (objectVersion 77).
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the release version
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release version.' >&2; exit 1; }
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            test "$GITHUB_REF_NAME" = "v$version"
+          fi
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Check the build script
+        run: |
+          bash -n scripts/build-ios.sh
+          if command -v shellcheck >/dev/null; then shellcheck -S warning -x scripts/build-ios.sh; fi
+      - name: Simulator build
+        run: scripts/build-ios.sh --simulator
+      - name: Unsigned device build, packaged and checked
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: scripts/build-ios.sh --out build/ios
+      - name: Upload the IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Photos-Backup-${{ env.RELEASE_VERSION }}-iOS
+          path: |
+            build/ios/*.ipa
+            build/ios/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: State signing status
+        run: echo 'The IPA is unsigned. Sideloading tools (AltStore, SideStore, Feather) sign it with the Apple ID of whoever installs it.' >> "$GITHUB_STEP_SUMMARY"
