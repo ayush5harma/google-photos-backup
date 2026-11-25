@@ -55,7 +55,7 @@ struct ActivityView: View {
                                        description: Text("Each backup run is listed here once it ends."))
             }
         } else {
-            Section("Last \(runs.count.formatted()) runs") {
+            Section(runs.count == 1 ? "Last run" : "Last \(runs.count.formatted()) runs") {
                 ForEach(runs) { run in
                     RunRow(run: run, account: model.accounts.count > 1 ? model.accountTitle(reference: run.account) : nil)
                 }

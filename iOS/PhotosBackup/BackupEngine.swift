@@ -2,10 +2,9 @@ import Foundation
 import Observation
 import PhotosBackupCore
 
-// The seam between the app and the backup engine. Phase 1 of the iOS app
-// ships everything but the engine (export, upload, commit, albums and
-// background execution); the AppModel and every view talk only to this
-// protocol, so the real engine drops in without touching them.
+// The seam between the app and the backup engine. The AppModel and every
+// view talk only to this protocol: NativeBackupEngine (Engine/) backs up,
+// FixtureBackupEngine draws a run for screenshots.
 
 /// Where a backup goes: where Settings > Accounts' "Back up to" says, or one
 /// named account (a link's ?account=, a storage check's Start Backing Up).
@@ -60,8 +59,7 @@ struct BackupEngineStatus: Equatable {
     }
 }
 
-/// What the engine may ask of the app. Phase 2 adds what a run needs (the
-/// records, the credentials, the selection); phase 1 only reports.
+/// What the engine reports to the app.
 @MainActor
 protocol BackupEngineHost: AnyObject {
     func log(_ category: EventCategory, _ message: String, problem: Bool)
@@ -78,31 +76,10 @@ protocol BackupEngine: AnyObject {
     func resume()
     func stop()
     func retryFailed()
-}
-
-/// Phase 1's engine: it runs nothing and says so in the Activity timeline,
-/// so a button that does nothing is never mistaken for a backup that ran.
-@MainActor
-@Observable
-final class PlaceholderBackupEngine: BackupEngine {
-    private(set) var status = BackupEngineStatus()
-    @ObservationIgnored private weak var host: BackupEngineHost?
-
-    static let notice = "This build of Photos Backup for iOS does not upload yet: the backup engine comes in a later version. Nothing was sent to Google."
-
-    init(host: BackupEngineHost) {
-        self.host = host
-    }
-
-    func backUpNow(to destination: BackupDestination, trigger: RunTrigger) {
-        Log.engine.notice("Backup requested (\(trigger.rawValue, privacy: .public)); placeholder engine, nothing runs")
-        host?.log(.run, "\(trigger.title): \(Self.notice)", problem: false)
-    }
-
-    func pause() { host?.log(.run, "Pause: no backup is running. \(Self.notice)", problem: false) }
-    func resume() { host?.log(.run, "Resume: no backup is paused. \(Self.notice)", problem: false) }
-    func stop() { host?.log(.run, "Stop: no backup is running.", problem: false) }
-    func retryFailed() { host?.log(.run, "Retry: nothing has failed. \(Self.notice)", problem: false) }
+    /// iOS took the background time back: stop where the run is and save.
+    func expire()
+    /// Write whatever the run holds in memory (the app is leaving the front).
+    func saveNow()
 }
 
 #if DEBUG
@@ -122,5 +99,7 @@ final class FixtureBackupEngine: BackupEngine {
     func resume() { status.phase = .running }
     func stop() { status.phase = .idle }
     func retryFailed() {}
+    func expire() {}
+    func saveNow() {}
 }
 #endif

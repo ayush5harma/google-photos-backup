@@ -16,33 +16,35 @@ import os
 enum AppEnvironment {
     static let bundleID = Bundle.main.bundleIdentifier ?? "io.github.ayush5harma.PhotosBackup"
 
+    // Each name is spelled inside #if DEBUG so a Release binary carries none
+    // of them (scripts/ios-e2e.sh checks).
+    #if DEBUG
     private static func value(_ name: String) -> String? {
-        #if DEBUG
         guard let value = ProcessInfo.processInfo.environment[name], !value.isEmpty else { return nil }
         return value
-        #else
-        return nil
-        #endif
     }
 
     static let sandbox: URL? = value("PHOTOS_BACKUP_SANDBOX").map { URL(fileURLWithPath: $0, isDirectory: true) }
-
-    static var isSandboxed: Bool { sandbox != nil }
-
     static let isFixture = value("PHOTOS_BACKUP_SNAPSHOT_FIXTURE") == "1"
-
     static let requestedTab: AppTab? = value("PHOTOS_BACKUP_TAB").flatMap(AppTab.init(rawValue:))
-
-    enum Sheet: String {
-        case onboarding, signin
-    }
-
     static let requestedSheet: Sheet? = value("PHOTOS_BACKUP_SHOW").flatMap(Sheet.init(rawValue:))
-
     /// A photosbackup:// link run at launch through the same path as one
     /// opened from outside: `simctl openurl` stops at a confirmation alert
     /// that nothing scripted can answer (iOS 27 simulator, 2026-11-26).
     static let requestedLink: URL? = value("PHOTOS_BACKUP_OPEN").flatMap(URL.init(string:))
+    #else
+    static let sandbox: URL? = nil
+    static let isFixture = false
+    static let requestedTab: AppTab? = nil
+    static let requestedSheet: Sheet? = nil
+    static let requestedLink: URL? = nil
+    #endif
+
+    static var isSandboxed: Bool { sandbox != nil }
+
+    enum Sheet: String {
+        case onboarding, signin
+    }
 
     /// A suite of its own when sandboxed; UserDefaults refuses the app's own
     /// bundle id as a suite name, so the suffix is needed either way.

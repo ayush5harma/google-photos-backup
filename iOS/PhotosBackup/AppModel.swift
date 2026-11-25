@@ -2,7 +2,6 @@ import Foundation
 import Observation
 import Photos
 import PhotosBackupCore
-import UserNotifications
 
 enum AppTab: String, CaseIterable, Identifiable {
     case overview, albums, activity, settings
@@ -70,6 +69,10 @@ final class AppModel {
     let conditions = ConditionsMonitor()
     let diagnostics: Diagnostics
     let isFixture: Bool
+    @ObservationIgnored let notifier: Notifier
+    /// The app is in front: a change in Photos starts a run only then; in
+    /// the background the processing task does.
+    @ObservationIgnored var isInFront = true
 
     @ObservationIgnored private let accountsStore: AccountsStore
     @ObservationIgnored private let keychain = Keychain(service: AppEnvironment.keychainService)
@@ -84,8 +87,8 @@ final class AppModel {
     /// Signed-in accounts in run order; the first is the primary.
     private(set) var accounts: [BackupAccount] = []
     private(set) var accountsChoice: AccountsChoice = .all
-    /// Whose record `state` is: the primary. Phase 2's engine switches it
-    /// per account as the Mac's does.
+    /// Whose record `state` is: the primary. The engine changes any
+    /// account's record through modifyRecord(of:_:), so no switch is needed.
     private(set) var activeAccountID: String?
     private(set) var accountStatuses: [String: AccountStatus] = [:]
     /// Accounts with a Keychain item, cached so drawing never queries it.
@@ -108,7 +111,7 @@ final class AppModel {
             settings.save()
             let turnedOn = (settings.notifyWhenFinished && !oldValue.notifyWhenFinished)
                 || (settings.notifyAboutProblems && !oldValue.notifyAboutProblems)
-            if turnedOn { requestNotifications() }
+            if turnedOn { Task { await notifier.requestAuthorization() } }
         }
     }
     private(set) var connectState: ConnectState = .idle
@@ -126,6 +129,7 @@ final class AppModel {
 
     init(fixture: Bool = AppEnvironment.isFixture) {
         isFixture = fixture
+        notifier = Notifier(enabled: !fixture)
         let support = AppEnvironment.supportDirectory
         accountsStore = AccountsStore(directory: support)
         if fixture {
@@ -140,7 +144,11 @@ final class AppModel {
             loadAccounts()
             StagingArea.clear()
         }
-        engine = PlaceholderBackupEngine(host: self)
+        let engine = NativeBackupEngine(model: self) { credential in
+            GooglePhotosClient(credential: credential, endpoints: AppEnvironment.googleEndpoints)
+        }
+        engine.observer = BackgroundCoordinator.shared
+        self.engine = engine
         if let tab = AppEnvironment.requestedTab { self.tab = tab }
     }
 
@@ -361,6 +369,13 @@ final class AppModel {
         if adoption.account.storageChecked { automaticRun(trigger: .signIn) }
     }
 
+    #if DEBUG
+    /// E2EHooks: the sign-in path after the exchange, with no network.
+    func connectForTesting(credential: String, email: String) {
+        connect(credential: credential, email: email)
+    }
+    #endif
+
     /// Signs one account out: its Keychain item goes and runs stop going to
     /// it. Its record stays, so signing in again carries on where it left off.
     func removeAccount(_ id: String) {
@@ -395,12 +410,32 @@ final class AppModel {
     func launch() async {
         guard !isFixture else { return }
         log(.app, "Launched")
+        BackgroundCoordinator.shared.attach(self)
+        await notifier.refresh()
         library.onChange = { [weak self] in self?.libraryChanged() }
         conditions.onChange = { [weak self] in self?.conditionsChanged() }
         conditions.start()
         if library.isAuthorized { await connectLibrary() }
+        #if DEBUG
+        if await E2EHooks.apply(to: self) { return }
+        #endif
         if !settings.onboardingCompleted { showingOnboarding = true }
         automaticRun(trigger: .launch)
+    }
+
+    /// The scene came to the front or left it.
+    func sceneChanged(active: Bool) {
+        guard !isFixture else { return }
+        isInFront = active
+        BackgroundCoordinator.shared.sceneChanged(active: active)
+        if active { Task { await refreshPhotosStatus() } }
+    }
+
+    /// The processing task's run: an automatic one, held by the same
+    /// conditions as any other.
+    func backgroundRun() {
+        Task { await reloadAlbums() }
+        automaticRun(trigger: .background)
     }
 
     func requestPhotosAccess() async {
@@ -437,14 +472,15 @@ final class AppModel {
         albumsLoaded = true
     }
 
-    /// Photos reports changes in bursts, so wait for it to settle.
+    /// Photos reports changes in bursts, so wait for it to settle; only
+    /// while the app is in front (in the background the processing task runs).
     private func libraryChanged() {
         refreshTask?.cancel()
         refreshTask = Task {
             try? await Task.sleep(for: .seconds(20))
             guard !Task.isCancelled else { return }
             await reloadAlbums()
-            automaticRun(trigger: .libraryChange)
+            if isInFront { automaticRun(trigger: .libraryChange) }
         }
     }
 
@@ -537,6 +573,28 @@ final class AppModel {
         log(.account, "\(accountLibrary.account(id)?.title ?? "An account")'s album links were forgotten")
     }
 
+    /// Changes one account's record in memory, active or not, as a run going
+    /// to several accounts at once does; saveRecord(of:) writes it. nil when
+    /// the account has no record.
+    @discardableResult
+    func modifyRecord<T>(of id: String, _ change: (inout BackupState) -> T) -> T? {
+        if id == activeAccountID { return change(&state) }
+        guard let result = accountLibrary.modifyState(for: id, change) else { return nil }
+        accountSummaries[id] = nil
+        return result
+    }
+
+    /// Writes one account's record, as saveState() writes the active one's.
+    func saveRecord(of id: String) {
+        if id == activeAccountID { return saveState() }
+        guard !isFixture, let account = accountLibrary.account(id), let record = accountLibrary.storedState(for: id) else { return }
+        do {
+            try accountsStore.save(record, file: account.stateFile)
+        } catch {
+            saveFailure = "Could not save the backup history: \(error.localizedDescription)"
+        }
+    }
+
     private func changeRecord(of id: String, _ change: (inout BackupState) -> Void) {
         if id == activeAccountID {
             change(&state)
@@ -583,14 +641,6 @@ final class AppModel {
         automaticRun(trigger: .launch)
     }
 
-    // MARK: - Notifications
-
-    private func requestNotifications() {
-        Task {
-            _ = try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])
-        }
-    }
-
     // MARK: - Diagnostics
 
     func clearActivity() {
@@ -602,7 +652,7 @@ final class AppModel {
         var snapshot = DiagnosticSnapshot()
         snapshot.appVersion = AppEnvironment.version
         snapshot.macOSVersion = "iOS " + ProcessInfo.processInfo.operatingSystemVersionString
-        snapshot.uploader = "Not included in this build (phase 1)"
+        snapshot.uploader = "Native client (gpmc 0.9.0 protocol)"
         snapshot.settings = [
             .init("Quality", settings.quality.title),
             .init("Recreate albums", onOff(settings.mirrorAlbums)),
@@ -706,11 +756,13 @@ extension AppModel: BackupEngineHost {
     /// Redactor on the way in).
     func log(_ category: EventCategory, _ message: String, problem: Bool = false) {
         diagnostics.log(category, message, problem: problem)
+        if problem { notifier.problem(Redactor().redact(message), category: category, settings: settings) }
     }
 
     func runFinished(_ record: RunRecord, account: String?) {
         var record = record
         if let id = account ?? activeAccountID { record.account = AccountLibrary.reference(for: id) }
         diagnostics.record(record)
+        notifier.runFinished(record, settings: settings)
     }
 }

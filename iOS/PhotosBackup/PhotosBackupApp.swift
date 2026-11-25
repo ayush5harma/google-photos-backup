@@ -6,6 +6,8 @@ struct PhotosBackupApp: App {
     @State private var model: AppModel
 
     init() {
+        // BGTaskScheduler takes registrations only before launch ends.
+        BackgroundCoordinator.shared.register()
         let model = AppModel()
         #if DEBUG
         if model.isFixture { SnapshotFixture.apply(to: model) }
@@ -48,8 +50,14 @@ struct RootView: View {
                     }
             }
             .onChange(of: scenePhase) { _, phase in
-                // Photos access can change in Settings while the app is away.
-                if phase == .active { Task { await model.refreshPhotosStatus() } }
+                // Photos access can change in Settings while the app is away;
+                // leaving the front saves the run and schedules the next
+                // background backup.
+                switch phase {
+                case .active: model.sceneChanged(active: true)
+                case .background: model.sceneChanged(active: false)
+                default: break
+                }
             }
     }
 

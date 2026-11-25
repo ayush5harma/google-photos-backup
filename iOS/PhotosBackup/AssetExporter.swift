@@ -10,6 +10,8 @@ struct ExportedAsset: Equatable {
     /// Which version of the asset this file is; nil when Photos gave no
     /// modification date.
     let stamp: EditStamp?
+    /// PHAsset.creationDate: the timestamp Google Photos is given.
+    let created: Date?
 }
 
 struct ExportError: LocalizedError, Equatable {
@@ -45,8 +47,7 @@ enum StagingArea {
 /// the uploader. A port of the Mac AssetExporter: which resource is taken,
 /// how it is named and what marks an edit come from Core's ExportRendition
 /// and ExportNaming; only the PhotoKit calls live here. Originals kept in
-/// iCloud ("Optimize iPhone Storage") are downloaded. Used by the phase 2
-/// engine; nothing in phase 1 calls `export`.
+/// iCloud ("Optimize iPhone Storage") are downloaded. Used by NativeBackupEngine.
 @MainActor
 struct AssetExporter {
     /// Burst frames filed in an album one by one are dropped by default
@@ -112,11 +113,37 @@ struct AssetExporter {
                     try? FileManager.default.setAttributes([.modificationDate: date, .creationDate: date], ofItemAtPath: url.path)
                 }
                 let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value ?? 0
-                finished(id, .success(ExportedAsset(assetID: id, url: url, filename: filename, size: size, stamp: stamp)))
+                finished(id, .success(ExportedAsset(assetID: id, url: url, filename: filename, size: size, stamp: stamp,
+                                                    created: asset.creationDate)))
             } catch {
                 finished(id, .failure(ExportError(errorDescription: "Export failed: \(error.localizedDescription)")))
             }
         }
+    }
+
+    struct EditState {
+        let edited: Bool
+        let modified: Date?
+        /// The edit's identity; nil when unedited or unreadable.
+        let identity: String?
+    }
+
+    /// Whether each asset's current rendition is an edited one, which edit,
+    /// and its date now. Reads resources for these assets only (the ones
+    /// whose date moved), never for the library. The Mac's editStates.
+    static func editStates(of assetIDs: [String]) async -> [String: EditState] {
+        var assets: [PHAsset] = []
+        PHAsset.fetchAssets(withLocalIdentifiers: assetIDs, options: lookup(includingHidden: false))
+            .enumerateObjects { asset, _, _ in assets.append(asset) }
+        var states: [String: EditState] = [:]
+        for asset in assets {
+            let resources = PHAssetResource.assetResources(for: asset)
+            let kinds = resources.map(kind)
+            let edited = ExportRendition.choose(media(asset.mediaType), among: kinds).map { ExportRendition.isEdited(kinds[$0]) } ?? false
+            let identity = edited ? await editIdentity(in: resources) : nil
+            states[asset.localIdentifier] = EditState(edited: edited, modified: asset.modificationDate, identity: identity)
+        }
+        return states
     }
 
     static func media(_ type: PHAssetMediaType) -> ExportRendition.Media {
