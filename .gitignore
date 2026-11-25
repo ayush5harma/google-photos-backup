@@ -1,6 +1,10 @@
 .build/
 build/
 *.xcodeproj/
+# The iOS app's project is hand-written and tracked; per-user state is not.
+!iOS/PhotosBackup.xcodeproj/
+iOS/PhotosBackup.xcodeproj/xcuserdata/
+iOS/PhotosBackup.xcodeproj/project.xcworkspace/
 .swiftpm/
 __pycache__/
 *.pyc
