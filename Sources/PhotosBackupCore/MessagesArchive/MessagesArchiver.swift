@@ -35,7 +35,7 @@ public struct MessagesArchiver: Sendable {
             self.now = now
         }
 
-        public static func standard(folder: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Configuration {
+        public static func standard(folder: URL, home: URL = UserHome.directory) -> Configuration {
             Configuration(folder: folder, database: home.appendingPathComponent("Library/Messages/chat.db"), homeDirectory: home)
         }
     }

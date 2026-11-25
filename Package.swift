@@ -3,9 +3,12 @@ import PackageDescription
 
 let package = Package(
     name: "PhotosBackup",
-    platforms: [.macOS(.v14)],
+    platforms: [.macOS(.v14), .iOS(.v17)],
     products: [
         .executable(name: "PhotosBackup", targets: ["PhotosBackup"]),
+        // The iOS app (iOS/PhotosBackup.xcodeproj) links the core as a
+        // library; the Mac app stays a plain executable.
+        .library(name: "PhotosBackupCore", targets: ["PhotosBackupCore"]),
     ],
     targets: [
         // Everything that can be decided without PhotoKit or a process:
