@@ -52,5 +52,6 @@ The shared provider replaces the earlier iCloud-to-Google-Photos pipeline, using
 
 - [Windows setup](../Windows/README.md#set-up-and-back-up)
 - [Android setup and builds](../Android/README.md)
+- [iPhone and iPad setup and builds (preview)](../iOS/README.md)
 - [Messages, automation and settings](REFERENCE.md)
 - [Project credits](../ACKNOWLEDGEMENTS.md)

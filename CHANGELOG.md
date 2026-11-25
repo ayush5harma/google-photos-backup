@@ -2,6 +2,14 @@
 
 What changed in each release, newest first. Downloads and full notes are on the [releases page](https://github.com/ayush5harma/google-photos-backup/releases). Numbers like #49 are GitHub issues.
 
+## iOS preview 1, 0.6.4 (2026-11-26)
+
+- iOS: a native iPhone and iPad app (iOS 17 or later), released as an unsigned IPA for sideloading. It backs up the albums you choose to one or several Google accounts at once, mirrors your albums, and keeps the Mac app's design, settings and records.
+- iOS: uploads go through a native Swift client for the same Google Photos protocol gpmc uses, with up to 20 uploads confirmed per request. Its requests are checked byte for byte against gpmc 0.9.0.
+- iOS: a backup you start keeps going after you leave the app on iOS 26 and later; automatic backups run when iOS gives the app time.
+- iOS: tested in the iOS Simulator against a fake Google server; not yet on a phone or with a real Google account.
+- Mac: no change in behaviour. The keychain and Google sign-in exchange moved into the shared core so the iOS app uses the same code.
+
 ## 0.6.4 (2026-11-06)
 
 - Mac: uploads are confirmed with Google up to 20 at a time instead of one by one. One account went from about 1.1 to 2.2 photos a second (#72).
