@@ -12,24 +12,43 @@ backup records, the planner, the timeline and history, the diagnostic report,
   <img src="../docs/ios-settings-dark.png" width="260" alt="Settings with three accounts, in dark mode">
 </p>
 
-## Status: preview, uploads not included yet
+## What it does
 
-This version has everything but the backup engine:
-
+- Backs up the albums you choose (All Photos, smart albums, your own albums)
+  to one or several Google accounts at the same time. Each photo is exported
+  from Photos once, hashed, and sent to every account that needs it; Google
+  is asked first whether it already has the bytes, uploads are committed 20
+  at a time, and nothing is recorded as backed up until Google returns a
+  media key for it.
+- Recreates your own albums in Google Photos, adding new photos to them on
+  later runs. Edited photos are uploaded again as edited (Settings > Backup).
+- Pause, Resume, Stop and Retry Failed work as on the Mac. Google's "slow
+  down" answers hold the account and the run carries on by itself.
+- When to back up: Wi-Fi only, not in Low Data Mode, only while charging, not
+  in Low Power Mode. Automatic backups wait while one holds and continue when
+  it clears; Back Up Now runs anyway.
 - Overview, Albums, Activity and Settings, light and dark, iPhone and iPad (a
-  sidebar on iPad from iOS 18).
-- Sign in to one or several Google accounts on Google's own page; each
-  account's sign-in is kept in the Keychain on the device.
-- Choose albums (All Photos, smart albums, your own albums), back up to all
-  accounts or the ones you choose, upload quality, recreating albums, and
-  when to back up: Wi-Fi only, not in Low Data Mode, only while charging, not
-  in Low Power Mode.
-- A shareable diagnostic report with addresses and tokens removed.
+  sidebar on iPad from iOS 18). Sign-in on Google's own page; each account's
+  sign-in stays in the Keychain on the device. A shareable diagnostic report
+  with addresses and tokens removed. Notifications for finished automatic
+  backups and for problems that need you, if you allow them.
+- With Photos access limited to chosen photos, only those are backed up, and
+  the app says so.
 
-Back Up Now, Pause and the `photosbackup://backup` links do not upload yet:
-they record in Activity's timeline that this build does not upload. Exporting,
-uploading, recreating albums and running in the background come in the next
-version.
+It uploads through a native Swift client for Google Photos' mobile interface
+(the same protocol as [gpmc](https://github.com/xob0t/gpmc), which the Mac app
+uses); there is no Python on the phone.
+
+## In the background
+
+- A backup you start keeps going after you leave the app: on iOS 26 and later
+  as a continued background task with the system's progress indicator; on
+  earlier versions for the short time iOS allows, enough to finish the
+  commits in flight and save. While it runs in front, the screen stays awake.
+- Automatic backups run when iOS gives the app time (a background processing
+  task, which needs a network, and external power if you chose Only while
+  charging), and when Photos changes while the app is open. iOS decides when
+  and for how long; a run it ends early is saved and the next one carries on.
 
 ## Build from source
 
@@ -61,12 +80,19 @@ days until they are signed again; a paid developer account lasts a year.
 - Photos limited to "selected photos" back up only what you shared with the
   app; All Photos then means those.
 
-## Not verified yet
+## Tested, and not yet
 
-A real Google sign-in followed by a real upload, and installing the IPA on a
-physical device, have not been tested. The app has run in the iOS 27
-simulator, where Google's sign-in page loads and every screen was checked with
-made-up data (`docs/SCREENSHOTS.md`).
+`scripts/ios-e2e.sh` (needs `ffmpeg` for its test media) runs the app in a
+throwaway iOS simulator against the fake Google in `Tests/E2E`: a first backup
+of generated photos and a video into an album, a second run that uploads
+nothing new, and a fresh run against a fake that refuses batched commits and
+answers 429 twice. Every check compares the fake's library and albums with
+the app's own records. `swift test` covers the upload and album decisions
+(`Sources/PhotosBackupCore/NativeUpload`).
+
+Not verified: a real Google sign-in followed by a real upload, the
+background tasks on a physical device (the simulator does not run them as a
+phone does), and installing the IPA on a device.
 
 Photos Backup is not made by Google. It uses Google Photos' unofficial mobile
 interface, as an Android phone would; Google can change or end that at any

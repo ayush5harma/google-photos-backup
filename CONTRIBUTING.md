@@ -32,6 +32,7 @@ For the native Windows preview, see [Windows development](Windows/README.md#buil
 | Bridge tests | `python3 -B -m unittest discover -s Bridge/tests` | The line protocol against a fake gpmc client, and real bridge runs against `Tests/E2E/fake_gpmc` |
 | Fixture screenshots | `SNAPSHOT_FIXTURE=1 scripts/snapshots.sh <out> [groups]` | Renders every screen from made-up data; groups are `sections`, `settings`, `onboarding`, `menubar` and `links` |
 | End-to-end | `scripts/e2e.py --app <bundle>` | The real app and the real bridge against a fake Google |
+| iOS end-to-end | `scripts/ios-e2e.sh` | The iOS app in a throwaway simulator, through its native client, against `Tests/E2E/fake_google_photos.py` (needs `ffmpeg`) |
 
 ### The end-to-end run
 
