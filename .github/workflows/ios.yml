@@ -44,7 +44,8 @@ jobs:
           version="$(tr -d '[:space:]' < VERSION)"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release version.' >&2; exit 1; }
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            test "$GITHUB_REF_NAME" = "v$version"
+            # Pre-release tags carry the version before a suffix (v0.6.4-ios-preview.1).
+            [[ "$GITHUB_REF_NAME" == "v$version" || "$GITHUB_REF_NAME" == "v$version"-* ]]
           fi
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
       - name: Check the build script
