@@ -88,6 +88,8 @@ public enum AlbumMirroring {
         /// Assets whose upload was forgotten because Google no longer has
         /// their key; the planner sends them again, without the hash check.
         public var forgotten: [String] = []
+
+        public init() {}
     }
 
     /// The Mac engine's reaction to the bridge's `album` and `missing_media`
