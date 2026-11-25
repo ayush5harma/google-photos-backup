@@ -1,5 +1,6 @@
 import Foundation
 @testable import PhotosBackup
+import PhotosBackupCore
 import XCTest
 
 /// Against a throwaway service of its own: never the app's service, so the
