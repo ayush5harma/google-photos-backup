@@ -252,6 +252,22 @@ import Testing
         #expect(stub.dataRequests[1].url.query == "upload_id=u1")
     }
 
+    @Test func aBackgroundPutIsReauthorizedWithoutANewUploadStart() async throws {
+        let calls = Counter()
+        let stub = Stub { request in
+            request.isAuth
+                ? Stub.authAnswer(expiry: Self.start.timeIntervalSince1970 + 3600, token: "t\(calls.next("auth"))")
+                : .ok(headers: ["X-GUploader-UploadID": "u1"])
+        }
+        let client = try Self.client(stub)
+        let put = try await client.prepareUpload(sha1: Self.sha1, size: 3)
+        let again = try await client.reauthorized(put)
+        #expect(put.value(forHTTPHeaderField: "Authorization") == "Bearer t0")
+        #expect(again.value(forHTTPHeaderField: "Authorization") == "Bearer t1")
+        #expect(again.url == put.url)
+        #expect(stub.dataRequests.count == 1)
+    }
+
     @Test func aRefusedPutIsSentAgainWithAFreshToken() async throws {
         let calls = Counter()
         let receipt = ProtobufWire.int(1, 5) + ProtobufWire.bytes(2, Data([0xAB]))

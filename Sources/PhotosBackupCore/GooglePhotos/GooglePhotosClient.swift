@@ -95,9 +95,7 @@ public actor GooglePhotosClient {
         var request = try await prepareUpload(sha1: sha1, size: size)
         var (body, status) = try await put(request, file: file, progress: progress)
         if status == 401 || status == 403 {
-            // The upload id outlives the bearer; only the token is renewed.
-            invalidate(bearerIn: request)
-            request.setValue("Bearer \(try await bearer())", forHTTPHeaderField: "Authorization")
+            request = try await reauthorized(request)
             (body, status) = try await put(request, file: file, progress: progress)
         }
         let receipt = try receipt(fromUploadResponse: body, status: status)
@@ -107,7 +105,7 @@ public actor GooglePhotosClient {
     /// The upload start, and the PUT that sends the bytes, for a transport
     /// of the caller's own (a background URLSession). The PUT carries a
     /// bearer that lives at least 30 s; a background transfer that answers
-    /// 401/403 should come back here for a fresh request.
+    /// 401/403 gets a fresh one from `reauthorized(_:)`.
     public func prepareUpload(sha1: Data, size: Int64) async throws(GooglePhotosError) -> URLRequest {
         let (_, response) = try await authorized { bearer in
             var request = self.request(self.endpoints.upload, bearer: bearer)
@@ -132,6 +130,16 @@ public actor GooglePhotosClient {
         // bodied request to a form type (g8row/PhotosBackup sends the same).
         put.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         return put
+    }
+
+    /// The same request with a renewed bearer, for a background PUT that
+    /// came back 401/403: the upload id outlives the token, so the bytes can
+    /// go again without a new upload start.
+    public func reauthorized(_ request: URLRequest) async throws(GooglePhotosError) -> URLRequest {
+        invalidate(bearerIn: request)
+        var request = request
+        request.setValue("Bearer \(try await bearer())", forHTTPHeaderField: "Authorization")
+        return request
     }
 
     /// The PUT's answer as a receipt to commit. Its field 2 is the upload
