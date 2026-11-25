@@ -89,7 +89,12 @@ file "$CHECKED/$EXECUTABLE" | grep -q 'Mach-O 64-bit executable arm64' || fail "
 [ "$(plist CFBundleIdentifier)" = "$BUNDLE_ID" ] || fail "CFBundleIdentifier is '$(plist CFBundleIdentifier)', not $BUNDLE_ID"
 [ ! -e "$CHECKED/_CodeSignature" ] || fail "the app is signed (_CodeSignature present)"
 [ ! -e "$CHECKED/embedded.mobileprovision" ] || fail "the app carries a provisioning profile"
+# The debug hooks (fixture, sandbox, the E2E account and fake Google) are
+# compiled out of Release; their names in the binary would mean one is not.
+if strings -a "$CHECKED/$EXECUTABLE" | grep -q -E 'PHOTOS_BACKUP_|e2e-synthetic'; then
+  fail "the Release binary carries a debug hook's name"
+fi
 
 (cd "$OUT" && shasum -a 256 "$IPA" > "$IPA.sha256")
-echo "build-ios: checked arm64, version $VERSION ($BUILD_NUMBER), iOS $MINIMUM_OS+, $BUNDLE_ID, unsigned" >&2
+echo "build-ios: checked arm64, version $VERSION ($BUILD_NUMBER), iOS $MINIMUM_OS+, $BUNDLE_ID, unsigned, no debug hooks" >&2
 printf 'Packaged %s\n' "$OUT/$IPA"
