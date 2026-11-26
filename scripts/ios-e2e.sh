@@ -144,8 +144,9 @@ access_lines() {
 import json, sys
 events = json.load(open(sys.argv[1]))
 events = events["events"] if isinstance(events, dict) else events
-lines = [e["message"] for e in events if e.get("message", "").startswith("E2E: Photos access")]
-print(len(lines) if sys.argv[2] == "count" else (lines[-1] if lines else ""))
+# events.json keeps the newest first; sort by date rather than trust either order.
+lines = sorted((e.get("date", ""), e["message"]) for e in events if e.get("message", "").startswith("E2E: Photos access"))
+print(len(lines) if sys.argv[2] == "count" else (lines[-1][1] if lines else ""))
 PY
 }
 
