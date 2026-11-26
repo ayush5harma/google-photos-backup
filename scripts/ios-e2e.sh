@@ -42,8 +42,29 @@ command -v ffmpeg >/dev/null || { echo "ios-e2e: ffmpeg is needed to make the te
 
 UDID=""
 SERVER_PID=""
+# On a failure, keep what explains it before the simulator goes: the app's
+# own records, its log, a screenshot, whether it is still running, and any
+# crash report. CI keeps the work folder as an artifact.
+diagnose() {
+  local out="$WORK/diagnostics" data
+  mkdir -p "$out"
+  data="$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data 2>/dev/null)" || data=""
+  if [ -n "$data" ]; then
+    cp -R "$data/Library/Application Support/$BUNDLE_ID" "$out/support" 2>/dev/null || true
+    cp "$data/Library/Preferences/$BUNDLE_ID.plist" "$out/" 2>/dev/null || true
+  fi
+  xcrun simctl io "$UDID" screenshot --type=png "$out/screen.png" >/dev/null 2>&1 || true
+  xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -i "$BUNDLE_ID" > "$out/running.txt" || true
+  xcrun simctl spawn "$UDID" log show --last 30m --style compact \
+    --predicate "subsystem == \"$BUNDLE_ID\" OR process == \"PhotosBackup\"" > "$out/app.log" 2>&1 || true
+  find "$HOME/Library/Logs/DiagnosticReports" -name 'PhotosBackup*' -mmin -60 -exec cp {} "$out/" \; 2>/dev/null || true
+  say "diagnostics kept in $out"
+}
+
 cleanup() {
+  local status=$?
   [ -n "$SERVER_PID" ] && kill "$SERVER_PID" 2>/dev/null || true
+  if [ -n "$UDID" ] && [ "$status" -ne 0 ]; then diagnose; fi
   if [ -n "$UDID" ]; then
     xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
     xcrun simctl delete "$UDID" >/dev/null 2>&1 || true

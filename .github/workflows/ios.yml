@@ -106,5 +106,6 @@ jobs:
             build/ios-e2e/*.jsonl
             build/ios-e2e/*.out
             build/ios-e2e/*.log
+            build/ios-e2e/diagnostics/**
           if-no-files-found: warn
           retention-days: 14
