@@ -124,11 +124,6 @@ public actor UploadLane {
     /// Google's hold on this account, if one is running.
     public func hold(at date: Date) -> Date? { rateLimiter.hold(at: date) }
 
-    /// A person asked for these items again: they start with fresh attempts.
-    public func forgetAttempts(_ assetIDs: [String]) {
-        for id in assetIDs { retries.forget(id) }
-    }
-
     /// Google's 429 on a call outside `send` (an album call): holds the
     /// account as a refused upload does. True when the run should give up.
     public func hitRateLimit() -> Bool {

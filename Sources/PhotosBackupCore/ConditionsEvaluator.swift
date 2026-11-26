@@ -69,6 +69,18 @@ public enum ConditionsEvaluator {
         return nil
     }
 
+    /// The same, for a network nobody has reported yet (iOS, before the
+    /// path monitor's first update, as on a cold background launch). An
+    /// automatic run waits as if offline, since the unknown network may be
+    /// the metered one the person chose to spare; a run someone started goes
+    /// ahead as before (it overrides every hold but no network, and the
+    /// network itself answers). The Mac keeps the overload above.
+    public static func blocking(network: NetworkConditions?, power: PowerConditions, flags: ConditionFlags,
+                                startedByPerson: Bool) -> WaitReason? {
+        guard let network else { return startedByPerson ? nil : .offline }
+        return blocking(network: network, power: power, flags: flags)
+    }
+
     /// How long a run a person started waits for a network that is gone.
     public static let manualOfflineLimit: TimeInterval = 120
 
