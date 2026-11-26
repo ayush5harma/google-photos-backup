@@ -136,6 +136,41 @@ launch() {
     xcrun simctl launch --terminate-running-process "$UDID" "$BUNDLE_ID" >/dev/null
 }
 
+# How many "E2E: Photos access" lines the app has written, and the last one.
+access_lines() {
+  python3 -I - "$(support_dir)/events.json" "$1" <<'PY' 2>/dev/null || echo 0
+import json, sys
+events = json.load(open(sys.argv[1]))
+events = events["events"] if isinstance(events, dict) else events
+lines = [e["message"] for e in events if e.get("message", "").startswith("E2E: Photos access")]
+print(len(lines) if sys.argv[2] == "count" else (lines[-1] if lines else ""))
+PY
+}
+
+# A launch whose hooks run only once the app can read Photos. A fresh
+# simulator sometimes drops the first `simctl privacy` grant (iOS 26.2 on
+# CI, 2026-11-26); the hook then reports the access it sees and waits for
+# nothing, so grant again and relaunch, up to three times.
+launch_with_photos() {
+  local attempt before waited last
+  for attempt in 1 2 3; do
+    before="$(access_lines count)"
+    launch
+    waited=0
+    while [ "$waited" -lt 60 ] && [ "$(access_lines count)" -le "$before" ]; do
+      sleep 1; waited=$((waited + 1))
+    done
+    last="$(access_lines last)"
+    [ "$last" = "E2E: Photos access authorized" ] && return 0
+    say "attempt $attempt: ${last:-no access line after 60 s}; granting Photos again"
+    xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+    xcrun simctl privacy "$UDID" grant photos "$BUNDLE_ID"
+    sleep 3
+  done
+  say "the app never got Photos access"
+  exit 1
+}
+
 support_dir() {
   echo "$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data)/Library/Application Support/$BUNDLE_ID"
 }
@@ -169,14 +204,14 @@ check() {
 xcrun simctl keychain "$UDID" reset
 install_app
 start_server first
-launch
+launch_with_photos
 wait_for_runs 1
 sleep 2
 xcrun simctl io "$UDID" screenshot --type=png "$WORK/activity-after-first-run.png" >/dev/null 2>&1
 check first first
 
 # 2. Again: nothing new goes up.
-launch
+launch_with_photos
 wait_for_runs 2
 check second first
 
@@ -198,7 +233,7 @@ xcrun simctl uninstall "$UDID" "$BUNDLE_ID"
 xcrun simctl keychain "$UDID" reset
 install_app
 start_server third --fail-batch --rate-limit-first 2
-launch
+launch_with_photos
 wait_for_runs 1
 check third third
 stop_server

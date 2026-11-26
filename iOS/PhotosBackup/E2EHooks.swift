@@ -45,6 +45,14 @@ enum E2EHooks {
             model.settings.onboardingCompleted = true
             model.showingOnboarding = false
         }
+        // The script grants Photos access with `simctl privacy`; on a freshly
+        // booted iOS 26.2 simulator on CI that grant did not take, and the
+        // album step then sat behind the system's access prompt until the
+        // run timed out (2026-11-26). Saying what access the app sees, and
+        // not waiting on a prompt, lets the script grant again and relaunch.
+        let access = PHPhotoLibrary.authorizationStatus(for: .readWrite)
+        model.log(.app, "E2E: Photos access \(Self.name(of: access))", problem: access != .authorized)
+        guard access == .authorized else { return true }
         if let album {
             do {
                 let id = try await ensureAlbum(named: album)
@@ -77,6 +85,17 @@ enum E2EHooks {
         }
     }
 
+    private static func name(of status: PHAuthorizationStatus) -> String {
+        switch status {
+        case .authorized: "authorized"
+        case .limited: "limited"
+        case .denied: "denied"
+        case .restricted: "restricted"
+        case .notDetermined: "not determined"
+        @unknown default: "unknown"
+        }
+    }
+
     /// The album's local identifier, made from every photo and video in the
     /// library when no album of that name exists.
     private static func ensureAlbum(named name: String) async throws -> String {
@@ -89,10 +108,13 @@ enum E2EHooks {
             }
         }
         if let found { return found }
+        // Fetched before the change block: PhotoKit answers a fetch inside one
+        // with an empty, unauthorized result ("can trigger deadlock").
+        let assets = PHAsset.fetchAssets(with: PhotoLibrary.listing)
         var created: String?
         try await PHPhotoLibrary.shared().performChanges {
             let request = PHAssetCollectionChangeRequest.creationRequestForAssetCollection(withTitle: name)
-            request.addAssets(PHAsset.fetchAssets(with: PhotoLibrary.listing))
+            request.addAssets(assets)
             created = request.placeholderForCreatedAssetCollection.localIdentifier
         }
         guard let created else { throw CocoaError(.featureUnsupported) }
