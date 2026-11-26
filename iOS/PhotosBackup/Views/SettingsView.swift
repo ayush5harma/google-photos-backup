@@ -194,8 +194,10 @@ struct AccountDetailView: View {
             switch confirmation {
             case .remove:
                 Button("Remove", role: .destructive) {
-                    model.removeAccount(account.id)
-                    dismiss()
+                    Task {
+                        await model.removeAccount(account.id)
+                        dismiss()
+                    }
                 }
             case .recheck:
                 Button("Check Again") { model.resetHistory(of: account.id) }

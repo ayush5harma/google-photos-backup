@@ -2,6 +2,7 @@ import Foundation
 import Observation
 import Photos
 import PhotosBackupCore
+import UIKit
 
 enum AppTab: String, CaseIterable, Identifiable {
     case overview, albums, activity, settings
@@ -73,6 +74,8 @@ final class AppModel {
     /// The app is in front: a change in Photos starts a run only then; in
     /// the background the processing task does.
     @ObservationIgnored var isInFront = true
+    /// An automatic run a condition held back; conditionsChanged starts it.
+    @ObservationIgnored private var automaticRunHeld = false
 
     @ObservationIgnored private let accountsStore: AccountsStore
     @ObservationIgnored private let keychain = Keychain(service: AppEnvironment.keychainService)
@@ -149,6 +152,15 @@ final class AppModel {
         }
         engine.observer = BackgroundCoordinator.shared
         self.engine = engine
+        if !fixture {
+            // Here, not in launch(): a launch for a background task may have
+            // no scene, so the root view's .task (launch) may never run, or
+            // run after the task's handler (review finding 1). The handler
+            // needs the model and the monitor from the first moment.
+            BackgroundCoordinator.shared.attach(self)
+            conditions.onChange = { [weak self] in self?.conditionsChanged() }
+            conditions.start()
+        }
         if let tab = AppEnvironment.requestedTab { self.tab = tab }
     }
 
@@ -378,8 +390,18 @@ final class AppModel {
 
     /// Signs one account out: its Keychain item goes and runs stop going to
     /// it. Its record stays, so signing in again carries on where it left off.
-    func removeAccount(_ id: String) {
+    func removeAccount(_ id: String) async {
         let title = accountLibrary.account(id)?.title ?? "an account"
+        // The Mac's guard (review finding 2): a run going to this account
+        // stops as a whole, and its Keychain item goes only once the run has
+        // ended, so no lane keeps uploading with the removed sign-in.
+        if engine.isSending(to: id) || (activeAccountID == id && (status.isActive || status.phase == .paused)) {
+            await engine.stopAndWait()
+            guard !engine.isSending(to: id), !status.isActive else {
+                log(.account, "\(title) was not removed: the backup to it is still stopping.", problem: true)
+                return
+            }
+        }
         if !isFixture {
             do {
                 try keychain.delete(account: id)
@@ -407,20 +429,23 @@ final class AppModel {
 
     var canReadPhotos: Bool { photosStatus == .authorized || photosStatus == .limited }
 
+    /// The scene's first appearance (the root view's .task): the work that
+    /// needs a person looking. Background execution is set up in init.
     func launch() async {
         guard !isFixture else { return }
         log(.app, "Launched")
-        BackgroundCoordinator.shared.attach(self)
         await notifier.refresh()
         library.onChange = { [weak self] in self?.libraryChanged() }
-        conditions.onChange = { [weak self] in self?.conditionsChanged() }
-        conditions.start()
         if library.isAuthorized { await connectLibrary() }
         #if DEBUG
         if await E2EHooks.apply(to: self) { return }
         #endif
         if !settings.onboardingCompleted { showingOnboarding = true }
-        automaticRun(trigger: .launch)
+        // A scene connected during a background launch is not the person
+        // opening the app: the background task's own run takes that time.
+        if isInFront, UIApplication.shared.applicationState != .background, !BackgroundCoordinator.shared.isAwaitingRun {
+            automaticRun(trigger: .launch)
+        }
     }
 
     /// The scene came to the front or left it.
@@ -484,8 +509,14 @@ final class AppModel {
         }
     }
 
+    /// Only starts a run a condition held back, as the Mac's does: the
+    /// first network report on every launch must not start one of its own.
+    /// A background task waiting for its run gets it, under its own trigger.
     private func conditionsChanged() {
-        if conditions.blocking(for: settings) == nil { automaticRun(trigger: .conditions) }
+        guard automaticRunHeld || BackgroundCoordinator.shared.isAwaitingRun,
+              conditions.blocking(for: settings) == nil else { return }
+        automaticRunHeld = false
+        automaticRun(trigger: BackgroundCoordinator.shared.isAwaitingRun ? .background : .conditions)
     }
 
     var selectedAlbums: [LibraryAlbum] { albums.filter { state.selectedAlbumIDs.contains($0.id) } }
@@ -616,18 +647,21 @@ final class AppModel {
 
     var status: BackupEngineStatus { engine.status }
 
-    func backUpNow(to destination: BackupDestination = .chosen, trigger: RunTrigger = .manual) {
-        engine.backUpNow(to: destination, trigger: trigger)
+    /// - Parameter overridingConditions: nil means the trigger's own rule:
+    ///   Back Up Now in the app goes ahead whatever "When to back up" says.
+    func backUpNow(to destination: BackupDestination = .chosen, trigger: RunTrigger = .manual, overridingConditions: Bool? = nil) {
+        engine.backUpNow(to: destination, trigger: trigger, overridingConditions: overridingConditions ?? trigger.overridesConditions)
     }
 
     /// An automatic run: only with automatic backups on, someone signed in,
     /// Photos readable and nothing holding it.
     func automaticRun(trigger: RunTrigger) {
         guard settings.automatic, settings.onboardingCompleted, hasAuthData, canReadPhotos, !status.isActive else { return }
-        if let reason = conditions.blocking(for: settings), !trigger.overridesConditions {
+        if let reason = conditions.blocking(for: settings, startedByPerson: trigger.overridesConditions), !trigger.overridesConditions {
+            automaticRunHeld = true
             return log(.run, "Automatic backup waits: \(reason.title)")
         }
-        engine.backUpNow(to: .chosen, trigger: trigger)
+        engine.backUpNow(to: .chosen, trigger: trigger, overridingConditions: trigger.overridesConditions)
     }
 
     func pause() { engine.pause() }

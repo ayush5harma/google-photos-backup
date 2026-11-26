@@ -10,7 +10,10 @@ import UIKit
 @MainActor
 @Observable
 final class ConditionsMonitor {
-    private(set) var network = NetworkConditions()
+    /// nil until NWPathMonitor's first update: on a cold background launch
+    /// the network is not known yet, and an automatic run must not take it
+    /// for Wi-Fi (review finding 6).
+    private(set) var network: NetworkConditions?
     private(set) var power = PowerConditions()
 
     @ObservationIgnored var onChange: (() -> Void)?
@@ -48,11 +51,14 @@ final class ConditionsMonitor {
         self.power = power
     }
 
-    func blocking(for settings: BackupSettings) -> WaitReason? {
-        ConditionsEvaluator.blocking(network: network, power: power, flags: settings.conditionFlags)
+    func blocking(for settings: BackupSettings, startedByPerson: Bool = false) -> WaitReason? {
+        ConditionsEvaluator.blocking(network: network, power: power, flags: settings.conditionFlags, startedByPerson: startedByPerson)
     }
 
-    var summary: String { ConditionsEvaluator.summary(network: network, power: power) }
+    var summary: String {
+        guard let network else { return "Network not reported yet" }
+        return ConditionsEvaluator.summary(network: network, power: power)
+    }
 
     private func readPower() {
         let state = UIDevice.current.batteryState

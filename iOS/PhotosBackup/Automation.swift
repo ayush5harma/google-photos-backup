@@ -2,7 +2,11 @@ import Foundation
 import PhotosBackupCore
 
 /// photosbackup:// links, parsed by Core's AutomationCommand exactly as on
-/// the Mac and run through the same calls as the buttons. Messages and the
+/// the Mac and run through the same calls as the buttons. Unlike the Mac,
+/// a backup a link starts honours "When to back up" (Wi-Fi only, charging):
+/// on a phone a Shortcut or another app could otherwise spend cellular data
+/// the person chose to spare (review finding 11). Back Up Now in the app
+/// still runs anyway. Messages and the
 /// archive are Mac-only: those links are logged and ignored.
 extension AppModel {
     func open(_ url: URL) {
@@ -23,9 +27,9 @@ extension AppModel {
                 guard runnableAccounts.contains(where: { $0.id == account }) else {
                     return log(.app, "Link named \(account), which is not an account ready to back up here; nothing was backed up", problem: true)
                 }
-                backUpNow(to: .only(account), trigger: trigger)
+                backUpNow(to: .only(account), trigger: trigger, overridingConditions: false)
             } else {
-                backUpNow(to: .chosen, trigger: trigger)
+                backUpNow(to: .chosen, trigger: trigger, overridingConditions: false)
             }
         case .archive:
             log(.app, "Link asked to archive Messages, which only the Mac app does")

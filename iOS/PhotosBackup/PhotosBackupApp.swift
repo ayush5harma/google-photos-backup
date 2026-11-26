@@ -19,6 +19,9 @@ struct PhotosBackupApp: App {
         if let link = AppEnvironment.requestedLink { model.open(link) }
         #endif
         _model = State(initialValue: model)
+        #if DEBUG
+        E2EHooks.simulateBackgroundLaunchIfAsked()
+        #endif
     }
 
     var body: some Scene {

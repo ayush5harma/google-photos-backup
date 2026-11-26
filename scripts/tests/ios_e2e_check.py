@@ -31,7 +31,7 @@ def check(condition: bool, text: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", required=True, choices=["first", "second", "third"])
+    parser.add_argument("--scenario", required=True, choices=["first", "second", "background", "third"])
     # The simulator's library comes with sample photos of its own (six on
     # iOS 27.0, 2026-11-26), so the script knows only the ones it added.
     parser.add_argument("--at-least", type=int, required=True, help="assets the script added to the simulator library")
@@ -68,9 +68,13 @@ def main() -> int:
 
     named = [album for album in albums.values() if album["name"] == args.album]
     check(len(named) == 1, f"one Google album named {args.album!r} ({len(named)})")
-    check(set(named[0]["media_keys"]) == keys, f"the album holds all {len(keys)} items ({len(set(named[0]['media_keys']))})")
+    # The photo added for the background scenario is not in the album the
+    # first launch made from the library; it goes to All Photos only.
+    in_album = expected - 1 if args.scenario in ("background", "third") else expected
+    album_keys = set(named[0]["media_keys"])
+    check(album_keys <= keys and len(album_keys) == in_album, f"the album holds {in_album} items ({len(album_keys)})")
     mirrored = [mirror for mirror in state.get("mirrors", {}).values() if mirror.get("googleAlbumID") in albums]
-    check(len(mirrored) == 1 and len(mirrored[0].get("addedAssetIDs", [])) == expected,
+    check(len(mirrored) == 1 and len(mirrored[0].get("addedAssetIDs", [])) == in_album,
           "the app's record links the album with every asset added")
 
     finished = [run for run in runs if run.get("finishedAt")]
@@ -85,6 +89,13 @@ def main() -> int:
         check(len(finished) == 2, f"two runs in the history ({len(finished)})")
         check(len(puts) == expected, f"no bytes went up again ({len(puts)} uploads in all)")
         check(latest.get("uploaded", 0) == 0, f"the second run uploaded nothing ({latest.get('uploaded', 0)})")
+    if args.scenario == "background":
+        check(latest.get("trigger") == "background", f"the latest run was the background task's ({latest.get('trigger')})")
+        check(latest.get("uploaded") == 1, f"it uploaded the one new photo ({latest.get('uploaded')})")
+        check(len(finished) == 3, f"three runs in the history, no second run at launch ({len(finished)})")
+        check(len(puts) == expected, f"only the new photo's bytes went up ({len(puts)} uploads in all)")
+        completed = [event for event in events if "background task completed (success: true)" in event["message"]]
+        check(len(completed) == 1, "the task completed once, after its run")
     if args.scenario == "third":
         statuses = [entry.get("status") for entry in log]
         check(statuses.count(429) >= 2, f"the fake answered 429 at least twice ({statuses.count(429)})")

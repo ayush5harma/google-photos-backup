@@ -26,7 +26,10 @@ backup records, the planner, the timeline and history, the diagnostic report,
   down" answers hold the account and the run carries on by itself.
 - When to back up: Wi-Fi only, not in Low Data Mode, only while charging, not
   in Low Power Mode. Automatic backups wait while one holds and continue when
-  it clears; Back Up Now runs anyway.
+  it clears; Back Up Now in the app runs anyway. A `photosbackup://backup`
+  link from Shortcuts or another app waits like an automatic backup (unlike
+  the Mac, where a link runs at once), so a Shortcut never spends cellular
+  data you chose to spare.
 - Overview, Albums, Activity and Settings, light and dark, iPhone and iPad (a
   sidebar on iPad from iOS 18). Sign-in on Google's own page; each account's
   sign-in stays in the Keychain on the device. A shareable diagnostic report
@@ -85,14 +88,18 @@ days until they are signed again; a paid developer account lasts a year.
 `scripts/ios-e2e.sh` (needs `ffmpeg` for its test media) runs the app in a
 throwaway iOS simulator against the fake Google in `Tests/E2E`: a first backup
 of generated photos and a video into an album, a second run that uploads
-nothing new, and a fresh run against a fake that refuses batched commits and
-answers 429 twice. Every check compares the fake's library and albums with
-the app's own records. `swift test` covers the upload and album decisions
+nothing new, a launch that hands the background-task handler a stand-in task
+before any scene exists (as a cold launch for a background task does) and
+must upload one new photo in that task's own run, and a fresh run against a
+fake that refuses batched commits and answers 429 twice. Every check compares
+the fake's library and albums with the app's own records. The simulator
+cannot submit a real background task request ("BGTaskScheduler is not
+available on this platform"), hence the stand-in. `swift test` covers the upload and album decisions
 (`Sources/PhotosBackupCore/NativeUpload`).
 
-Not verified: a real Google sign-in followed by a real upload, the
-background tasks on a physical device (the simulator does not run them as a
-phone does), and installing the IPA on a device.
+Not verified: a real Google sign-in followed by a real upload, real
+background tasks (processing and, on iOS 26, continued processing) on a
+physical device, and installing the IPA on a device.
 
 Photos Backup is not made by Google. It uses Google Photos' unofficial mobile
 interface, as an Android phone would; Google can change or end that at any

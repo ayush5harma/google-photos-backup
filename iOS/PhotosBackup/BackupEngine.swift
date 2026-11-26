@@ -71,7 +71,14 @@ protocol BackupEngineHost: AnyObject {
 @MainActor
 protocol BackupEngine: AnyObject {
     var status: BackupEngineStatus { get }
-    func backUpNow(to destination: BackupDestination, trigger: RunTrigger)
+    /// - Parameter overridingConditions: the run goes ahead whatever "When to
+    ///   back up" says (only no network holds it), as Back Up Now in the app
+    ///   does; a link from another app or an automatic run passes false.
+    func backUpNow(to destination: BackupDestination, trigger: RunTrigger, overridingConditions: Bool)
+    /// Whether the run in progress (or paused) goes to this account.
+    func isSending(to account: String) -> Bool
+    /// Stop, then wait (bounded) until the run has recorded what it got.
+    func stopAndWait() async
     func pause()
     func resume()
     func stop()
@@ -94,7 +101,9 @@ final class FixtureBackupEngine: BackupEngine {
         self.status = status
     }
 
-    func backUpNow(to destination: BackupDestination, trigger: RunTrigger) { status.phase = .running }
+    func backUpNow(to destination: BackupDestination, trigger: RunTrigger, overridingConditions: Bool) { status.phase = .running }
+    func isSending(to account: String) -> Bool { false }
+    func stopAndWait() async { status.phase = .idle }
     func pause() { status.phase = .paused }
     func resume() { status.phase = .running }
     func stop() { status.phase = .idle }

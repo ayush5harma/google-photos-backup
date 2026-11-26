@@ -20,6 +20,17 @@ import UIKit
 /// Task identifiers are read from Info.plist at run time: sideloading tools
 /// re-sign the app under another bundle id and rewrite them (technique from
 /// g8row/PhotosBackup, MIT: AutomaticBackupCoordinator and ContinuedBackup).
+/// What the handler needs of a BGProcessingTask: a seam, so the debug E2E
+/// hook can drive the same handler (the simulator cannot submit a real
+/// request: BGTaskScheduler answers "not available on this platform",
+/// measured on the iOS 27.0 simulator, 2026-11-26).
+protocol BackgroundProcessingTask: AnyObject {
+    var expirationHandler: (() -> Void)? { get set }
+    func setTaskCompleted(success: Bool)
+}
+
+extension BGProcessingTask: BackgroundProcessingTask {}
+
 @MainActor
 final class BackgroundCoordinator: BackupRunObserver {
     static let shared = BackgroundCoordinator()
@@ -31,7 +42,10 @@ final class BackgroundCoordinator: BackupRunObserver {
 
     private weak var model: AppModel?
     private var registered = false
-    private var processingTask: BGProcessingTask?
+    private var processingTask: (any BackgroundProcessingTask)?
+    /// How long a task launched before the network is reported waits for
+    /// NWPathMonitor's first update before deciding (finding 6).
+    private static let networkReportWait: Duration = .seconds(5)
     private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
     private var personStarted = false
     private var isActive = true
@@ -46,9 +60,13 @@ final class BackgroundCoordinator: BackupRunObserver {
     /// Before the app finishes launching, as BGTaskScheduler requires.
     func register() {
         guard !registered, let processingID else { return }
-        registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: processingID, using: nil) { task in
-            guard let task = task as? BGProcessingTask else { return task.setTaskCompleted(success: false) }
-            Task { @MainActor in BackgroundCoordinator.shared.handle(task) }
+        // The main queue, so the handler can act at once: a hop through a
+        // Task let the root view's own launch run start first (finding 1).
+        registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: processingID, using: .main) { task in
+            onMainNow {
+                guard let task = task as? BGProcessingTask else { return task.setTaskCompleted(success: false) }
+                BackgroundCoordinator.shared.handle(task)
+            }
         }
         if !registered { Log.app.error("The background backup task could not be registered") }
     }
@@ -86,22 +104,54 @@ final class BackgroundCoordinator: BackupRunObserver {
         }
     }
 
-    private func handle(_ task: BGProcessingTask) {
+    /// The time iOS gives belongs to a run: the one this starts, or one
+    /// already going (a launch's, a person's), which the task then keeps
+    /// open until it ends or iOS takes the time back. The next one is
+    /// scheduled first, whatever happens after.
+    func handle(_ task: any BackgroundProcessingTask) {
+        scheduleProcessing()
         task.expirationHandler = {
-            Task { @MainActor in BackgroundCoordinator.shared.model?.engine.expire() }
+            onMainNow {
+                let coordinator = BackgroundCoordinator.shared
+                coordinator.model?.engine.expire()
+                coordinator.completeProcessingTask(success: false)
+            }
         }
-        guard let model, !model.status.isActive else {
-            // A run is already going (the person's, or one still finishing).
-            task.setTaskCompleted(success: true)
-            return
+        guard let model else {
+            // Cannot happen since AppModel.init attaches itself; kept so a
+            // task is never left open.
+            Log.app.error("A background backup task arrived before the model existed")
+            return task.setTaskCompleted(success: false)
         }
         processingTask = task
-        scheduleProcessing()
-        model.backgroundRun()
-        if !model.status.isActive {
-            processingTask = nil
-            task.setTaskCompleted(success: true)
+        if !model.status.isActive { model.backgroundRun() }
+        guard !model.status.isActive else { return }
+        guard model.conditions.network == nil else { return completeProcessingTask(success: true) }
+        // A cold launch reaches here before the path monitor has spoken, and
+        // an automatic run waits for it: give it a moment, then decide.
+        // conditionsChanged may start the run meanwhile; the task owns it too.
+        Task { @MainActor in
+            let deadline = ContinuousClock.now + Self.networkReportWait
+            while model.conditions.network == nil, !model.status.isActive, ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            if !model.status.isActive { model.backgroundRun() }
+            if !model.status.isActive { self.completeProcessingTask(success: true) }
         }
+    }
+
+    #if DEBUG
+    func logForTesting(_ message: String) { model?.log(.app, message) }
+    #endif
+
+    /// A processing task is open and its run has not started (it waits for
+    /// the first network report): other paths leave the run to it.
+    var isAwaitingRun: Bool { processingTask != nil && !(model?.status.isActive ?? false) }
+
+    private func completeProcessingTask(success: Bool) {
+        guard let processingTask else { return }
+        self.processingTask = nil
+        processingTask.setTaskCompleted(success: success)
     }
 
     // MARK: - Runs
@@ -132,10 +182,7 @@ final class BackgroundCoordinator: BackupRunObserver {
         updateIdleTimer()
         if #available(iOS 26, *), let session = continued as? ContinuedRun { session.finish() }
         continued = nil
-        if let processingTask {
-            self.processingTask = nil
-            processingTask.setTaskCompleted(success: true)
-        }
+        completeProcessingTask(success: true)
         endBackgroundTask()
     }
 
@@ -147,8 +194,11 @@ final class BackgroundCoordinator: BackupRunObserver {
 
     private func beginBackgroundTask() {
         guard backgroundTask == .invalid else { return }
+        // UIKit calls this expiration handler synchronously on the main
+        // thread; the save and the end must happen before it returns, or
+        // iOS suspends the app first (finding 8).
         backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "Finish the backup in progress") {
-            Task { @MainActor in
+            onMainNow {
                 let coordinator = BackgroundCoordinator.shared
                 coordinator.model?.engine.expire()
                 coordinator.endBackgroundTask()
@@ -182,10 +232,10 @@ private final class ContinuedRun {
 
     func start(prefix: String, onExpired: @escaping @MainActor () -> Void) throws {
         let identifier = prefix + UUID().uuidString
-        let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: nil) { [weak self] task in
-            guard let task = task as? BGContinuedProcessingTask else { return task.setTaskCompleted(success: false) }
-            task.expirationHandler = { Task { @MainActor in onExpired() } }
-            Task { @MainActor [weak self] in
+        let registered = BGTaskScheduler.shared.register(forTaskWithIdentifier: identifier, using: .main) { [weak self] task in
+            onMainNow {
+                guard let task = task as? BGContinuedProcessingTask else { return task.setTaskCompleted(success: false) }
+                task.expirationHandler = { onMainNow { onExpired() } }
                 guard let self, self.identifier == identifier else { return task.setTaskCompleted(success: false) }
                 self.adopt(task)
             }
@@ -233,5 +283,19 @@ private final class ContinuedRun {
         reported = min(max(max(reported, floor) + (nudge ? 1 : 0), floor), ceiling)
         task.progress.totalUnitCount = max(1, total * Self.unitsPerItem)
         task.progress.completedUnitCount = reported
+    }
+}
+
+/// Runs `body` on the main actor before returning. The task handlers are
+/// registered on the main queue and UIKit calls a background task's
+/// expiration handler on the main thread, so this is normally the
+/// assumeIsolated branch; an expiration handler BGTaskScheduler calls on
+/// another queue (its documentation does not say which) waits on main
+/// instead, so the save is still done when the handler returns (finding 8).
+nonisolated func onMainNow(_ body: @MainActor () -> Void) {
+    if Thread.isMainThread {
+        MainActor.assumeIsolated(body)
+    } else {
+        DispatchQueue.main.sync { MainActor.assumeIsolated(body) }
     }
 }

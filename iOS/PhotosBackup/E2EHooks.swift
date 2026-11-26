@@ -58,6 +58,25 @@ enum E2EHooks {
         return true
     }
 
+    /// PHOTOS_BACKUP_E2E_BACKGROUND_TASK=1: hands BackgroundCoordinator's
+    /// handler a stand-in task from App.init, before any scene exists, as a
+    /// cold launch for a BGProcessingTask would (the simulator cannot submit a
+    /// real one). The task writes its completion to the timeline.
+    static func simulateBackgroundLaunchIfAsked() {
+        guard value("PHOTOS_BACKUP_E2E_BACKGROUND_TASK") == "1" else { return }
+        BackgroundCoordinator.shared.handle(StandInTask())
+    }
+
+    private final class StandInTask: BackgroundProcessingTask {
+        var expirationHandler: (() -> Void)?
+
+        func setTaskCompleted(success: Bool) {
+            MainActor.assumeIsolated {
+                BackgroundCoordinator.shared.logForTesting("E2E: background task completed (success: \(success))")
+            }
+        }
+    }
+
     /// The album's local identifier, made from every photo and video in the
     /// library when no album of that name exists.
     private static func ensureAlbum(named name: String) async throws -> String {

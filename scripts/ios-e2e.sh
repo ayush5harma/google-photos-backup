@@ -14,6 +14,11 @@
 #      recorded for it, an album holding them all, the run in events.json;
 #      an Activity screenshot is kept in the work folder;
 #   2. second launch: nothing new is uploaded;
+#   background: one more photo, and a launch that hands the background-task
+#      handler a stand-in task from App.init, before any scene (the cold
+#      launch a BGProcessingTask makes; the simulator cannot submit a real
+#      request): the handler's own run uploads the new photo and the task
+#      completes when that run ends;
 #   3. fresh app and fresh fake with --fail-batch --rate-limit-first 2:
 #      everything still ends committed (single commits after the refused
 #      batch, Google's holds waited out).
@@ -153,6 +158,17 @@ check first first
 launch
 wait_for_runs 2
 check second first
+
+# Background: a cold launch for the background task, with one new photo.
+ffmpeg -loglevel error -y -f lavfi -i "color=c=yellow:s=640x480" -frames:v 1 "$WORK/media/late.jpg"
+xcrun simctl addmedia "$UDID" "$WORK/media/late.jpg"
+xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
+SIMCTL_CHILD_PHOTOS_BACKUP_GOOGLE_ENDPOINT="http://127.0.0.1:$PORT" \
+SIMCTL_CHILD_PHOTOS_BACKUP_E2E_BACKGROUND_TASK=1 \
+  xcrun simctl launch "$UDID" "$BUNDLE_ID" >/dev/null
+wait_for_runs 3
+sleep 2
+check background first
 stop_server
 
 # 3. A fresh app and a fake that refuses batches and starts with two 429s.

@@ -69,7 +69,12 @@ final class NativeBackupEngine: BackupEngine {
     @ObservationIgnored private let makeClient: (GooglePhotosCredential) -> any GooglePhotosUploading
     @ObservationIgnored weak var observer: BackupRunObserver?
     @ObservationIgnored private var task: Task<Void, Never>?
-    @ObservationIgnored private var prefetch: Task<StagedBatch, Never>?
+    /// The next batch exported ahead, with the index of the batch it is for:
+    /// a batch skipped (no account left wanting it) must not hand its files
+    /// to the one after it (review finding 3).
+    @ObservationIgnored private var prefetch: (index: Int, task: Task<StagedBatch, Never>)?
+    /// The phone fell below its free-space floor while exporting.
+    @ObservationIgnored private var lowOnSpace = false
     @ObservationIgnored private(set) var lanes: [EngineLane] = []
     @ObservationIgnored private var destination: BackupDestination = .chosen
     @ObservationIgnored private var trigger: RunTrigger = .manual
@@ -106,15 +111,31 @@ final class NativeBackupEngine: BackupEngine {
 
     // MARK: - Controls
 
-    func backUpNow(to destination: BackupDestination, trigger: RunTrigger) {
+    func backUpNow(to destination: BackupDestination, trigger: RunTrigger, overridingConditions: Bool) {
         guard task == nil else {
             if status.phase == .pausing { status.phase = .running }
             // Asked for in person while an automatic run holds for battery or
             // Wi-Fi: the person's choice wins, as on the Mac.
-            if trigger.overridesConditions { overridesConditions = true }
+            if overridingConditions { overridesConditions = true }
             return
         }
-        start(destination, trigger: trigger)
+        start(destination, trigger: trigger, overridingConditions: overridingConditions)
+    }
+
+    /// Whether the run in progress (or paused) goes to this account.
+    func isSending(to account: String) -> Bool {
+        (task != nil || status.phase == .paused) && lanes.contains { $0.account == account }
+    }
+
+    /// Stop, then wait (at most 15 s) until the run has recorded what it got.
+    func stopAndWait() async {
+        guard task != nil else {
+            if status.phase == .paused { status.phase = .idle }
+            return
+        }
+        stop()
+        let deadline = ContinuousClock.now + .seconds(15)
+        while task != nil, ContinuousClock.now < deadline { try? await Task.sleep(for: .milliseconds(100)) }
     }
 
     func pause() {
@@ -128,7 +149,7 @@ final class NativeBackupEngine: BackupEngine {
             return
         }
         status.phase = .idle
-        start(destination, trigger: .manual)
+        start(destination, trigger: .manual, overridingConditions: true)
     }
 
     /// Uploads in flight are abandoned (the next run's hash check finds any
@@ -140,7 +161,7 @@ final class NativeBackupEngine: BackupEngine {
             return
         }
         status.phase = .stopping
-        prefetch?.cancel()
+        prefetch?.task.cancel()
         task?.cancel()
     }
 
@@ -151,7 +172,7 @@ final class NativeBackupEngine: BackupEngine {
         for key in retryable.keys { failures[key] = nil }
         status.failedCount = failures.count
         if task == nil {
-            start(destination, trigger: .retry)
+            start(destination, trigger: .retry, overridingConditions: true)
         } else {
             retryRequested = true
         }
@@ -168,14 +189,19 @@ final class NativeBackupEngine: BackupEngine {
     /// The app left the front: write what is in memory now.
     func saveNow() { saveAll() }
 
-    private func start(_ destination: BackupDestination, trigger: RunTrigger) {
+    private func start(_ destination: BackupDestination, trigger: RunTrigger, overridingConditions: Bool) {
         self.destination = destination
         self.trigger = trigger
-        overridesConditions = trigger.overridesConditions
+        overridesConditions = overridingConditions
         expired = false
+        lowOnSpace = false
+        // Each run plans every selected item afresh, so the last run's
+        // failures are not this one's (review finding 9).
+        failures = [:]
+        status.failedCount = 0
         status.phase = .running
         status.lastError = nil
-        observer?.runStarted(personStarted: trigger.overridesConditions)
+        observer?.runStarted(personStarted: overridingConditions)
         task = Task { [weak self] in
             guard let self else { return }
             await self.run()
@@ -259,33 +285,38 @@ final class NativeBackupEngine: BackupEngine {
         var progressed = false
         for (index, batch) in pass.batches.enumerated() {
             let live = batch.accounts.compactMap(lane(for:)).filter { !$0.halted }
-            if live.isEmpty { continue }
+            if live.isEmpty {
+                await dropPrefetch(unless: -1)
+                continue
+            }
             guard await waitUntilClear(retryAt: nil, waiter: Self.exportWaiter) else { break }
+            await dropPrefetch(unless: index)
             let staged: StagedBatch
-            if let prefetch {
-                staged = await prefetch.value
+            if let prefetch, prefetch.index == index {
+                staged = await prefetch.task.value
                 self.prefetch = nil
             } else {
-                staged = await stage(batch.assetIDs, includingHidden: batch.includingHidden)
+                staged = await stage(batch.assetIDs, includingHidden: batch.includingHidden, ahead: false)
             }
             defer { staged.remove() }
             if shouldHalt { break }
             failExports(staged, owners: live)
-            if index + 1 < pass.batches.count, staged.bytes < Self.bytesAhead, (Self.freeSpace() ?? .max) > Self.freeSpaceFloor {
+            if index + 1 < pass.batches.count, !lowOnSpace, staged.bytes < Self.bytesAhead, !Self.belowFreeSpaceFloor() {
                 let next = pass.batches[index + 1]
-                prefetch = Task { [weak self] in
-                    await self?.stage(next.assetIDs, includingHidden: next.includingHidden) ?? StagedBatch(directory: StagingArea.root)
-                }
+                prefetch = (index + 1, Task { [weak self] in
+                    await self?.stage(next.assetIDs, includingHidden: next.includingHidden, ahead: true)
+                        ?? StagedBatch(directory: StagingArea.root)
+                })
             }
             let results = await sideBySide(live) { lane in await self.send(batch, staged: staged, lane: lane) }
             progressed = progressed || results.contains(true)
             saveAll()
+            if lowOnSpace {
+                stopForSpace()
+                break
+            }
         }
-        if let prefetch {
-            prefetch.cancel()
-            (await prefetch.value).remove()
-            self.prefetch = nil
-        }
+        await dropPrefetch(unless: -1)
         guard !shouldHalt else { return progressed }
         let rest = lanes.filter { !$0.halted && !(pass.rest[$0.account] ?? []).isEmpty }
         let results = await sideBySide(rest) { lane in
@@ -298,10 +329,30 @@ final class NativeBackupEngine: BackupEngine {
         return progressed || results.contains(true)
     }
 
+    /// Lets go of the batch exported ahead unless it is for `index`.
+    private func dropPrefetch(unless index: Int) async {
+        guard let prefetch, prefetch.index != index else { return }
+        self.prefetch = nil
+        prefetch.task.cancel()
+        (await prefetch.task.value).remove()
+    }
+
+    /// Review finding 5. A phone below its free-space floor ends the run:
+    /// what was not exported stays not sent (never failed), and the next
+    /// backup carries on once there is room. The Mac waits for space
+    /// another batch will free; a phone has no such batch to wait for.
+    private func stopForSpace() {
+        let message = "This iPhone is almost out of storage, so the backup stopped before exporting more photos; "
+            + "it carries on when there is space again."
+        status.lastError = message
+        model.log(.photos, message, problem: true)
+        for lane in lanes where !lane.halted { halt(lane, message) }
+    }
+
     private func execute(_ step: PlannedStep, lane: EngineLane) async -> Bool {
         switch step {
         case let .upload(albumID, title, assetIDs):
-            let staged = await stage(assetIDs, includingHidden: albumID == BackupPlanner.pickedAlbumID && lane.isPrimary)
+            let staged = await stage(assetIDs, includingHidden: albumID == BackupPlanner.pickedAlbumID && lane.isPrimary, ahead: false)
             defer { staged.remove() }
             failExports(staged, owners: [lane])
             let share = SharedPass.Send(account: lane.account, albumID: albumID, albumTitle: title, assetIDs: assetIDs)
@@ -314,7 +365,7 @@ final class NativeBackupEngine: BackupEngine {
             guard !changed.isEmpty else { return false }
             lane.tally.planned(changed.count)
             syncStatus()
-            let staged = await stage(changed, includingHidden: false)
+            let staged = await stage(changed, includingHidden: false, ahead: false)
             defer { staged.remove() }
             failExports(staged, owners: [lane])
             let share = SharedPass.Send(account: lane.account, albumID: "edits", albumTitle: nil, assetIDs: changed)
@@ -417,6 +468,10 @@ final class NativeBackupEngine: BackupEngine {
         if applied.counted > 0 { lane.albumAddsThisRun[albumID, default: 0] += applied.counted }
         logForgotten(applied.forgotten, lane: lane)
         save(lane)
+        // A stop or iOS's expiry cancels the call in flight, which reads as
+        // a network failure: not a halt, a problem line or a notification
+        // (review finding 7).
+        if result.stopped || shouldHalt { return !result.added.isEmpty || !applied.forgotten.isEmpty }
         if let error = result.error {
             switch error {
             case .rateLimited:
@@ -533,12 +588,22 @@ final class NativeBackupEngine: BackupEngine {
     // MARK: - Export
 
     /// Exports `assetIDs` once into a private folder and hashes each file.
-    private func stage(_ assetIDs: [String], includingHidden: Bool) async -> StagedBatch {
+    /// Stops before an item when the phone is below its free-space floor
+    /// (the batch being sent as well as one ahead): unexported items are
+    /// simply not staged, so they are not sent and never counted failed.
+    private func stage(_ assetIDs: [String], includingHidden: Bool, ahead: Bool) async -> StagedBatch {
         let directory = StagingArea.root.appendingPathComponent(UUID().uuidString, isDirectory: true)
         var batch = StagedBatch(directory: directory)
         var exported: [ExportedAsset] = []
         await AssetExporter().export(assetIDs, includingHidden: includingHidden, into: directory,
-                                     shouldStop: { [weak self] in Task.isCancelled || self?.status.phase == .stopping },
+                                     shouldStop: { [weak self] in
+                                         guard let self, !Task.isCancelled, self.status.phase != .stopping else { return true }
+                                         if ahead, self.shouldHalt { return true }
+                                         guard Self.belowFreeSpaceFloor() else { return false }
+                                         // Ahead, it just stops: the batch's turn exports the rest.
+                                         if !ahead { self.lowOnSpace = true }
+                                         return true
+                                     },
                                      started: { [weak self] _, name in self?.status.currentFilename = name },
                                      finished: { id, result in
                                          switch result {
@@ -571,6 +636,14 @@ final class NativeBackupEngine: BackupEngine {
             }
         }
         if !staged.failures.isEmpty { syncStatus() }
+    }
+
+    private static func belowFreeSpaceFloor() -> Bool {
+        #if DEBUG
+        // Lets a simulator run prove the floor without filling the disk.
+        if E2EHooks.value("PHOTOS_BACKUP_E2E_LOW_SPACE") == "1" { return true }
+        #endif
+        return (freeSpace() ?? .max) < freeSpaceFloor
     }
 
     private static func freeSpace() -> Int64? {
@@ -628,7 +701,7 @@ final class NativeBackupEngine: BackupEngine {
     /// to back up" switches hold automatic runs. A change mid-run holds the
     /// next round and clears by itself.
     private func holdingCondition() -> WaitReason? {
-        guard let reason = model.conditions.blocking(for: model.settings) else { return nil }
+        guard let reason = model.conditions.blocking(for: model.settings, startedByPerson: overridesConditions) else { return nil }
         return overridesConditions && reason != .offline ? nil : reason
     }
 
@@ -767,7 +840,7 @@ final class NativeBackupEngine: BackupEngine {
         let again = retryRequested && status.phase == .idle
         retryRequested = false
         observer?.runEnded()
-        if again { start(destination, trigger: .retry) }
+        if again { start(destination, trigger: .retry, overridingConditions: true) }
     }
 
     private func finished(_ record: RunRecord, account: String?) {
