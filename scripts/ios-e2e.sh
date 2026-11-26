@@ -57,6 +57,8 @@ diagnose() {
   xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -i "$BUNDLE_ID" > "$out/running.txt" || true
   xcrun simctl spawn "$UDID" log show --last 30m --style compact \
     --predicate "subsystem == \"$BUNDLE_ID\" OR process == \"PhotosBackup\"" > "$out/app.log" 2>&1 || true
+  sqlite3 -readonly "$(tcc_db)" "SELECT service, client, client_type, auth_value, auth_reason, auth_version FROM access WHERE client = '$BUNDLE_ID';" \
+    > "$out/tcc.txt" 2>&1 || true
   find "$HOME/Library/Logs/DiagnosticReports" -name 'PhotosBackup*' -mmin -60 -exec cp {} "$out/" \; 2>/dev/null || true
   say "diagnostics kept in $out"
 }
@@ -147,10 +149,23 @@ print(len(lines) if sys.argv[2] == "count" else (lines[-1] if lines else ""))
 PY
 }
 
+tcc_db() { echo "$HOME/Library/Developer/CoreSimulator/Devices/$UDID/data/Library/TCC/TCC.db"; }
+
+# The row `simctl privacy grant photos` writes on the iOS 27.0 simulator
+# (read back from its TCC.db, 2026-11-26), written by hand where that
+# command does not take, then a reboot so tccd reads it.
+grant_photos_in_tcc_db() {
+  xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true
+  sqlite3 "$(tcc_db)" "INSERT OR REPLACE INTO access (service, client, client_type, auth_value, auth_reason, auth_version, csreq, policy_id, indirect_object_identifier_type, indirect_object_identifier, flags) VALUES ('kTCCServicePhotos', '$BUNDLE_ID', 0, 2, 4, 2, NULL, NULL, 0, 'UNUSED', 0);"
+  xcrun simctl boot "$UDID" >/dev/null 2>&1 || true
+  xcrun simctl bootstatus "$UDID" -b >/dev/null
+}
+
 # A launch whose hooks run only once the app can read Photos. A fresh
-# simulator sometimes drops the first `simctl privacy` grant (iOS 26.2 on
-# CI, 2026-11-26); the hook then reports the access it sees and waits for
-# nothing, so grant again and relaunch, up to three times.
+# simulator can ignore `simctl privacy grant photos` (iOS 26.2 on CI,
+# 2026-11-26: three grants, access still "not determined"); the hook then
+# reports the access it sees and waits for nothing, so the script writes the
+# grant into TCC.db itself, reboots the simulator and relaunches.
 launch_with_photos() {
   local attempt before waited last
   for attempt in 1 2 3; do
@@ -162,10 +177,11 @@ launch_with_photos() {
     done
     last="$(access_lines last)"
     [ "$last" = "E2E: Photos access authorized" ] && return 0
-    say "attempt $attempt: ${last:-no access line after 60 s}; granting Photos again"
+    say "attempt $attempt: ${last:-no access line after 60 s}; writing the Photos grant into TCC.db"
     xcrun simctl terminate "$UDID" "$BUNDLE_ID" >/dev/null 2>&1 || true
-    xcrun simctl privacy "$UDID" grant photos "$BUNDLE_ID"
-    sleep 3
+    sqlite3 -readonly "$(tcc_db)" "SELECT service, client, client_type, auth_value, auth_reason, auth_version FROM access WHERE client = '$BUNDLE_ID';" \
+      > "$WORK/tcc-attempt-$attempt.txt" 2>&1 || true
+    grant_photos_in_tcc_db
   done
   say "the app never got Photos access"
   exit 1
