@@ -1,5 +1,4 @@
 import Foundation
-import PhotosBackupCore
 
 /// Exchanges an Embedded Setup oauth_token for gpmc's auth_data.
 ///
@@ -7,15 +6,15 @@ import PhotosBackupCore
 /// Safari and every iPhone present to Google, whereas Python's has a history
 /// of `BadAuthentication` from this endpoint (gpsoauth had to pin cipher
 /// suites to get past it).
-enum GoogleAccountLink {
-    struct Linked {
-        let credential: String
-        let email: String
+public enum GoogleAccountLink {
+    public struct Linked: Sendable {
+        public let credential: String
+        public let email: String
     }
 
     /// The cookie works once and expires within minutes, so a failure here
     /// usually means signing in again.
-    static func link(oauthToken: String) async throws -> Linked {
+    public static func link(oauthToken: String) async throws -> Linked {
         let token = try GoogleSignIn.normalizedOAuthToken(oauthToken)
         let androidID = GoogleSignIn.newAndroidID()
         let body = Data(GoogleSignIn.exchangeForm(oauthToken: token, androidID: androidID).utf8)

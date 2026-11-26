@@ -1,0 +1,112 @@
+name: iOS app
+
+on:
+  workflow_dispatch:
+  workflow_call:
+  pull_request:
+    paths:
+      - 'iOS/**'
+      - 'Sources/PhotosBackupCore/**'
+      - 'Package.swift'
+      - 'scripts/build-ios.sh'
+      - 'scripts/ios-e2e.sh'
+      - 'scripts/tests/ios_e2e_check.py'
+      - 'Tests/E2E/fake_google_photos.py'
+      - 'VERSION'
+      - '.github/workflows/ios.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'iOS/**'
+      - 'Sources/PhotosBackupCore/**'
+      - 'Package.swift'
+      - 'scripts/build-ios.sh'
+      - 'scripts/ios-e2e.sh'
+      - 'scripts/tests/ios_e2e_check.py'
+      - 'Tests/E2E/fake_google_photos.py'
+      - 'VERSION'
+      - '.github/workflows/ios.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: iOS
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      # The Xcode test.yml and release.yml select; the project file stays
+      # within what Xcode 26 reads (objectVersion 77).
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the release version
+        run: |
+          version="$(tr -d '[:space:]' < VERSION)"
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'Invalid release version.' >&2; exit 1; }
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            # Pre-release tags carry the version before a suffix (v0.6.4-ios-preview.1).
+            [[ "$GITHUB_REF_NAME" == "v$version" || "$GITHUB_REF_NAME" == "v$version"-* ]]
+          fi
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+      - name: Check the build script
+        run: |
+          bash -n scripts/build-ios.sh
+          if command -v shellcheck >/dev/null; then shellcheck -S warning -x scripts/build-ios.sh; fi
+      - name: Simulator build
+        run: scripts/build-ios.sh --simulator
+      - name: Unsigned device build, packaged and checked
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: scripts/build-ios.sh --out build/ios
+      - name: Upload the IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Photos-Backup-${{ env.RELEASE_VERSION }}-iOS
+          path: |
+            build/ios/*.ipa
+            build/ios/*.sha256
+          if-no-files-found: error
+          retention-days: 14
+      - name: State signing status
+        run: echo 'The IPA is unsigned. Sideloading tools (AltStore, SideStore, Feather) sign it with the Apple ID of whoever installs it.' >> "$GITHUB_STEP_SUMMARY"
+
+  e2e:
+    # The app backs up real simulator photos to the fake Google in Tests/E2E:
+    # a first run into an album, a second that uploads nothing new, a
+    # background-task launch, and a run against refused batches and 429s.
+    # Not on release tags: the release's own build job covers packaging.
+    name: iOS end to end (simulator, fake Google)
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      IOS_E2E_WORK: ${{ github.workspace }}/build/ios-e2e
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: command -v ffmpeg >/dev/null || brew install ffmpeg
+      - name: Run the scenarios
+        run: |
+          mkdir -p "$IOS_E2E_WORK"
+          scripts/ios-e2e.sh
+      - name: Keep the logs and the Activity screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-e2e-${{ github.run_number }}
+          path: |
+            build/ios-e2e/*.png
+            build/ios-e2e/*.jsonl
+            build/ios-e2e/*.out
+            build/ios-e2e/*.log
+            build/ios-e2e/*.txt
+            build/ios-e2e/diagnostics/**
+          if-no-files-found: warn
+          retention-days: 14

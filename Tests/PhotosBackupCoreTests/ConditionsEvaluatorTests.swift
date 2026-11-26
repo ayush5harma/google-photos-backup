@@ -59,6 +59,19 @@ private let allOff = ConditionFlags(pauseOnExpensiveNetwork: false, pauseInLowDa
         #expect(automatic.allSatisfy { !$0.overridesConditions })
     }
 
+    @Test func aNetworkNotReportedYetHoldsOnlyAutomaticRuns() {
+        let flags = ConditionFlags(pauseOnExpensiveNetwork: true, pauseInLowDataMode: true, pauseOnBattery: true, pauseInLowPowerMode: true)
+        let power = PowerConditions(onBattery: true, lowPowerMode: false)
+        #expect(ConditionsEvaluator.blocking(network: nil, power: power, flags: flags, startedByPerson: false) == .offline)
+        #expect(ConditionsEvaluator.blocking(network: nil, power: power, flags: flags, startedByPerson: true) == nil)
+        // A reported network decides exactly as the Mac's overload does.
+        let metered = NetworkConditions(online: true, expensive: true)
+        for person in [false, true] {
+            #expect(ConditionsEvaluator.blocking(network: metered, power: power, flags: flags, startedByPerson: person)
+                    == ConditionsEvaluator.blocking(network: metered, power: power, flags: flags))
+        }
+    }
+
     @Test func onlyARunAPersonStartedGivesUpOnAMissingNetwork() {
         let since = Date(timeIntervalSince1970: 1_000)
         func givesUp(_ reason: WaitReason, person: Bool, after seconds: TimeInterval) -> Bool {

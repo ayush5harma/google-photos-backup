@@ -5,6 +5,8 @@ import Foundation
 public enum RunTrigger: String, Codable, Sendable, CaseIterable {
     case launch, timer, libraryChange, wake, conditions
     case manual, picker, albumSelected, signIn, automation, retry, schedule
+    /// iOS: a run the system gave the app time for (BGProcessingTask).
+    case background
 
     public var title: String {
         switch self {
@@ -20,6 +22,7 @@ public enum RunTrigger: String, Codable, Sendable, CaseIterable {
         case .automation: "Shortcut or link"
         case .retry: "Retry"
         case .schedule: "Daily schedule"
+        case .background: "In the background"
         }
     }
 
@@ -27,7 +30,7 @@ public enum RunTrigger: String, Codable, Sendable, CaseIterable {
     /// notification, a run someone started is watched already.
     public var isAutomatic: Bool {
         switch self {
-        case .launch, .timer, .libraryChange, .wake, .conditions, .schedule: true
+        case .launch, .timer, .libraryChange, .wake, .conditions, .schedule, .background: true
         case .manual, .picker, .albumSelected, .signIn, .automation, .retry: false
         }
     }
@@ -38,7 +41,7 @@ public enum RunTrigger: String, Codable, Sendable, CaseIterable {
     public var overridesConditions: Bool {
         switch self {
         case .manual, .picker, .retry, .automation: true
-        case .launch, .timer, .libraryChange, .wake, .conditions, .schedule, .albumSelected, .signIn: false
+        case .launch, .timer, .libraryChange, .wake, .conditions, .schedule, .background, .albumSelected, .signIn: false
         }
     }
 }

@@ -36,7 +36,9 @@ jobs:
         run: |
           test "$(uname -m)" = "$EXPECTED_ARCH"
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
-            test "$GITHUB_REF_NAME" = "v$(cat VERSION)"
+            # A pre-release tag (v0.6.1-preview.1, v0.6.4-ios-preview.1) carries
+            # the version it was built from before its suffix.
+            [[ "$GITHUB_REF_NAME" == "v$(cat VERSION)" || "$GITHUB_REF_NAME" == "v$(cat VERSION)"-* ]]
           fi
           echo "RELEASE_VERSION=$(cat VERSION)" >> "$GITHUB_ENV"
       - name: Fixture tests
@@ -60,3 +62,6 @@ jobs:
 
   windows:
     uses: ./.github/workflows/windows.yml
+
+  ios:
+    uses: ./.github/workflows/ios.yml

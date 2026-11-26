@@ -60,6 +60,25 @@ Images narrower than that, such as the menu bar panel, are used as rendered.
 | `macos-connected-device-light.png` | Connected device with a made-up iPhone and two files | `section-devices-light` |
 | `macos-connected-device-dark.png` | The same, in dark mode | `section-devices-dark` |
 
+## iOS app
+
+`ios-<tab>-<light|dark>.png` for the Overview, Albums, Activity and Settings
+tabs come from the iOS app's fixture mode (`PHOTOS_BACKUP_SNAPSHOT_FIXTURE=1`):
+the same pretend library as the Mac's, three made-up accounts at example.com
+and a run in progress to two of them. The app then reads no Photos library,
+Keychain or network and writes nothing. From the repository root:
+
+```sh
+scripts/ios-snapshots.sh /tmp/photos-backup-ios-screenshots
+```
+
+The script builds for the simulator, picks a regular iPhone simulator (or
+`SIMULATOR_UDID`), fixes the status bar at 9:41 and captures each tab in light
+and dark. iPhone captures are 1206 px wide, so they are used as rendered. The
+published set was rendered on 2026-11-26 on the iOS 27.0 iPhone 18 Pro
+simulator and every image was looked at; the simulator draws a 3-pixel dark
+square in the top-left corner of every capture, which was left as it is.
+
 ## Windows preview
 
 `windows-overview.png` and `windows-overview-dark.png` are rendered by the native WinUI app on the Windows CI runner with `--smoke-test <report.json> --screenshot <image.png>`. It uses synthetic folders and an example account, never signs in or uploads, and substitutes an opaque theme background for Mica during capture. The normal app retains Mica. The image was inspected from successful run [38805480000](https://github.com/ayush5harma/google-photos-backup/actions/runs/38805480000).

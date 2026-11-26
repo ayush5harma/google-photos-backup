@@ -54,7 +54,7 @@ public enum ArchiveLocation {
     /// The sync service the folder is stored in ("iCloud Drive", "Google
     /// Drive", "Dropbox", "OneDrive", "Box"), or nil for a folder that stays
     /// on this Mac.
-    public static func syncService(for url: URL, home: URL = FileManager.default.homeDirectoryForCurrentUser) -> String? {
+    public static func syncService(for url: URL, home: URL = UserHome.directory) -> String? {
         let path = realPath(url)
         let library = realPath(home.appendingPathComponent("Library", isDirectory: true))
         if isInside(path, library + "/Mobile Documents") { return "iCloud Drive" }

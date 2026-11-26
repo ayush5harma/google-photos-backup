@@ -40,6 +40,13 @@ public enum GoogleSignIn {
     public struct Account: Equatable, Sendable {
         public let email: String
         public let masterToken: String
+
+        /// Public for the iOS app's debug E2E hook, which builds a synthetic
+        /// credential for a fake Google; a real one comes from parseExchange.
+        public init(email: String, masterToken: String) {
+            self.email = email
+            self.masterToken = masterToken
+        }
     }
 
     /// Accepts the cookie's value, with or without its `oauth_token=` name.

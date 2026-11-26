@@ -71,7 +71,7 @@ public struct MessagesMediaScanner: Sendable {
         self.configuration = configuration
     }
 
-    public static func defaultConfiguration(home: URL = FileManager.default.homeDirectoryForCurrentUser) -> Configuration {
+    public static func defaultConfiguration(home: URL = UserHome.directory) -> Configuration {
         Configuration(attachmentsRoot: home.appendingPathComponent("Library/Messages/Attachments", isDirectory: true),
                       database: home.appendingPathComponent("Library/Messages/chat.db"), homeDirectory: home)
     }
@@ -143,6 +143,7 @@ public struct MessagesMediaScanner: Sendable {
     }
 
     private func query(snapshot: URL) throws -> [(Int, String)] {
+        #if os(macOS)
         let files = FileManager.default
         guard files.isExecutableFile(atPath: "/usr/bin/sqlite3") else { throw ScanError.sqliteUnavailable }
         // No message text, chat title, participant, or handle is selected. Hex
@@ -163,6 +164,10 @@ public struct MessagesMediaScanner: Sendable {
                   let path = String(data: data, encoding: .utf8) else { return nil }
             return (rowid, path)
         }
+        #else
+        // iOS has no /usr/bin/sqlite3 to run and no Messages database to read.
+        throw ScanError.sqliteUnavailable
+        #endif
     }
 
     private func isChild(_ file: URL, of root: URL) -> Bool {

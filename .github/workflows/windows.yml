@@ -48,7 +48,7 @@ jobs:
           if ([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString() -ine $env:EXPECTED_ARCH) { throw 'Incorrect native runner architecture.' }
           $version = (Get-Content -Raw VERSION).Trim()
           if ($version -notmatch '^\d+\.\d+\.\d+$') { throw 'Invalid release version.' }
-          if ($env:GITHUB_REF -like 'refs/tags/*' -and $env:GITHUB_REF_NAME -ne "v$version") { throw 'Release tag does not match VERSION.' }
+          if ($env:GITHUB_REF -like 'refs/tags/*' -and $env:GITHUB_REF_NAME -ne "v$version" -and $env:GITHUB_REF_NAME -notlike "v$version-*") { throw 'Release tag does not match VERSION.' }
           "RELEASE_VERSION=$version" >> $env:GITHUB_ENV
       - name: Parse PowerShell scripts
         run: |

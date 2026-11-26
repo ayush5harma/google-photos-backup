@@ -7,10 +7,15 @@ import Security
 /// attribute the normalized address (an AccountLibrary id). Before there
 /// were accounts the one item's attribute was "gpmc"; it is moved to its
 /// account at launch.
-struct Keychain {
-    let service: String
+///
+/// In Core so the Mac and iOS apps share one item format; each app passes
+/// its own service ("<bundleID>.auth-data").
+public struct Keychain: Sendable {
+    public let service: String
 
-    static let app = Keychain(service: AppEnvironment.keychainService)
+    public init(service: String) {
+        self.service = service
+    }
 
     private func query(_ account: String) -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
@@ -18,7 +23,7 @@ struct Keychain {
          kSecAttrAccount as String: account]
     }
 
-    func load(account: String) -> String? {
+    public func load(account: String) -> String? {
         var request = query(account)
         request[kSecReturnData as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -27,7 +32,7 @@ struct Keychain {
         return String(data: data, encoding: .utf8)
     }
 
-    func save(_ value: String, account: String) throws {
+    public func save(_ value: String, account: String) throws {
         let data = Data(value.utf8)
         let status = SecItemUpdate(query(account) as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if status == errSecItemNotFound {
@@ -44,7 +49,7 @@ struct Keychain {
     /// leaves it in place throws (a denied keychain prompt, a locked
     /// keychain): an item left behind signs its account back in at the next
     /// launch, so callers must not record the account as signed out.
-    func delete(account: String) throws {
+    public func delete(account: String) throws {
         #if DEBUG
         if Self.refusedDeletesForTesting.contains(account) { try check(errSecAuthFailed) }
         #endif
@@ -56,11 +61,11 @@ struct Keychain {
     #if DEBUG
     /// Tests only: accounts whose delete fails as a denied keychain prompt
     /// does, leaving the item in place.
-    static var refusedDeletesForTesting: Set<String> = []
+    nonisolated(unsafe) public static var refusedDeletesForTesting: Set<String> = []
     #endif
 
     /// When the item was last written. Attributes only, like `accounts()`.
-    func modified(account: String) -> Date? {
+    public func modified(account: String) -> Date? {
         var request = query(account)
         request[kSecReturnAttributes as String] = true
         request[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -73,7 +78,7 @@ struct Keychain {
     /// The account attribute of every item under the service. Attributes
     /// only: reading them never asks for the keychain password, which
     /// reading a secret can after the app is re-signed.
-    func accounts() -> [String] {
+    public func accounts() -> [String] {
         let request: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
                                       kSecAttrService as String: service,
                                       kSecReturnAttributes as String: true,
@@ -96,7 +101,7 @@ struct Keychain {
     /// put a stale sign-in back at the next launch (PR #53 review). An old
     /// item written later (an older version signed in again after a
     /// downgrade) still moves.
-    func move(from old: String, to new: String) throws {
+    public func move(from old: String, to new: String) throws {
         guard old != new else { return }
         // Without a date to compare (none was ever missing when measured,
         // 2026-11-05) the old item moves, as it always did.
