@@ -85,6 +85,12 @@ enum GooglePhotosGolden {
             headers: ["Accept-Encoding": "gzip", "Accept-Language": "en_US", "Authorization": "Bearer fake-bearer", "Content-Type": "application/x-protobuf", "User-Agent": "com.google.android.apps.photos/49029607 (Linux; U; Android 9; en_US; Pixel XL; Build/PQ2A.190205.001; Cronet/127.0.6510.5) (gzip)", "x-goog-ext-173412678-bin": "CgcIAhClARgC", "x-goog-ext-174067345-bin": "CgIIAg=="],
             body: "0a0c4146315169704b65794f6e650a0c4146315169704b657954776f0a0e4146315169704b657954687265651212414631516970416c62756d4b6579303030312a02080232141a08506978656c20584c2206476f6f676c65281c3880f2d6ca06"
         ),
+        "downloadURLs": Call(
+            method: "POST",
+            url: "https://photosdata-pa.googleapis.com/$rpc/social.frontend.photos.preparedownloaddata.v1.PhotosPrepareDownloadDataService/PhotosPrepareDownload",
+            headers: ["Accept-Language": "en_US", "Authorization": "Bearer fake-bearer", "User-Agent": "com.google.android.apps.photos/49029607 (Linux; U; Android 9; en_US; Pixel XL; Build/PQ2A.190205.001; Cronet/127.0.6510.5) (gzip)", "accept-encoding": "gzip", "content-type": "application/x-protobuf", "x-goog-ext-173412678-bin": "CgcIAhClARgC", "x-goog-ext-174067345-bin": "CgIIAg=="],
+            body: "0a100a0e0a0c4146315169704b65794f6e6512120a043a0212002a0a12001a002a040a001800"
+        ),
     ]
 
     /// Bodies the bridge's _commit_body built for a 2-item batch (A, B), per quality.

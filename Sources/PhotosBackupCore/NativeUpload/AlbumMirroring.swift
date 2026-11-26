@@ -33,16 +33,21 @@ public struct AlbumStepResult: Sendable, Equatable {
 ///   the caller to upload again (BackupState.forgetUploads);
 /// - a 404 counts as the keys' only once one of this step's own adds went
 ///   in (or it is creating the album): a deleted album answers 404 too, and
-///   nothing is ever re-added to tell the two apart. The bridge then reads
-///   each refused key back; the native client has no read-back call, so the
-///   refusal stays the album's, the worst case being an album that fails
-///   again next run, never a photo sent twice;
+///   nothing is ever re-added to tell the two apart. When nothing went in,
+///   each key refused on its own is read back (gpmc's get_download_urls, at
+///   most 16): only a key Google answers 404 for is dead. If every one read
+///   is dead the album is fine and the keys are missing; otherwise the dead
+///   ones read are reported and the refusal stays the album's, the worst case
+///   being an album that fails again next run, never a photo sent twice;
 /// - a 5xx or 408 is tried again after 2, 5 and 12 s, at most 8 times a step
 ///   (measured 2026-10-27: 7 of about 30 album steps hit a passing 500/503).
 public enum AlbumMirroring {
     public static let retryDelays: [TimeInterval] = [2, 5, 12]
     public static let retryBudget = 8
     public static let refusalBudget = 128
+    /// Read-only lookups a step may spend on keys refused on their own
+    /// (the bridge's ALBUM_READ_BUDGET).
+    public static let readBackBudget = 16
 
     /// Sleeps `seconds`; false when the caller stopped meanwhile.
     public typealias Sleeper = @Sendable (_ seconds: TimeInterval) async -> Bool
@@ -75,7 +80,13 @@ public enum AlbumMirroring {
             return result
         }
         var result = step.result
-        if !step.refusedAlone.isEmpty, !step.alive, let refusal = step.firstRefusal {
+        guard !step.refusedAlone.isEmpty, !step.alive, let refusal = step.firstRefusal else { return result }
+        do {
+            let (dead, settled) = try await step.readBack(step.refusedAlone)
+            result.missing = dead
+            if !settled { result.error = refusal }
+        } catch {
+            if case .stopped = error { result.stopped = true }
             result.error = refusal
         }
         return result
@@ -181,6 +192,30 @@ public enum AlbumMirroring {
                 return
             }
             added += keys
+        }
+
+        /// The bridge's _read_back: the keys Google answers 404 for, and
+        /// whether every key was read and found dead (only then is the refusal
+        /// the keys' rather than the album's). A key that reads back alive, or
+        /// cannot be read, proves nothing and is never reported.
+        mutating func readBack(_ keys: [String]) async throws(Stop) -> (dead: [String], settled: Bool) {
+            var dead: [String] = []
+            var settled = keys.count <= AlbumMirroring.readBackBudget
+            let client = client
+            for key in keys.prefix(AlbumMirroring.readBackBudget) {
+                do {
+                    _ = try await call { () async throws(GooglePhotosError) in try await client.hasOriginalDownload(mediaKey: key) }
+                    settled = false
+                } catch {
+                    if case .stopped = error { throw error }
+                    if case .google(.http(404, _)) = error {
+                        dead.append(key)
+                    } else {
+                        settled = false
+                    }
+                }
+            }
+            return (dead, settled && dead.count == keys.count)
         }
 
         /// Rethrows anything but a 404 within the refusal budget.

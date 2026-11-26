@@ -229,10 +229,44 @@ import Testing
         let fake = FakeUploader()
         await fake.set { $0.albumGone = true }
         let result = await AlbumMirroring.add(Self.keys(2), to: "album-deleted", named: "Old", using: fake, sleep: Self.noWait)
-        // Nothing went in, so a 404 proves nothing about the keys: none is
-        // reported missing, and none is uploaded again.
+        // Nothing went in, and each key reads back alive: the 404 was the
+        // album's. None is reported missing, and none is uploaded again.
         #expect(result.missing.isEmpty)
         #expect(result.added.isEmpty)
+        #expect(result.error == .http(status: 404, message: "Not Found"))
+        #expect(await fake.calls.filter { $0.hasPrefix("read") } == ["read k0", "read k1"])
+    }
+
+    @Test func keysThatAllReadBackDeadAreMissingAndTheAlbumIsFine() async {
+        let fake = FakeUploader()
+        await fake.set { $0.deadKeys = ["k0", "k1"] }
+        let result = await AlbumMirroring.add(Self.keys(2), to: "album-known", named: "Family", using: fake, sleep: Self.noWait)
+        // Nothing went in, so the 404s alone proved nothing; each key reading
+        // back 404 too settles it: the keys are dead, the album is not.
+        #expect(Set(result.missing) == ["k0", "k1"])
+        #expect(result.error == nil)
+    }
+
+    @Test func anUnreadableKeyLeavesTheRefusalTheAlbumsButReportsTheDeadOnes() async {
+        let fake = FakeUploader()
+        await fake.set {
+            $0.deadKeys = ["k0", "k1"]
+            $0.unreadableKeys = ["k1"]
+        }
+        let result = await AlbumMirroring.add(Self.keys(2), to: "album-known", named: "Family", using: fake, sleep: Self.noWait)
+        #expect(result.missing == ["k0"])
+        #expect(result.error == .http(status: 404, message: "Not Found"))
+    }
+
+    @Test func noMoreThanSixteenKeysAreReadBack() async {
+        let fake = FakeUploader()
+        let keys = Self.keys(20)
+        await fake.set { $0.deadKeys = Set(keys) }
+        let result = await AlbumMirroring.add(keys, to: "album-known", named: "Family", using: fake, sleep: Self.noWait)
+        #expect(await fake.calls.filter { $0.hasPrefix("read") }.count == AlbumMirroring.readBackBudget)
+        // Past the budget nothing is settled: the dead ones read are reported,
+        // the refusal stays the album's.
+        #expect(result.missing.count == AlbumMirroring.readBackBudget)
         #expect(result.error == .http(status: 404, message: "Not Found"))
     }
 

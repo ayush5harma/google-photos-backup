@@ -45,6 +45,34 @@ import Testing
         #expect(Body.addMediaToAlbum(albumKey: Golden.albumKey, mediaKeys: Golden.mediaKeys, now: Self.now) == Self.golden("addToAlbum"))
     }
 
+    @Test func readBack() {
+        #expect(Body.downloadURLs(mediaKey: Golden.mediaKeys[0]) == Self.golden("downloadURLs"))
+    }
+
+    /// Only an answer carrying the original's URL reads as alive; a 404 is
+    /// left to the caller, which takes it (and only it) for a dead key.
+    @Test func aReadBackIsAliveOnlyWithAnOriginalAndA404Throws() async throws {
+        let stub = GooglePhotosStub { request in
+            if request.isAuth { return GooglePhotosStub.authAnswer(expiry: Golden.now + 3600) }
+            switch request.body {
+            case Body.downloadURLs(mediaKey: "dead"): return .text(404, "Not Found")
+            case Body.downloadURLs(mediaKey: "edited-only"):
+                return .ok(ProtobufWire.bytes(1, ProtobufWire.bytes(5, ProtobufWire.bytes(2, ProtobufWire.string(5, "https://example.com/e")))))
+            default: return .ok()
+            }
+        }
+        let client = GooglePhotosClient(credential: try GooglePhotosCredential(authData: Golden.authData), endpoints: stub.endpoints,
+                                        session: stub.session, now: { Self.now })
+        #expect(try await client.hasOriginalDownload(mediaKey: "edited-only") == false)
+        #expect(try await client.hasOriginalDownload(mediaKey: "empty") == false)
+        await #expect(throws: GooglePhotosError.self) { try await client.hasOriginalDownload(mediaKey: "dead") }
+        do {
+            _ = try await client.hasOriginalDownload(mediaKey: "dead")
+        } catch {
+            guard case .http(404, _) = error else { Issue.record("expected a 404, got \(error)"); return }
+        }
+    }
+
     // MARK: - The same calls through the client
 
     /// Headers URLSession owns or that cannot match by design.
@@ -80,6 +108,9 @@ import Testing
                 return .ok(GooglePhotosStub.commitAnswer([(Data(hex: Golden.receiptA), "AF1QipA"), (Data(hex: Golden.receiptB), "AF1QipB")]))
             case GooglePhotosMethod.createAlbum.rawValue:
                 return .ok(ProtobufWire.bytes(1, ProtobufWire.string(1, Golden.albumKey)))
+            case "PhotosPrepareDownload":
+                let urls = ProtobufWire.string(5, "https://example.com/edited") + ProtobufWire.string(6, "https://example.com/original")
+                return .ok(ProtobufWire.bytes(1, ProtobufWire.bytes(5, ProtobufWire.bytes(2, urls))))
             default: return .ok()
             }
         }
@@ -99,11 +130,12 @@ import Testing
         }
         #expect(try await client.createAlbum(name: Golden.albumName, mediaKeys: Golden.mediaKeys) == Golden.albumKey)
         try await client.addToAlbum(Golden.albumKey, mediaKeys: Golden.mediaKeys)
+        #expect(try await client.hasOriginalDownload(mediaKey: Golden.mediaKeys[0]))
 
         let sent = stub.requests
         let names = ["auth", "findRemoteMedia", "uploadStart", "uploadPut"]
             + UploadQuality.allCases.flatMap { ["commitOne_\($0.rawValue)", "commitBatch_\($0.rawValue)"] }
-            + ["createAlbum", "addToAlbum"]
+            + ["createAlbum", "addToAlbum", "downloadURLs"]
         try #require(sent.count == names.count)
         for (request, name) in zip(sent, names) {
             if name.hasPrefix("commitBatch_") {

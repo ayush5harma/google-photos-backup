@@ -23,6 +23,8 @@ actor FakeUploader: GooglePhotosUploading {
     var albumGone = false
     /// Errors the next album calls throw before any other check, in order.
     var albumFailures: [GooglePhotosError] = []
+    /// Keys whose read-back fails with something other than a 404.
+    var unreadableKeys: Set<String> = []
 
     private(set) var calls: [String] = []
     private(set) var commitSizes: [Int] = []
@@ -86,6 +88,13 @@ actor FakeUploader: GooglePhotosUploading {
         if !albumFailures.isEmpty { throw albumFailures.removeFirst() }
         if albumGone || mediaKeys.contains(where: deadKeys.contains) { throw .http(status: 404, message: "Not Found") }
         albums[albumKey, default: []] += mediaKeys
+    }
+
+    func hasOriginalDownload(mediaKey: String) async throws(GooglePhotosError) -> Bool {
+        calls.append("read \(mediaKey)")
+        if unreadableKeys.contains(mediaKey) { throw .http(status: 500, message: "") }
+        if deadKeys.contains(mediaKey) { throw .http(status: 404, message: "Not Found") }
+        return true
     }
 }
 

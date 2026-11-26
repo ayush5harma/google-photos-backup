@@ -174,7 +174,20 @@ def record(site_packages: str) -> tuple[list[tuple[str, Recorded]], dict[str, by
     recorder.answers.append(FakeResponse(b""))
     api.add_media_to_album(ALBUM_KEY, MEDIA_KEYS)
     out.append(("addToAlbum", recorder.last()))
+
+    # The bridge's read-back of a key an album refused (_read_back).
+    recorder.answers.append(FakeResponse(_download_answer(bbp)))
+    api.get_download_urls(MEDIA_KEYS[0])
+    out.append(("downloadURLs", recorder.last()))
     return out, extra
+
+
+def _download_answer(bbp: Any) -> bytes:
+    url = {"type": "string"}
+    typedef = {"1": {"type": "message", "message_typedef": {"5": {"type": "message", "message_typedef": {
+        "2": {"type": "message", "message_typedef": {"5": url, "6": url}}}}}}}
+    answer = {"1": {"5": {"2": {"5": "https://example.com/edited", "6": "https://example.com/original"}}}}
+    return bytes(bbp.encode_message(answer, typedef))
 
 
 def _commit_answer(bbp: Any) -> bytes:

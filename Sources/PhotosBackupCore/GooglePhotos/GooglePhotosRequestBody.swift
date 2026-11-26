@@ -35,6 +35,14 @@ enum GooglePhotosRequestBody {
         Wire.bytes(1, Wire.bytes(1, Wire.bytes(1, sha1)) + Wire.bytes(2, Data()))
     }
 
+    /// gpmc's get_download_urls: {"1": {"1": {"1": key}}, "2": {"1": {"7": {"2": {}}},
+    /// "5": {"2": {}, "3": {}, "5": {"1": {}, "3": 0}}}}, in its field order.
+    static func downloadURLs(mediaKey: String) -> Data {
+        let options = Wire.bytes(1, Wire.bytes(7, Wire.bytes(2, Data())))
+            + Wire.bytes(5, Wire.bytes(2, Data()) + Wire.bytes(3, Data()) + Wire.bytes(5, Wire.bytes(1, Data()) + Wire.int(3, 0)))
+        return Wire.bytes(1, Wire.bytes(1, Wire.string(1, mediaKey))) + Wire.bytes(2, options)
+    }
+
     /// {"1": 2, "2": 2, "3": 1, "4": 3, "7": size}
     static func uploadStart(size: Int64) -> Data {
         Wire.int(1, 2) + Wire.int(2, 2) + Wire.int(3, 1) + Wire.int(4, 3) + Wire.int(7, signed: size)

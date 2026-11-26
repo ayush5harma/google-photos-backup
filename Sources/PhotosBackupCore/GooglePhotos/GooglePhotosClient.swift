@@ -214,6 +214,15 @@ public actor GooglePhotosClient {
         _ = try await dataCall(.addMediaToAlbum, body: body, ext: true)
     }
 
+    /// gpmc's get_download_urls, read-only: whether Google hands out this
+    /// item's original (answer field 1.5.2.6). The bridge's _read_back uses it
+    /// only to tell a dead key (404) from a deleted album when an album step
+    /// put nothing in; nothing is ever added to find out.
+    public func hasOriginalDownload(mediaKey: String) async throws(GooglePhotosError) -> Bool {
+        let answer = try await call(endpoints.prepareDownload, body: GooglePhotosRequestBody.downloadURLs(mediaKey: mediaKey), ext: true)
+        return ((try? ProtobufWire.string(at: [1, 5, 2, 6], in: answer)) ?? nil)?.isEmpty == false
+    }
+
     // MARK: - Commit results
 
     private func commitBatch(_ files: [UploadedFile], quality: UploadQuality) async throws(GooglePhotosError) -> [String?] {
@@ -360,8 +369,11 @@ public actor GooglePhotosClient {
     }
 
     private func dataCall(_ method: GooglePhotosMethod, body: Data, ext: Bool) async throws(GooglePhotosError) -> Data {
-        let url = endpoints.method(method)
-        return try await authorized { bearer in
+        try await call(endpoints.method(method), body: body, ext: ext)
+    }
+
+    private func call(_ url: URL, body: Data, ext: Bool) async throws(GooglePhotosError) -> Data {
+        try await authorized { bearer in
             var request = self.request(url, bearer: bearer)
             request.httpBody = body
             if ext {

@@ -11,6 +11,9 @@ public protocol GooglePhotosUploading: Sendable {
     func commitOne(_ file: UploadedFile, quality: UploadQuality) async throws(GooglePhotosError) -> String
     func createAlbum(name: String, mediaKeys: [String]) async throws(GooglePhotosError) -> String
     func addToAlbum(_ albumKey: String, mediaKeys: [String]) async throws(GooglePhotosError)
+    /// Read-only: whether Google hands out the item's original (gpmc's
+    /// get_download_urls), for the album step's read-back.
+    func hasOriginalDownload(mediaKey: String) async throws(GooglePhotosError) -> Bool
 }
 
 extension GooglePhotosClient: GooglePhotosUploading {}

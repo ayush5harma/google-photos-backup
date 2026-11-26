@@ -35,6 +35,13 @@ public struct GooglePhotosEndpoints: Sendable, Equatable {
     func method(_ id: GooglePhotosMethod) -> URL {
         data.appendingPathComponent(id.rawValue)
     }
+
+    /// gpmc's get_download_urls answers at the data host's root, not under
+    /// the method root the other calls share.
+    var prepareDownload: URL {
+        data.deletingLastPathComponent()
+            .appendingPathComponent("$rpc/social.frontend.photos.preparedownloaddata.v1.PhotosPrepareDownloadDataService/PhotosPrepareDownload")
+    }
 }
 
 /// photosdata-pa method ids, as gpmc 0.9.0 calls them.
